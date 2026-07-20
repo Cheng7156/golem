@@ -1,0 +1,36 @@
+name: golem-sticker-capabilities
+version: 1.7.0
+description: "Golem-managed WeChat sticker and video tools plus durable background and cron delivery."
+author: Golem
+kind: standalone
+requires_env:
+  - name: GOLEM_CAPABILITIES_TOKEN
+    description: "Bearer token shared only by Hermes Gateway and the local Golem capability API"
+    prompt: "Golem capability token"
+    password: true
+optional_env:
+  - name: GOLEM_ASYNC_DELIVERY_ENABLED
+    description: "Enable durable delivery for Hermes v0.18.2 background delegations and cron jobs (default: false)"
+    prompt: "Enable durable async and cron delivery"
+    password: false
+  - name: GOLEM_STICKER_INSPECT_ENABLED
+    description: "Register the optional auxiliary-vision sticker inspection tool (default: true)"
+    prompt: "Enable sticker vision inspection"
+    password: false
+  - name: GOLEM_VIDEO_ENABLED
+    description: "Expose Golem video tools when the Hermes Relay video capability is enabled (default: false)"
+    prompt: "Enable video tools"
+    password: false
+  - name: GOLEM_VIDEO_PREPARE_TIMEOUT_SECONDS
+    description: "Maximum time for a video select tool to poll preparation status (default: 210, maximum: 600)"
+    prompt: "Video preparation timeout seconds"
+    password: false
+provides_tools:
+  - golem_sticker_search
+  - golem_sticker_inspect
+  - golem_sticker_attach
+  - golem_sticker_select
+  - golem_video_search
+  - golem_video_attach
+  - golem_video_select
+

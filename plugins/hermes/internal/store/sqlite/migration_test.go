@@ -1,0 +1,69 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"testing"
+)
+
+func TestOpenMigratesSchemaV1ToV6(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "hermes.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, schemaV1); err != nil {
+		t.Fatalf("create V1 schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version,applied_at) VALUES(1,1)`,
+	); err != nil {
+		t.Fatalf("record V1 migration: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("migrate V1 database: %v", err)
+	}
+	defer store.Close()
+	var version int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM schema_migrations`,
+	).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != 6 {
+		t.Fatalf("schema version=%d, want 6", version)
+	}
+	var table string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='async_delivery_tickets'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("async delivery table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='cron_delivery_bindings'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("cron delivery table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='async_delivery_direct_outputs'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("async direct output table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='media_objects'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("media objects table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='cron_delivery_direct_outputs'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("cron direct output table missing: %v", err)
+	}
+}

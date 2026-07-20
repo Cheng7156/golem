@@ -1,0 +1,109 @@
+package agent
+
+import (
+	"errors"
+	"html"
+	"regexp"
+	"strings"
+	"unicode"
+)
+
+func newRelayTextProposal(content string) (string, *OutputProposal, error) {
+	visibleContent := markdownToWeChatText(content)
+	if visibleContent == "" {
+		return "", nil, errors.New("reply is empty after Markdown normalization")
+	}
+	proposal, err := NewTextProposal(visibleContent)
+	if err != nil {
+		return "", nil, err
+	}
+	return visibleContent, &proposal, nil
+}
+
+var (
+	markdownHeadingPattern   = regexp.MustCompile(`^\s{0,3}#{1,6}\s+`)
+	markdownQuotePattern     = regexp.MustCompile(`^\s{0,3}(?:>\s*)+`)
+	markdownBulletPattern    = regexp.MustCompile(`^\s*[-+*]\s+`)
+	markdownRulePattern      = regexp.MustCompile(`^\s{0,3}(?:[-*_]\s*){3,}$`)
+	markdownTableRulePattern = regexp.MustCompile(`^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$`)
+	markdownImagePattern     = regexp.MustCompile(`!\[([^]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
+	markdownLinkPattern      = regexp.MustCompile(`\[([^]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
+	markdownInlineCode       = regexp.MustCompile("`([^`\\n]+)`")
+	markdownBoldAsterisk     = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	markdownBoldUnderscore   = regexp.MustCompile(`__([^_\n]+)__`)
+	markdownStrikePattern    = regexp.MustCompile(`~~([^~\n]+)~~`)
+	markdownItalicAsterisk   = regexp.MustCompile(`\*([^*\s](?:[^*\n]*[^*\s])?)\*`)
+	markdownEscapePattern    = regexp.MustCompile(`\\([\\` + "`" + `*_[\]{}()#+.!|>~-])`)
+)
+
+func markdownToWeChatText(content string) string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	result := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			result = append(result, line)
+			continue
+		}
+		if cleaned, keep := cleanMarkdownLine(line); keep {
+			result = append(result, cleaned)
+		}
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
+func cleanMarkdownLine(line string) (string, bool) {
+	if markdownRulePattern.MatchString(line) || markdownTableRulePattern.MatchString(line) {
+		return "", false
+	}
+	line = markdownHeadingPattern.ReplaceAllString(line, "")
+	line = markdownQuotePattern.ReplaceAllString(line, "")
+	line = markdownBulletPattern.ReplaceAllString(line, "- ")
+	line = replaceMarkdownLinks(line, markdownImagePattern)
+	line = replaceMarkdownLinks(line, markdownLinkPattern)
+	line = markdownInlineCode.ReplaceAllString(line, "$1")
+	line = markdownBoldAsterisk.ReplaceAllString(line, "$1")
+	line = markdownBoldUnderscore.ReplaceAllString(line, "$1")
+	line = markdownStrikePattern.ReplaceAllString(line, "$1")
+	line = markdownItalicAsterisk.ReplaceAllString(line, "$1")
+	line = markdownEscapePattern.ReplaceAllString(line, "$1")
+	return html.UnescapeString(line), true
+}
+
+func replaceMarkdownLinks(value string, pattern *regexp.Regexp) string {
+	return pattern.ReplaceAllStringFunc(value, func(match string) string {
+		parts := pattern.FindStringSubmatch(match)
+		label := strings.TrimSpace(parts[1])
+		url := strings.TrimSpace(parts[2])
+		if label == "" || label == url {
+			return url
+		}
+		return label + " (" + url + ")"
+	})
+}
+
+func canonicalInternalToken(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.Contains(value, "[") || !strings.Contains(value, "]") {
+		return "", false
+	}
+	value = strings.Trim(value, " \t\r\n`*~\"'“”‘’[]()（）<>.,;:!?。；：！？")
+	parts := strings.FieldsFunc(value, func(char rune) bool {
+		return char == '_' || char == '-' || unicode.IsSpace(char)
+	})
+	if len(parts) == 0 {
+		return "", false
+	}
+	canonical := strings.ToUpper(strings.Join(parts, "_"))
+	for _, char := range canonical {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return "", false
+		}
+	}
+	return canonical, true
+}

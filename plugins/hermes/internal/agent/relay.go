@@ -1,0 +1,1082 @@
+package agent
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golem_plugin_hermes/internal/domain"
+
+	"github.com/coder/websocket"
+)
+
+const (
+	relayContractVersion  = 1
+	relayObserveToken     = "[[GOLEM_HERMES_OBSERVE_V1]]"
+	relayEffectOnlyToken  = "[[GOLEM_HERMES_EFFECT_ONLY_V1]]"
+	hermesPlainTextPrefix = "(Response formatting failed, plain text:)"
+)
+
+var (
+	ErrGatewayUnavailable  = errors.New("Hermes Gateway relay is unavailable")
+	ErrGatewayDisconnected = errors.New("Hermes Gateway relay disconnected")
+	ErrGatewayRunActive    = errors.New("Hermes Gateway already has an active run for this chat")
+)
+
+type RelayConfig struct {
+	ListenAddress     string
+	Path              string
+	GatewayID         string
+	SharedSecret      string
+	SilenceRulesFile  string
+	CapabilityToken   string
+	Stickers          StickerCapability
+	Videos            VideoCapability
+	VideoLinkFallback bool
+	AsyncDelivery     AsyncDeliveryCapability
+	CronDelivery      CronDeliveryCapability
+	AsyncDeliveryWake func()
+	MaxFrameBytes     int64
+	WriteTimeout      time.Duration
+	MediaDirectory    string
+}
+
+func (c RelayConfig) normalize() (RelayConfig, error) {
+	c.ListenAddress = strings.TrimSpace(c.ListenAddress)
+	if c.ListenAddress == "" {
+		c.ListenAddress = "127.0.0.1:8789"
+	}
+	c.Path = "/" + strings.Trim(strings.TrimSpace(c.Path), "/")
+	if c.Path == "/" {
+		c.Path = "/relay"
+	}
+	c.GatewayID = strings.TrimSpace(c.GatewayID)
+	c.SharedSecret = strings.TrimSpace(c.SharedSecret)
+	c.SilenceRulesFile = strings.TrimSpace(c.SilenceRulesFile)
+	c.CapabilityToken = strings.TrimSpace(c.CapabilityToken)
+	if (c.GatewayID == "") != (c.SharedSecret == "") {
+		return RelayConfig{}, errors.New("relay gateway_id and shared_secret must be configured together")
+	}
+	if c.SharedSecret == "" && !isLoopbackListener(c.ListenAddress) {
+		return RelayConfig{}, errors.New("unauthenticated relay must listen on a loopback address")
+	}
+	if (c.Stickers != nil || c.Videos != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && len(c.CapabilityToken) < 16 {
+		return RelayConfig{}, errors.New("Hermes capabilities require a shared token of at least 16 characters")
+	}
+	if (c.Stickers != nil || c.Videos != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && capabilityPath(c.Path) {
+		return RelayConfig{}, errors.New("relay path conflicts with a capability endpoint")
+	}
+	if c.MaxFrameBytes <= 0 {
+		c.MaxFrameBytes = 8 << 20
+	}
+	if c.WriteTimeout <= 0 {
+		c.WriteTimeout = 30 * time.Second
+	}
+	c.MediaDirectory = strings.TrimSpace(c.MediaDirectory)
+	if c.SilenceRulesFile != "" {
+		c.SilenceRulesFile = filepath.Clean(c.SilenceRulesFile)
+		if err := validateSilenceRulesFile(c.SilenceRulesFile); err != nil {
+			return RelayConfig{}, err
+		}
+	}
+	return c, nil
+}
+
+func isLoopbackListener(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+type RelayGateway struct {
+	config RelayConfig
+
+	mu             sync.Mutex
+	conn           *relayConnection
+	ready          chan struct{}
+	pending        map[string]*relayRun
+	closed         bool
+	listener       net.Listener
+	runtimeCtx     context.Context
+	videoMu        sync.Mutex
+	videoJobs      map[string]videoJob
+	asyncVideoJobs map[string]asyncVideoJob
+	cronVideoJobs  map[string]cronVideoJob
+}
+
+type relayConnection struct {
+	ws      *websocket.Conn
+	writeMu sync.Mutex
+}
+
+type relayRun struct {
+	engine  *RelayGateway
+	request RunRequest
+	chatID  string
+	events  chan Event
+	cancel  context.CancelFunc
+
+	mu         sync.Mutex
+	sequence   uint64
+	finished   bool
+	effects    []OutputProposal
+	videoQueue chan videoWork
+}
+
+func NewRelayGateway(config RelayConfig) (*RelayGateway, error) {
+	normalized, err := config.normalize()
+	if err != nil {
+		return nil, err
+	}
+	return &RelayGateway{
+		config:         normalized,
+		ready:          make(chan struct{}),
+		pending:        make(map[string]*relayRun),
+		videoJobs:      make(map[string]videoJob),
+		asyncVideoJobs: make(map[string]asyncVideoJob),
+		cronVideoJobs:  make(map[string]cronVideoJob),
+	}, nil
+}
+
+func (g *RelayGateway) Run(ctx context.Context) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc(g.config.Path, g.serveRelay)
+	if g.config.Stickers != nil {
+		mux.HandleFunc(stickerSearchPath, g.serveStickerSearch)
+		mux.HandleFunc(stickerMaterializePath, g.serveStickerMaterialize)
+		mux.HandleFunc(stickerSelectPath, g.serveStickerSelect)
+	}
+	if g.config.Videos != nil {
+		mux.HandleFunc(videoSearchPath, g.serveVideoSearch)
+		mux.HandleFunc(videoResolvePath, g.serveVideoResolve)
+		mux.HandleFunc(videoSelectPath, g.serveVideoSelect)
+		mux.HandleFunc(videoStatusPath, g.serveVideoStatus)
+	}
+	if g.config.AsyncDelivery != nil {
+		g.registerAsyncDeliveryHandlers(mux)
+	}
+	if g.config.CronDelivery != nil {
+		g.registerCronDeliveryHandlers(mux)
+	}
+	listener, err := net.Listen("tcp", g.config.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen for Hermes Gateway relay: %w", err)
+	}
+	g.mu.Lock()
+	g.listener = listener
+	g.runtimeCtx = ctx
+	g.mu.Unlock()
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		done <- err
+	}()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		g.disconnect(nil, context.Canceled)
+		return ctx.Err()
+	case err := <-done:
+		g.disconnect(nil, ErrGatewayDisconnected)
+		return err
+	}
+}
+
+func (g *RelayGateway) Address() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.listener == nil {
+		return ""
+	}
+	return g.listener.Addr().String()
+}
+
+func (g *RelayGateway) Start(parent context.Context, request RunRequest) (Stream, error) {
+	if strings.TrimSpace(request.RunID) == "" || strings.TrimSpace(request.SessionID) == "" || strings.TrimSpace(request.Input) == "" {
+		return nil, errors.New("relay run requires run_id, session_id, and input")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	chatID := relayChatID(request)
+	run := &relayRun{
+		engine:  g,
+		request: request,
+		chatID:  chatID,
+		events:  make(chan Event, 32),
+		cancel:  cancel,
+	}
+	if g.config.Videos != nil {
+		run.videoQueue = make(chan videoWork, videoJobQueueSize)
+		go run.processVideoJobs(ctx)
+	}
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		cancel()
+		return nil, ErrGatewayUnavailable
+	}
+	if _, exists := g.pending[chatID]; exists {
+		g.mu.Unlock()
+		cancel()
+		return nil, ErrGatewayRunActive
+	}
+	g.pending[chatID] = run
+	g.mu.Unlock()
+
+	// Reserve the Run before waiting for the Gateway so owner cancellation and
+	// plugin shutdown can always find and cancel it. Without this reservation,
+	// removing the Relay wall-clock timeout could leave Start blocked outside
+	// pending forever while the database Run was already cancel_requested.
+	connection, err := g.waitConnection(ctx)
+	if err != nil {
+		g.removeRun(run)
+		cancel()
+		return nil, err
+	}
+	g.mu.Lock()
+	current := g.pending[chatID]
+	connected := !g.closed && g.conn == connection
+	g.mu.Unlock()
+	if current != run || !connected {
+		g.removeRun(run)
+		cancel()
+		return nil, ErrGatewayUnavailable
+	}
+
+	mediaURLs, err := g.materializeMedia(ctx, request.Media)
+	if err != nil {
+		g.removeRun(run)
+		cancel()
+		return nil, fmt.Errorf("materialize relay media: %w", err)
+	}
+	frame := map[string]any{
+		"type":  "inbound",
+		"event": relayInboundEvent(request, chatID, mediaURLs),
+	}
+	if err := g.writeFrame(ctx, connection, frame); err != nil {
+		g.removeRun(run)
+		cancel()
+		return nil, fmt.Errorf("send relay inbound: %w", err)
+	}
+	run.emit(Event{Kind: EventRunAccepted})
+	go func() {
+		<-ctx.Done()
+		run.finish(Event{Kind: EventRunFailed, Err: ctx.Err()})
+	}()
+	return NewChannelStream(cancel, run.events, run.send), nil
+}
+
+func (g *RelayGateway) CancelRun(ctx context.Context, runID string) error {
+	g.mu.Lock()
+	var target *relayRun
+	connection := g.conn
+	for _, run := range g.pending {
+		if run.request.RunID == runID {
+			target = run
+			break
+		}
+	}
+	g.mu.Unlock()
+	if target == nil {
+		return ErrRunNotActive
+	}
+	var interruptErr error
+	if connection != nil {
+		interruptErr = g.writeFrame(ctx, connection, map[string]any{
+			"type":        "interrupt_inbound",
+			"session_key": relaySessionKey(target.request, target.chatID),
+			"chat_id":     target.chatID,
+		})
+	}
+	target.cancel()
+	if interruptErr != nil {
+		return fmt.Errorf("send relay interrupt: %w", interruptErr)
+	}
+	return nil
+}
+
+func relayChatID(request RunRequest) string {
+	return request.SessionID + "|" + string(request.Lane)
+}
+
+func relayInboundEvent(request RunRequest, chatID string, mediaURLs []string) map[string]any {
+	chatType := strings.TrimSpace(request.ChatType)
+	if chatType == "" {
+		chatType = "dm"
+	}
+	source := map[string]any{
+		"platform":   "relay",
+		"chat_id":    chatID,
+		"chat_type":  chatType,
+		"chat_name":  emptyStringAsNil(request.ChatName),
+		"user_id":    emptyStringAsNil(request.Principal.ID),
+		"user_name":  emptyStringAsNil(request.Principal.Name),
+		"thread_id":  nil,
+		"chat_topic": nil,
+		"message_id": emptyStringAsNil(request.MessageID),
+	}
+	if chatType != "dm" {
+		source["scope_id"] = request.SessionID
+	}
+	messageType := "text"
+	if len(request.Media) > 0 {
+		switch request.Media[0].Kind {
+		case "image":
+			messageType = "photo"
+		case "emoji":
+			messageType = "sticker"
+		}
+	}
+	return map[string]any{
+		"text":         request.Input,
+		"message_type": messageType,
+		"message_id":   emptyStringAsNil(request.MessageID),
+		"media_urls":   mediaURLs,
+		"source":       source,
+	}
+}
+
+func (g *RelayGateway) materializeMedia(ctx context.Context, media []domain.InboundMedia) ([]string, error) {
+	if len(media) == 0 {
+		return nil, nil
+	}
+	result := make([]string, 0, len(media))
+	for _, item := range media {
+		if len(item.Data) == 0 {
+			if rawURL := strings.TrimSpace(item.URL); rawURL != "" {
+				result = append(result, rawURL)
+			}
+			continue
+		}
+		if len(item.Data) > 16<<20 {
+			return nil, errors.New("inbound media exceeds 16 MiB")
+		}
+		if g.config.MediaDirectory == "" {
+			return nil, errors.New("relay media directory is not configured")
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(g.config.MediaDirectory, 0o755); err != nil {
+			return nil, err
+		}
+		digest := sha256.Sum256(item.Data)
+		path := filepath.Join(g.config.MediaDirectory, hex.EncodeToString(digest[:])+mediaExtension(item))
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			temporary, createErr := os.CreateTemp(g.config.MediaDirectory, ".incoming-*")
+			if createErr != nil {
+				return nil, createErr
+			}
+			temporaryPath := temporary.Name()
+			removeTemporary := true
+			defer func() {
+				_ = temporary.Close()
+				if removeTemporary {
+					_ = os.Remove(temporaryPath)
+				}
+			}()
+			if _, createErr = temporary.Write(item.Data); createErr == nil {
+				createErr = temporary.Sync()
+			}
+			if closeErr := temporary.Close(); createErr == nil {
+				createErr = closeErr
+			}
+			if createErr != nil {
+				return nil, createErr
+			}
+			if renameErr := os.Rename(temporaryPath, path); renameErr != nil {
+				if _, statErr := os.Stat(path); statErr != nil {
+					return nil, renameErr
+				}
+				if removeErr := os.Remove(temporaryPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+					return nil, removeErr
+				}
+			}
+			removeTemporary = false
+		} else if err != nil {
+			return nil, err
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, absolute)
+	}
+	return result, nil
+}
+
+func mediaExtension(media domain.InboundMedia) string {
+	switch strings.ToLower(strings.TrimSpace(media.MIMEType)) {
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	default:
+		return ".jpg"
+	}
+}
+
+func emptyStringAsNil(value string) any {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return nil
+}
+
+func (g *RelayGateway) Health(context.Context) Health {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	status := "listening"
+	if g.closed {
+		status = "closed"
+	} else if g.conn != nil {
+		status = "connected"
+	}
+	return Health{
+		Ready:  !g.closed && g.conn != nil,
+		Status: status,
+		Details: map[string]any{
+			"contract_version": relayContractVersion,
+			"active_runs":      len(g.pending),
+			"address":          g.AddressLocked(),
+		},
+	}
+}
+
+func (g *RelayGateway) AddressLocked() string {
+	if g.listener == nil {
+		return g.config.ListenAddress
+	}
+	return g.listener.Addr().String()
+}
+
+func (g *RelayGateway) Close(context.Context) error {
+	g.mu.Lock()
+	g.closed = true
+	connection := g.conn
+	g.conn = nil
+	select {
+	case <-g.ready:
+	default:
+		close(g.ready)
+	}
+	g.mu.Unlock()
+	if connection != nil {
+		_ = connection.ws.Close(websocket.StatusNormalClosure, "Hermes plugin closing")
+	}
+	g.abortRuns(ErrGatewayDisconnected)
+	return nil
+}
+
+func (g *RelayGateway) waitConnection(ctx context.Context) (*relayConnection, error) {
+	for {
+		g.mu.Lock()
+		if g.closed {
+			g.mu.Unlock()
+			return nil, ErrGatewayUnavailable
+		}
+		if g.conn != nil {
+			connection := g.conn
+			g.mu.Unlock()
+			return connection, nil
+		}
+		ready := g.ready
+		g.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ready:
+		}
+	}
+}
+
+func (g *RelayGateway) serveRelay(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !g.authorized(request.Header.Get("Authorization"), time.Now()) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	g.mu.Lock()
+	busy := g.closed || g.conn != nil
+	g.mu.Unlock()
+	if busy {
+		http.Error(w, "relay already connected", http.StatusConflict)
+		return
+	}
+	ws, err := websocket.Accept(w, request, nil)
+	if err != nil {
+		return
+	}
+	ws.SetReadLimit(g.config.MaxFrameBytes)
+	connection := &relayConnection{ws: ws}
+	g.mu.Lock()
+	if g.closed || g.conn != nil {
+		g.mu.Unlock()
+		_ = ws.Close(websocket.StatusPolicyViolation, "relay already connected")
+		return
+	}
+	g.conn = connection
+	close(g.ready)
+	g.mu.Unlock()
+	defer g.disconnect(connection, ErrGatewayDisconnected)
+	for {
+		_, data, err := ws.Read(request.Context())
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if err := g.handleFrame(request.Context(), connection, []byte(line)); err != nil {
+				_ = ws.Close(websocket.StatusUnsupportedData, err.Error())
+				return
+			}
+		}
+	}
+}
+
+func (g *RelayGateway) handleFrame(ctx context.Context, connection *relayConnection, data []byte) error {
+	var envelope struct {
+		Type       string          `json:"type"`
+		RequestID  string          `json:"requestId"`
+		Action     json.RawMessage `json:"action"`
+		SessionKey string          `json:"session_key"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return fmt.Errorf("decode relay frame: %w", err)
+	}
+	switch envelope.Type {
+	case "hello":
+		return g.writeFrame(ctx, connection, map[string]any{
+			"type": "descriptor",
+			"descriptor": relayDescriptor(relayDescriptorOptions{
+				stickers: g.config.Stickers != nil, videos: g.config.Videos != nil,
+				asyncDelivery:    g.config.AsyncDelivery != nil,
+				cronDelivery:     g.config.CronDelivery != nil,
+				silenceRulesFile: g.config.SilenceRulesFile,
+			}),
+		})
+	case "outbound":
+		return g.handleOutbound(ctx, connection, envelope.RequestID, envelope.Action)
+	case "interrupt":
+		g.interruptBySession(envelope.SessionKey)
+		return nil
+	case "going_idle":
+		return g.writeFrame(ctx, connection, map[string]any{"type": "going_idle_ack"})
+	case "inbound_ack":
+		return nil
+	default:
+		return fmt.Errorf("unsupported relay frame type %q", envelope.Type)
+	}
+}
+
+type relayDescriptorOptions struct {
+	stickers         bool
+	videos           bool
+	asyncDelivery    bool
+	cronDelivery     bool
+	silenceRulesFile string
+}
+
+func relayDescriptor(options relayDescriptorOptions) map[string]any {
+	hint := "You are chatting through Golem on WeChat. Reply with ordinary final assistant text; the Relay adapter automatically delivers it through Golem. " +
+		"Do not search for or call MCP, reply, messaging, send, or notification tools to answer the current chat. " +
+		"For a group input marked [group ambient], use the shared group conversation context and your own genuine interest to decide whether joining would be natural and valuable. " +
+		"If you want to participate, reply normally. If you prefer to stay silent, return exactly " + relayObserveToken + " and nothing else; this internal token is never shown to the chat. " +
+		"Never explain that no reply is needed or send a natural-language no-reply message to the chat. " +
+		"For [group addressed] and direct inputs, provide a visible reply rather than the observe token. " +
+		"Every completed turn must produce either a visible final reply or that exact observe token; never emit SILENT or NO_REPLY tokens."
+	if options.stickers {
+		hint += " The optional Golem sticker search and select tools are reply-composition tools, not messaging tools. " +
+			"Use them only when a sticker genuinely fits your personality and the conversation; you decide freely between text, sticker, both, or observation. " +
+			"After selecting a sticker, reply normally to add text, or return exactly " + relayEffectOnlyToken + " for a sticker-only reply."
+	}
+	if options.videos {
+		hint += " Golem video tools are reply-composition tools and may be used only when the user explicitly asks to receive video. " +
+			"Never proactively send video. Use video search for configured API categories or video resolve for a direct HTTPS URL found through the current request or Web/DDG tools. " +
+			"Call video select repeatedly, in order, when multiple videos are requested. After all selections finish, reply normally to add text, or return exactly " + relayEffectOnlyToken + " for an effect-only reply."
+	}
+	if options.asyncDelivery {
+		hint += " Background delegation is supported. When delegate_task returns mode=background, do not wait or poll; its completion is delivered later through Golem's durable async channel."
+	}
+	if options.cronDelivery {
+		hint += " Cron jobs created in this chat can deliver later through Golem's durable cron channel."
+	}
+	if options.silenceRulesFile != "" {
+		hint += " The operator-maintained Golem silence rules file is " + strconv.Quote(options.silenceRulesFile) + ". " +
+			"Only when the owner explicitly asks, use file tools to add one exact:, prefix:, or suffix: rule per line; do not edit it proactively."
+	}
+	return map[string]any{
+		"contract_version":         relayContractVersion,
+		"platform":                 "relay",
+		"label":                    "Golem WeChat",
+		"max_message_length":       2000,
+		"supports_draft_streaming": false,
+		"supports_edit":            false,
+		"supports_threads":         false,
+		"markdown_dialect":         "plain",
+		"len_unit":                 "chars",
+		"emoji":                    "\U0001F4AC",
+		"platform_hint":            hint,
+		"pii_safe":                 false,
+	}
+}
+
+func (g *RelayGateway) handleOutbound(
+	ctx context.Context,
+	connection *relayConnection,
+	requestID string,
+	raw json.RawMessage,
+) error {
+	if strings.TrimSpace(requestID) == "" {
+		return errors.New("relay outbound frame has no requestId")
+	}
+	var action struct {
+		Op        string         `json:"op"`
+		ChatID    string         `json:"chat_id"`
+		MessageID string         `json:"message_id"`
+		Content   string         `json:"content"`
+		Metadata  map[string]any `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &action); err != nil {
+		return g.writeResult(ctx, connection, requestID, false, "", "invalid action")
+	}
+	switch action.Op {
+	case "typing":
+		return g.writeResult(ctx, connection, requestID, true, "", "")
+	case "get_chat_info":
+		return g.writeFrame(ctx, connection, map[string]any{
+			"type":      "outbound_result",
+			"requestId": requestID,
+			"result":    map[string]any{"success": true, "name": action.ChatID, "type": "group"},
+		})
+	case "edit":
+		return g.writeResult(ctx, connection, requestID, false, "", "editing is not advertised by the connector")
+	case "send":
+		return g.acceptSend(ctx, connection, requestID, action.ChatID, action.Content, action.Metadata)
+	case "follow_up":
+		return g.writeResult(ctx, connection, requestID, false, "", "follow_up is not available for Golem WeChat")
+	default:
+		return g.writeResult(ctx, connection, requestID, false, "", "unsupported outbound operation")
+	}
+}
+
+func (g *RelayGateway) acceptSend(
+	ctx context.Context,
+	connection *relayConnection,
+	requestID string,
+	chatID string,
+	content string,
+	metadata map[string]any,
+) error {
+	g.mu.Lock()
+	run := g.pending[chatID]
+	g.mu.Unlock()
+	content = unwrapHermesPlainTextFallback(content)
+	if run == nil || content == "" {
+		return g.writeResult(ctx, connection, requestID, false, "", "no active run for chat")
+	}
+	final, _ := metadata["notify"].(bool)
+	if !final && run.isAmbientGroup() {
+		return g.writeResult(ctx, connection, requestID, true, "deferred-"+run.request.RunID, "")
+	}
+	if g.isObserveResponse(content) {
+		if run.request.ChatType != "group" {
+			return g.writeResult(ctx, connection, requestID, false, "", "observation is only valid for group input")
+		}
+		if final {
+			slog.Debug("[hermes] Hermes chose to observe group message",
+				"run_id", run.request.RunID,
+				"session_id", run.request.SessionID,
+			)
+			run.finishObservation()
+		}
+		return g.writeResult(ctx, connection, requestID, true, "observe-"+run.request.RunID, "")
+	}
+	if final {
+		effectOnly := isInternalTokenResponse(content, relayEffectOnlyToken)
+		visibleContent := content
+		var textProposal *OutputProposal
+		if !effectOnly && isGolemHermesInternalTokenResponse(content) {
+			return g.writeResult(ctx, connection, requestID, false, "", "unsupported internal completion token")
+		}
+		if !effectOnly {
+			var err error
+			visibleContent, textProposal, err = newRelayTextProposal(content)
+			if err != nil {
+				return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+			}
+		}
+		if err := run.finishReply(visibleContent, textProposal, effectOnly); err != nil {
+			return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+		}
+	} else {
+		visibleContent, proposal, err := newRelayTextProposal(content)
+		if err != nil {
+			return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+		}
+		run.emit(Event{Kind: EventProgress, Text: visibleContent, Proposal: proposal})
+	}
+	return g.writeResult(ctx, connection, requestID, true, "proposal-"+run.request.RunID, "")
+}
+
+// Hermes should return relayObserveToken, but model providers can occasionally
+// render the same decision as a short natural-language answer. Treat only exact
+// standalone no-reply phrases as silence. The caller limits this completion
+// boundary to group runs so a direct conversation still requires a reply.
+func isObserveResponse(content string) bool {
+	value := unwrapHermesPlainTextFallback(content)
+	value = strings.ToLower(strings.TrimSpace(value))
+	if isInternalTokenResponse(value, relayObserveToken) {
+		return true
+	}
+	if isWrappedSilenceExplanation(value) {
+		return true
+	}
+	value = strings.TrimSpace(strings.Trim(value, "`*_~\"'“”‘’[]【】()（）<>"))
+	value = strings.TrimSpace(strings.TrimRight(value, ".。!！?？;；"))
+	value = strings.TrimSpace(strings.Trim(value, "`*_~\"'“”‘’[]【】()（）<>"))
+	switch value {
+	case "不需要回复", "无需回复", "不必回复", "暂不回复", "保持沉默",
+		"no reply", "no_reply", "no response", "no-response", "silent", "silence":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWrappedSilenceExplanation(value string) bool {
+	inner, ok := unwrapMatchedPair(value)
+	if !ok {
+		return false
+	}
+	inner = strings.TrimSpace(strings.TrimRight(inner, ".。!！?？;；"))
+	if inner == "silent" || inner == "silence" || inner == "保持沉默" {
+		return true
+	}
+	decision := false
+	for _, marker := range []string{
+		"no @", "no question", "not directed at me", "nothing directed at me",
+	} {
+		if strings.Contains(inner, marker) {
+			decision = true
+			break
+		}
+	}
+	if !decision {
+		return false
+	}
+	for _, suffix := range []string{
+		"staying silent", "remaining silent", "keeping silent",
+		"stay silent", "remain silent", "keep silent",
+	} {
+		if strings.HasSuffix(inner, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func unwrapMatchedPair(value string) (string, bool) {
+	for _, pair := range [][2]string{
+		{"[", "]"}, {"(", ")"}, {"【", "】"}, {"（", "）"}, {"<", ">"},
+	} {
+		if strings.HasPrefix(value, pair[0]) && strings.HasSuffix(value, pair[1]) {
+			return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, pair[0]), pair[1])), true
+		}
+	}
+	return "", false
+}
+
+func unwrapHermesPlainTextFallback(content string) string {
+	value := strings.TrimSpace(content)
+	if !strings.HasPrefix(value, hermesPlainTextPrefix) {
+		return value
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, hermesPlainTextPrefix))
+}
+
+func isInternalTokenResponse(content string, token string) bool {
+	value, ok := canonicalInternalToken(content)
+	if !ok {
+		return false
+	}
+	want, ok := canonicalInternalToken(token)
+	return ok && value == want
+}
+
+func isGolemHermesInternalTokenResponse(content string) bool {
+	value, ok := canonicalInternalToken(content)
+	return ok && strings.HasPrefix(value, "GOLEM_HERMES_")
+}
+
+func (r *relayRun) isAmbientGroup() bool {
+	return r.request.ChatType == "group" && strings.HasPrefix(strings.TrimSpace(r.request.Input), "[group ambient]\n")
+}
+
+func (r *relayRun) stageEffect(proposal OutputProposal) error {
+	if err := proposal.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finished {
+		return errors.New("relay run already finished")
+	}
+	proposal.Payload = append(json.RawMessage(nil), proposal.Payload...)
+	r.effects = append(r.effects, proposal)
+	return nil
+}
+
+func (r *relayRun) finishReply(text string, textProposal *OutputProposal, effectOnly bool) error {
+	r.mu.Lock()
+	if r.finished {
+		r.mu.Unlock()
+		return errors.New("relay run already finished")
+	}
+	if effectOnly && len(r.effects) == 0 {
+		r.mu.Unlock()
+		return errors.New("no staged effect for effect-only reply")
+	}
+	if textProposal != nil {
+		r.enqueueLocked(Event{Kind: EventReplyProposed, Text: text, Proposal: textProposal})
+	}
+	for index := range r.effects {
+		proposal := r.effects[index]
+		r.enqueueLocked(Event{Kind: EventEffectProposed, Proposal: &proposal})
+	}
+	r.effects = nil
+	r.completeLocked(Event{Kind: EventRunCompleted})
+	r.mu.Unlock()
+	r.engine.removeRun(r)
+	return nil
+}
+
+func (r *relayRun) finishObservation() {
+	r.mu.Lock()
+	if r.finished {
+		r.mu.Unlock()
+		return
+	}
+	r.effects = nil
+	r.completeLocked(Event{Kind: EventRunCompleted})
+	r.mu.Unlock()
+	r.engine.removeRun(r)
+}
+
+func (r *relayRun) enqueueLocked(event Event) {
+	r.sequence++
+	event.RunID = r.request.RunID
+	event.Sequence = r.sequence
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	r.events <- event
+}
+
+func (r *relayRun) completeLocked(event Event) {
+	r.enqueueLocked(event)
+	r.finished = true
+	close(r.events)
+}
+
+func (g *RelayGateway) writeResult(
+	ctx context.Context,
+	connection *relayConnection,
+	requestID string,
+	success bool,
+	messageID string,
+	message string,
+) error {
+	result := map[string]any{"success": success}
+	if messageID != "" {
+		result["message_id"] = messageID
+	}
+	if message != "" {
+		result["error"] = message
+	}
+	return g.writeFrame(ctx, connection, map[string]any{
+		"type":      "outbound_result",
+		"requestId": requestID,
+		"result":    result,
+	})
+}
+
+func (g *RelayGateway) writeFrame(ctx context.Context, connection *relayConnection, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	writeCtx, cancel := context.WithTimeout(ctx, g.config.WriteTimeout)
+	defer cancel()
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	return connection.ws.Write(writeCtx, websocket.MessageText, data)
+}
+
+func (g *RelayGateway) disconnect(connection *relayConnection, cause error) {
+	g.mu.Lock()
+	if connection != nil && g.conn != connection {
+		g.mu.Unlock()
+		return
+	}
+	if g.conn != nil {
+		_ = g.conn.ws.Close(websocket.StatusNormalClosure, "relay disconnected")
+	}
+	g.conn = nil
+	if !g.closed {
+		g.ready = make(chan struct{})
+	}
+	g.mu.Unlock()
+	g.abortRuns(cause)
+}
+
+func (g *RelayGateway) abortRuns(cause error) {
+	g.mu.Lock()
+	runs := make([]*relayRun, 0, len(g.pending))
+	for _, run := range g.pending {
+		runs = append(runs, run)
+	}
+	g.mu.Unlock()
+	for _, run := range runs {
+		run.finish(Event{Kind: EventRunFailed, Err: cause})
+	}
+}
+
+func (g *RelayGateway) removeRun(run *relayRun) {
+	g.mu.Lock()
+	if g.pending[run.chatID] == run {
+		delete(g.pending, run.chatID)
+	}
+	g.mu.Unlock()
+	if g.config.Videos != nil {
+		g.config.Videos.Release(videoScope(run))
+		g.deleteRunVideoJobs(run.request.RunID)
+	}
+}
+
+func (g *RelayGateway) interruptBySession(sessionKey string) {
+	if strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	g.mu.Lock()
+	runs := make([]*relayRun, 0, len(g.pending))
+	for _, run := range g.pending {
+		if sessionKey == relaySessionKey(run.request, run.chatID) {
+			runs = append(runs, run)
+		}
+	}
+	g.mu.Unlock()
+	for _, run := range runs {
+		run.cancel()
+	}
+}
+
+func (g *RelayGateway) authorized(header string, now time.Time) bool {
+	if g.config.SharedSecret == "" {
+		return true
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(header, prefix)))
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(string(decoded), ":")
+	if len(parts) < 3 {
+		return false
+	}
+	signature := parts[len(parts)-1]
+	expiresRaw := parts[len(parts)-2]
+	payload := strings.Join(parts[:len(parts)-2], ":")
+	if payload != g.config.GatewayID {
+		return false
+	}
+	expires, err := strconv.ParseInt(expiresRaw, 10, 64)
+	if err != nil || (expires != 0 && now.Unix() > expires) {
+		return false
+	}
+	provided, err := hex.DecodeString(signature)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(g.config.SharedSecret))
+	_, _ = mac.Write([]byte(payload + ":" + expiresRaw))
+	return hmac.Equal(provided, mac.Sum(nil))
+}
+
+func (r *relayRun) emit(event Event) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finished {
+		return false
+	}
+	r.enqueueLocked(event)
+	return true
+}
+
+func (r *relayRun) finish(event Event) {
+	r.mu.Lock()
+	if r.finished {
+		r.mu.Unlock()
+		return
+	}
+	r.completeLocked(event)
+	r.mu.Unlock()
+	r.engine.removeRun(r)
+}
+
+func (r *relayRun) send(_ context.Context, command Command) error {
+	if command.RunID != "" && command.RunID != r.request.RunID {
+		return errors.New("agent command run_id mismatch")
+	}
+	switch command.Kind {
+	case CommandCancel:
+		r.cancel()
+		return nil
+	case CommandToolResult, CommandRevise:
+		return ErrCommandUnsupported
+	default:
+		return fmt.Errorf("unsupported agent command %q", command.Kind)
+	}
+}
