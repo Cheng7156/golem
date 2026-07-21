@@ -225,7 +225,7 @@ func TestStickerCapabilityAllowsMultipleSelections(t *testing.T) {
 	}
 }
 
-func TestRelayNeverAcceptsObservationTokenForDirectReply(t *testing.T) {
+func TestRelayRejectsObservationTokenForDirectReply(t *testing.T) {
 	fixture := newStickerRelayFixture(t, "[direct]\nmessage: hello")
 	defer fixture.close(t)
 
@@ -238,8 +238,8 @@ func TestRelayNeverAcceptsObservationTokenForDirectReply(t *testing.T) {
 	})
 	result := readRelayFrame(t, fixture.connection)
 	body, _ := result["result"].(map[string]any)
-	if body["success"] != false {
-		t.Fatalf("direct observation token was accepted: %#v", result)
+	if body["success"] != false || body["error"] != "observation is not valid for an addressed message" {
+		t.Fatalf("direct observation token was not rejected: %#v", result)
 	}
 }
 

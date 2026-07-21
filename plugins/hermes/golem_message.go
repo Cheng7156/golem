@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golem_plugin_hermes/internal/domain"
 
@@ -107,18 +108,63 @@ func messageText(msg *message.Message) string {
 		return text.GetContent()
 	}
 	if app := msg.GetApp(); app != nil {
-		if app.GetTitle() != "" {
-			return app.GetTitle()
-		}
-		return app.GetDesc()
+		return appMessageText(app)
 	}
 	if msg.GetImage() != nil {
 		return "[image]"
 	}
 	if msg.GetEmoji() != nil {
+		if desc := strings.TrimSpace(msg.GetEmoji().GetDesc()); desc != "" {
+			return "[sticker: " + desc + "]"
+		}
 		return "[sticker]"
 	}
+	if voice := msg.GetVoice(); voice != nil {
+		return fmt.Sprintf("[voice message; duration_ms=%d]", voice.GetDuration())
+	}
+	if video := msg.GetVideo(); video != nil {
+		return fmt.Sprintf("[video message; duration_seconds=%d]", video.GetDuration())
+	}
+	if location := msg.GetLocation(); location != nil {
+		label := strings.TrimSpace(location.GetPoiName())
+		if label == "" {
+			label = strings.TrimSpace(location.GetLabel())
+		}
+		return fmt.Sprintf("[location: %s; latitude=%.6f; longitude=%.6f]",
+			emptyMessageValue(label), location.GetLatitude(), location.GetLongitude())
+	}
+	switch msg.GetType().GetCode() {
+	case message.TypeFile.Code:
+		return "[file: " + emptyMessageValue(msg.GetContent()) + "]"
+	case message.TypePersonalCard.Code:
+		return "[personal contact card: " + emptyMessageValue(msg.GetContent()) + "]"
+	case message.TypeBusinessCard.Code:
+		return "[business contact card: " + emptyMessageValue(msg.GetContent()) + "]"
+	case message.TypeTinyVideo.Code:
+		return "[tiny video]"
+	}
 	return msg.GetContent()
+}
+
+func appMessageText(app *message.AppData) string {
+	parts := []string{fmt.Sprintf("type=%d", app.GetSubType())}
+	if title := strings.TrimSpace(app.GetTitle()); title != "" {
+		parts = append(parts, "title="+title)
+	}
+	if desc := strings.TrimSpace(app.GetDesc()); desc != "" {
+		parts = append(parts, "description="+desc)
+	}
+	if rawURL := strings.TrimSpace(app.GetUrl()); rawURL != "" {
+		parts = append(parts, "url="+rawURL)
+	}
+	return "[application message; " + strings.Join(parts, "; ") + "]"
+}
+
+func emptyMessageValue(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return "unknown"
 }
 
 func inboundMedia(msg *message.Message) ([]domain.InboundMedia, error) {
@@ -130,6 +176,9 @@ func inboundMedia(msg *message.Message) ([]domain.InboundMedia, error) {
 		return nil, nil
 	}
 	data := append([]byte(nil), media.GetData()...)
+	if kind == "emoji" && len(data) == 0 {
+		return nil, nil
+	}
 	if len(data) > maxInboundMediaBytes {
 		return nil, errors.New("inbound media exceeds 16 MiB")
 	}
@@ -169,30 +218,67 @@ func imageDownloadSource(msg *message.Message, kind string, data []byte) ([]byte
 	return encoded, nil
 }
 
-func mentionedSelf(msg *message.Message, self *contact.SelfInfo, botNames []string) bool {
+type mentionTargets struct {
+	self   bool
+	others bool
+}
+
+func classifyMentions(msg *message.Message, self *contact.SelfInfo, botNames []string) mentionTargets {
 	identities := selfIdentities(self, botNames)
 	if text := msg.GetText(); text != nil {
+		var result mentionTargets
+		structured := false
 		for _, remind := range text.GetReminds() {
 			for _, part := range strings.FieldsFunc(remind, mentionSeparator) {
 				part = strings.TrimPrefix(strings.TrimSpace(part), "@")
+				if part == "" {
+					continue
+				}
+				structured = true
 				if containsIdentity(part, identities) {
-					return true
+					result.self = true
+				} else {
+					result.others = true
 				}
 			}
+		}
+		if structured {
+			return result
 		}
 	}
 	content := strings.ToLower(messageText(msg))
 	for _, identity := range identities {
-		if strings.Contains(content, "@"+strings.ToLower(identity)) {
-			return true
+		if containsFallbackMention(content, strings.ToLower(identity)) {
+			return mentionTargets{self: true}
 		}
 	}
-	for _, name := range botNames {
-		if name = strings.TrimSpace(name); name != "" && strings.Contains(content, strings.ToLower(name)) {
+	if strings.Contains(content, "@") {
+		return mentionTargets{others: true}
+	}
+	return mentionTargets{}
+}
+
+func containsFallbackMention(content string, identity string) bool {
+	needle := "@" + strings.TrimSpace(identity)
+	if needle == "@" {
+		return false
+	}
+	remaining := content
+	for {
+		index := strings.Index(remaining, needle)
+		if index < 0 {
+			return false
+		}
+		tail := remaining[index+len(needle):]
+		if tail == "" {
 			return true
 		}
+		next, _ := utf8.DecodeRuneInString(tail)
+		if !unicode.IsLetter(next) && !unicode.IsNumber(next) && next != '_' {
+			return true
+		}
+		remaining = tail
 	}
-	return false
 }
 
 func quotedSelf(msg *message.Message, self *contact.SelfInfo, botNames []string) bool {

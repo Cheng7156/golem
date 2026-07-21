@@ -21,6 +21,7 @@ type Message struct {
 type RunRequest struct {
 	RunID                string
 	SessionID            string
+	SessionNamespace     string
 	Principal            domain.Principal
 	Lane                 domain.Lane
 	BaseSessionVersion   uint64
@@ -35,6 +36,7 @@ type RunRequest struct {
 	ChatType             string
 	ChatName             string
 	MessageID            string
+	RequireVisibleReply  bool
 	Media                []domain.InboundMedia
 }
 

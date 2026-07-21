@@ -42,6 +42,13 @@ func (r golemMediaResolver) Resolve(
 		}
 		reader, err := r.message.Download(&source)
 		if err != nil {
+			if imageDownloadUnsupported(err) {
+				// The lib-mode host cannot materialize inbound images. Keep the
+				// structured [image] turn so Hermes can still observe or reply
+				// based on verified identity and conversation context.
+				item.DownloadSource = nil
+				continue
+			}
 			return nil, fmt.Errorf("download WeChat image: %w", err)
 		}
 		data, readErr := io.ReadAll(io.LimitReader(reader, maxInboundMediaBytes+1))
@@ -70,4 +77,8 @@ func (r golemMediaResolver) Resolve(
 		item.DownloadSource = nil
 	}
 	return resolved, nil
+}
+
+func imageDownloadUnsupported(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "DownloadImg not supported in lib mode")
 }

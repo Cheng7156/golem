@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -60,7 +61,7 @@ func normalizeBase(value *Config, defaults Config) error {
 func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 	value.SocialMode = strings.ToLower(strings.TrimSpace(value.SocialMode))
 	switch value.SocialMode {
-	case "observe", "rules", "hybrid", "agent":
+	case "observe", "rules", "mentions", "hybrid", "agent":
 	default:
 		return fmt.Errorf("不支持的 routing.social_mode: %s", value.SocialMode)
 	}
@@ -70,9 +71,54 @@ func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 	if value.DecisionTimeoutMilliseconds <= 0 {
 		value.DecisionTimeoutMilliseconds = defaults.DecisionTimeoutMilliseconds
 	}
+	if value.DecisionContextMessages <= 0 {
+		value.DecisionContextMessages = defaults.DecisionContextMessages
+	}
+	if value.DecisionContextMessages > 30 {
+		return errors.New("routing.decision_context_messages 不能大于 30")
+	}
+	value.DecisionBaseURL = strings.TrimRight(strings.TrimSpace(value.DecisionBaseURL), "/")
+	if value.DecisionBaseURL != "" {
+		parsed, err := url.Parse(value.DecisionBaseURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return errors.New("routing.decision_base_url 必须是有效 HTTPS URL")
+		}
+	}
+	value.DecisionModel = strings.TrimSpace(value.DecisionModel)
+	value.DecisionAPIKeyEnv = strings.TrimSpace(value.DecisionAPIKeyEnv)
+	if value.DecisionAPIKeyEnv == "" {
+		value.DecisionAPIKeyEnv = defaults.DecisionAPIKeyEnv
+	}
+	if !environmentNamePattern.MatchString(value.DecisionAPIKeyEnv) {
+		return errors.New("routing.decision_api_key_env 不是有效的环境变量名")
+	}
+	value.DecisionEnvironmentFile = strings.TrimSpace(value.DecisionEnvironmentFile)
+	if value.DecisionEnvironmentFile != "" {
+		value.DecisionEnvironmentFile = filepath.Clean(value.DecisionEnvironmentFile)
+		if value.DecisionEnvironmentFile == "." {
+			return errors.New("routing.decision_environment_file 不能是目录")
+		}
+	}
+	if value.SocialMode == "hybrid" && (value.DecisionBaseURL == "" || value.DecisionModel == "") {
+		return errors.New("routing.social_mode=hybrid 需要 decision_base_url 和 decision_model")
+	}
 	if value.OrdinaryFreshnessSeconds <= 0 {
 		value.OrdinaryFreshnessSeconds = defaults.OrdinaryFreshnessSeconds
 	}
+	if value.CoalesceWindowMilliseconds <= 0 {
+		value.CoalesceWindowMilliseconds = defaults.CoalesceWindowMilliseconds
+	}
+	if value.AmbientCooldownSeconds <= 0 {
+		value.AmbientCooldownSeconds = defaults.AmbientCooldownSeconds
+	}
+	if value.AmbientWindowSeconds <= 0 {
+		value.AmbientWindowSeconds = defaults.AmbientWindowSeconds
+	}
+	if value.AmbientMaxReplies <= 0 {
+		value.AmbientMaxReplies = defaults.AmbientMaxReplies
+	}
+	value.AutomatedSpeakerNames = normalizeStrings(value.AutomatedSpeakerNames)
+	value.AutomatedSpeakerIDs = normalizeStrings(value.AutomatedSpeakerIDs)
 	return nil
 }
 
@@ -119,6 +165,7 @@ func normalizeAgent(value *AgentConfig, defaults AgentConfig) error {
 	if value.RelayPath == "/" {
 		value.RelayPath = defaults.RelayPath
 	}
+	value.RelaySessionNamespace = strings.TrimSpace(value.RelaySessionNamespace)
 	value.SilenceRulesFile = strings.TrimSpace(value.SilenceRulesFile)
 	if value.SilenceRulesFile != "" {
 		value.SilenceRulesFile = filepath.Clean(value.SilenceRulesFile)

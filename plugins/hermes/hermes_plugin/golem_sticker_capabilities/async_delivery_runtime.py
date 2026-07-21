@@ -184,28 +184,30 @@ def _patch_injection(runner_class: Any) -> None:
     if getattr(original, _PATCH_MARKER, False):
         return
 
-    async def wrapped(self: Any, synth_text: str, evt: Dict[str, Any]) -> None:
+    async def wrapped(self: Any, synth_text: str, evt: Dict[str, Any]) -> Any:
         if evt.get("type") != "async_delegation":
-            await original(self, synth_text, evt)
-            return
+            return await original(self, synth_text, evt)
         delegation_id = _completion_delegation_id(evt)
         if delegation_id is None:
-            return
+            return True
         state = await asyncio.to_thread(
             wait_registration, delegation_id, client._timeout_seconds()
         )
         if state is None:
             logger.error("dropping orphan async completion %s", delegation_id)
-            return
+            _acknowledge_terminal_completion(delegation_id)
+            return True
         if state.status == "registering":
             await _requeue_completion(evt)
             logger.error("async completion registration timed out for %s", delegation_id)
             return
         if cron_async_delegation.consume_internal_completion(state, delegation_id):
-            return
+            _acknowledge_terminal_completion(delegation_id)
+            return True
         if state.status != "ready" or state.binding is None:
             logger.error("dropping unregistered async completion %s", delegation_id)
-            return
+            _acknowledge_terminal_completion(delegation_id)
+            return True
         try:
             ticket_state = await asyncio.to_thread(delivery_status, state.binding)
         except RetryableCapabilityError:
@@ -215,20 +217,33 @@ def _patch_injection(runner_class: Any) -> None:
         except CapabilityError as exc:
             mark_failed(delegation_id, str(exc))
             logger.exception("dropping invalid async delivery %s", delegation_id)
-            return
+            _acknowledge_terminal_completion(delegation_id)
+            return True
         if ticket_state != "pending":
             logger.info("dropping inactive async completion %s", delegation_id)
-            return
+            _acknowledge_terminal_completion(delegation_id)
+            return True
         delivery_token = current_delivery.set(state.binding)
         event_token = current_completion_event.set(dict(evt))
         try:
-            await original(self, synth_text, evt)
+            return await original(self, synth_text, evt)
         finally:
             current_completion_event.reset(event_token)
             current_delivery.reset(delivery_token)
 
     setattr(wrapped, _PATCH_MARKER, True)
     runner_class._inject_watch_notification = wrapped
+
+
+def _acknowledge_terminal_completion(delegation_id: str) -> None:
+    try:
+        from tools.async_delegation import mark_completion_delivered
+
+        mark_completion_delivered(delegation_id)
+    except Exception:
+        logger.exception(
+            "could not acknowledge terminal async completion %s", delegation_id
+        )
 
 
 def _completion_delegation_id(evt: Dict[str, Any]) -> str | None:

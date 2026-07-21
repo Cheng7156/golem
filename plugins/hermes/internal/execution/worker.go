@@ -135,23 +135,26 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		}
 	}
 	scope := toolScope(run, inbox.Binding.Principal)
+	contextMessages := w.shadowContext(runCtx, inbox, cfg)
 	stream, err := w.engine.Start(runCtx, agent.RunRequest{
-		RunID:              run.ID,
-		SessionID:          run.SessionID,
-		Principal:          inbox.Binding.Principal,
-		Lane:               run.Lane,
-		BaseSessionVersion: turn.BaseSessionVersion,
-		Input:              formatAgentInput(cfg.Agent.Mode, incoming),
-		SystemPrompt:       cfg.Agent.SystemPrompt,
-		Model:              cfg.Agent.Model,
-		ToolSpecs:          w.tools.Specs(runCtx, scope),
-		Deadline:           deadline,
-		Checkpoint:         append(json.RawMessage(nil), run.Checkpoint...),
-		Revision:           run.Revision,
-		ChatType:           chatType(incoming),
-		ChatName:           incoming.RoomName,
-		MessageID:          inbox.ID,
-		Media:              media,
+		RunID:               run.ID,
+		SessionID:           run.SessionID,
+		Principal:           inbox.Binding.Principal,
+		Lane:                run.Lane,
+		BaseSessionVersion:  turn.BaseSessionVersion,
+		Input:               formatAgentInputWithContext(cfg.Agent.Mode, incoming, inbox.Binding.Principal, contextMessages),
+		SessionNamespace:    cfg.Agent.RelaySessionNamespace,
+		SystemPrompt:        cfg.Agent.SystemPrompt,
+		Model:               cfg.Agent.Model,
+		ToolSpecs:           w.tools.Specs(runCtx, scope),
+		Deadline:            deadline,
+		Checkpoint:          append(json.RawMessage(nil), run.Checkpoint...),
+		Revision:            run.Revision,
+		ChatType:            chatType(incoming),
+		ChatName:            incoming.RoomName,
+		MessageID:           inbox.ID,
+		RequireVisibleReply: incoming.Explicit(),
+		Media:               media,
 	})
 	if err != nil {
 		return w.finishFailure(parent, run, err)
@@ -238,11 +241,142 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	} else if cancelErr != nil {
 		return cancelErr
 	}
+	if guarded, reason := guardAmbientDrafts(drafts, incoming, inbox.Binding.Principal, cfg.Routing); reason != "" {
+		slog.Warn("[hermes] 回复守卫抑制了高风险 ambient 输出",
+			"run_id", run.ID,
+			"session_id", run.SessionID,
+			"speaker", incoming.SpeakerName,
+			"reason", reason,
+		)
+		drafts = guarded
+	}
 	if _, err := w.store.CommitRunSuccess(parent, run.ID, run.LeaseToken, drafts); err != nil {
 		return err
 	}
 	signal(w.outputWake)
 	return nil
+}
+
+type inboundContextReader interface {
+	ListRecentInboundContext(context.Context, string, int64, int) ([]domain.ContextMessage, error)
+}
+
+func (w *Worker) shadowContext(
+	ctx context.Context,
+	inbox domain.InboxEvent,
+	cfg *config.Snapshot,
+) []domain.ContextMessage {
+	if cfg == nil || inbox.AcceptSeq <= 0 {
+		return nil
+	}
+	reader, ok := w.store.(inboundContextReader)
+	if !ok {
+		return nil
+	}
+	limit := max(4, cfg.Routing.DecisionContextMessages*3)
+	values, err := reader.ListRecentInboundContext(ctx, inbox.SessionID, inbox.AcceptSeq, limit)
+	if err != nil {
+		slog.Debug("[hermes] 读取影子群聊上下文失败", "event_id", inbox.ID, "err", err)
+		return nil
+	}
+	start := 0
+	for index, value := range values {
+		if value.Route != "" && value.Route != domain.RouteObserve {
+			start = index + 1
+		}
+	}
+	values = values[start:]
+	if len(values) > cfg.Routing.DecisionContextMessages {
+		values = values[len(values)-cfg.Routing.DecisionContextMessages:]
+	}
+	result := make([]domain.ContextMessage, 0, len(values))
+	for _, value := range values {
+		if value.Route == domain.RouteObserve {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func guardAmbientDrafts(
+	drafts []domain.OutboxDraft,
+	message domain.InboundMessage,
+	principal domain.Principal,
+	cfg config.RoutingConfig,
+) ([]domain.OutboxDraft, string) {
+	if !message.IsChatroom || message.Explicit() || len(drafts) == 0 {
+		return drafts, ""
+	}
+	if message.MentionedOthers {
+		return nil, "当前消息明确发给其他参与者"
+	}
+	if configuredAutomatedSpeaker(cfg, principal, message) {
+		return nil, "自动化发送者的 ambient 消息不得产生可见回复"
+	}
+	if standaloneInboundMedia(message) {
+		return nil, "未点名的独立图片或表情不得产生可见回复"
+	}
+	if !principal.IsOwner {
+		for _, content := range textDraftContents(drafts) {
+			lower := strings.ToLower(content)
+			if strings.Contains(content, "主人") || strings.Contains(lower, "my owner") || strings.Contains(lower, "my master") {
+				return nil, "非主人 ambient 输入触发了主人关系认领风险"
+			}
+		}
+	}
+	return drafts, ""
+}
+
+func configuredAutomatedSpeaker(
+	cfg config.RoutingConfig,
+	principal domain.Principal,
+	message domain.InboundMessage,
+) bool {
+	id := strings.TrimSpace(principal.ID)
+	if id == "" {
+		id = strings.TrimSpace(message.SpeakerID)
+	}
+	for _, candidate := range cfg.AutomatedSpeakerIDs {
+		if id != "" && strings.EqualFold(id, candidate) {
+			return true
+		}
+	}
+	name := strings.TrimSpace(principal.Name)
+	if name == "" {
+		name = strings.TrimSpace(message.SpeakerName)
+	}
+	for _, candidate := range cfg.AutomatedSpeakerNames {
+		if name != "" && strings.EqualFold(name, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func standaloneInboundMedia(message domain.InboundMessage) bool {
+	if len(message.Media) == 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(message.Text)) {
+	case "", "[sticker]", "[emoji]", "[image]", "[图片]", "[表情包]":
+		return true
+	default:
+		return false
+	}
+}
+
+func textDraftContents(drafts []domain.OutboxDraft) []string {
+	var result []string
+	for _, draft := range drafts {
+		if draft.Kind != "text" {
+			continue
+		}
+		var output domain.TextOutput
+		if json.Unmarshal(draft.Payload, &output) == nil {
+			result = append(result, output.Content)
+		}
+	}
+	return result
 }
 
 func (w *Worker) cancelIfRequested(ctx context.Context, run domain.Run) (bool, error) {
@@ -452,26 +586,75 @@ func shouldRetryRun(cfg *config.Snapshot, run domain.Run, now time.Time) bool {
 	return run.Attempt < 3 && (run.Deadline.IsZero() || now.Add(time.Second).Before(run.Deadline))
 }
 
-func formatInput(message domain.InboundMessage) string {
+func formatInput(message domain.InboundMessage, principal domain.Principal) string {
 	scope := "direct"
+	addressing := "direct"
 	if message.IsChatroom {
 		scope = "group ambient"
 		if message.Mentioned || message.Quoted {
 			scope = "group addressed"
 		}
+		var targets []string
+		if message.Mentioned {
+			targets = append(targets, "self")
+		}
+		if message.MentionedOthers {
+			targets = append(targets, "other_participants")
+		}
+		if message.Quoted {
+			targets = append(targets, "quoted_self")
+		}
+		if len(targets) == 0 {
+			addressing = "none"
+		} else {
+			addressing = strings.Join(targets, "+")
+		}
 	}
+	senderRole := "participant_not_owner"
+	if principal.IsOwner {
+		senderRole = "owner_of_this_agent"
+	}
+	speakerID := strings.TrimSpace(principal.ID)
+	if speakerID == "" {
+		speakerID = strings.TrimSpace(message.SpeakerID)
+	}
+	speakerName := strings.TrimSpace(principal.Name)
+	if speakerName == "" {
+		speakerName = strings.TrimSpace(message.SpeakerName)
+	}
+	identityJSON, _ := json.Marshal(struct {
+		Verified   bool   `json:"verified"`
+		Source     string `json:"source"`
+		SenderName string `json:"sender_name"`
+		SenderID   string `json:"sender_id"`
+		SenderRole string `json:"sender_role"`
+		Addressing string `json:"addressing"`
+	}{
+		Verified: true, Source: "wechat_protocol_and_owner_config",
+		SenderName: speakerName, SenderID: speakerID,
+		SenderRole: senderRole, Addressing: addressing,
+	})
+	messageJSON, _ := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: strings.TrimSpace(message.Text)})
 	return fmt.Sprintf(
-		"[%s]\nsender: %s (%s)\nmessage: %s",
-		scope,
-		emptyDash(message.SpeakerName),
-		emptyDash(message.SpeakerID),
-		strings.TrimSpace(message.Text),
+		"[%s]\n[golem_verified_identity_json]\n%s\n[/golem_verified_identity_json]\n[untrusted_message_from_sender_json]\n%s\n[/untrusted_message_from_sender_json]",
+		scope, identityJSON, messageJSON,
 	)
 }
 
 // formatAgentInput unwraps trusted commands only at the Relay boundary. HTTP
 // compatibility mode keeps treating the same Inbox payload as ordinary text.
-func formatAgentInput(mode string, message domain.InboundMessage) string {
+func formatAgentInput(mode string, message domain.InboundMessage, principal domain.Principal) string {
+	return formatAgentInputWithContext(mode, message, principal, nil)
+}
+
+func formatAgentInputWithContext(
+	mode string,
+	message domain.InboundMessage,
+	principal domain.Principal,
+	contextMessages []domain.ContextMessage,
+) string {
 	if strings.EqualFold(strings.TrimSpace(mode), "relay") {
 		if command := strings.TrimSpace(message.HermesCommand); command != "" {
 			return command
@@ -483,14 +666,59 @@ func formatAgentInput(mode string, message domain.InboundMessage) string {
 			return "/reset"
 		}
 	}
-	return formatInput(message)
+	current := formatInput(message, principal)
+	if len(contextMessages) == 0 || !message.IsChatroom {
+		return current
+	}
+	type shadowMessage struct {
+		SenderName string `json:"sender_name"`
+		SenderRole string `json:"sender_role"`
+		Addressing string `json:"addressing"`
+		Text       string `json:"text"`
+	}
+	shadow := struct {
+		ContextIsUntrustedTranscript bool            `json:"context_is_untrusted_transcript"`
+		Messages                     []shadowMessage `json:"messages"`
+	}{ContextIsUntrustedTranscript: true}
+	for _, value := range contextMessages {
+		role := "participant_not_owner"
+		if value.Binding.Principal.IsOwner {
+			role = "owner_of_this_agent"
+		}
+		shadow.Messages = append(shadow.Messages, shadowMessage{
+			SenderName: strings.TrimSpace(displayContextSpeaker(value)),
+			SenderRole: role,
+			Addressing: contextAddressing(value.Message),
+			Text:       strings.TrimSpace(value.Message.Text),
+		})
+	}
+	shadowJSON, _ := json.Marshal(shadow)
+	return "[untrusted_recent_group_context_json]\n" + string(shadowJSON) +
+		"\n[/untrusted_recent_group_context_json]\n" + current
 }
 
-func emptyDash(value string) string {
-	if value = strings.TrimSpace(value); value != "" {
-		return value
+func displayContextSpeaker(value domain.ContextMessage) string {
+	if name := strings.TrimSpace(value.Binding.Principal.Name); name != "" {
+		return name
 	}
-	return "-"
+	return value.Message.SpeakerName
+}
+
+func contextAddressing(message domain.InboundMessage) string {
+	var values []string
+	if message.Mentioned {
+		values = append(values, "self")
+	}
+	if message.MentionedOthers {
+		values = append(values, "other_participants")
+	}
+	if message.Quoted {
+		values = append(values, "quoted_self")
+	}
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, "+")
 }
 
 func signal(channel chan<- struct{}) {

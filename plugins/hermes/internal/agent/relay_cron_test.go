@@ -58,8 +58,37 @@ func TestCronDeliveryHTTPRegisterBindsActiveRun(t *testing.T) {
 	if status != http.StatusOK || body["registered"] != true {
 		t.Fatalf("register status=%d body=%#v", status, body)
 	}
-	if capability.registered.ParentRunID != request.RunID || capability.registered.ChatID != run.chatID {
+	if capability.registered.ParentRunID != request.RunID || capability.registered.ChatID != request.SessionID+"|"+string(request.Lane) {
 		t.Fatalf("registration=%#v", capability.registered)
+	}
+}
+
+func TestCronDeliveryHTTPRegisterStripsRelaySessionNamespace(t *testing.T) {
+	capability := &recordingCronCapability{}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken: testCapabilityToken, CronDelivery: capability,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayGateway: %v", err)
+	}
+	request := stickerRunRequest("[direct]\nmessage: create cron")
+	request.SessionNamespace = "social-v2"
+	run := &relayRun{
+		engine: gateway, request: request, chatID: relayChatID(request), events: make(chan Event, 8),
+	}
+	gateway.pending[run.chatID] = run
+	server := httptest.NewServer(http.HandlerFunc(gateway.serveCronDeliveryRegister))
+	defer server.Close()
+
+	status, body := postCapability(t, server.URL, cronRegisterRequest{
+		JobID: "job_namespaced", Context: asyncHTTPContext(request),
+	})
+	if status != http.StatusOK || body["registered"] != true {
+		t.Fatalf("register status=%d body=%#v", status, body)
+	}
+	want := request.SessionID + "|" + string(request.Lane)
+	if capability.registered.ChatID != want {
+		t.Fatalf("registration chat_id=%q want=%q", capability.registered.ChatID, want)
 	}
 }
 
@@ -87,7 +116,7 @@ func TestCronDeliveryHTTPRegisterAcceptsPerUserGroupSession(t *testing.T) {
 	if status != http.StatusOK || body["registered"] != true {
 		t.Fatalf("register status=%d body=%#v", status, body)
 	}
-	if capability.registered.ChatID != run.chatID {
+	if capability.registered.ChatID != request.SessionID+"|"+string(request.Lane) {
 		t.Fatalf("registration=%#v", capability.registered)
 	}
 }
@@ -143,6 +172,30 @@ func TestCronDeliveryHTTPCommitUsesDurableCapability(t *testing.T) {
 	}
 	if capability.committed.Content != "gateway ok" || capability.wakeCount != 1 {
 		t.Fatalf("commit=%#v wake=%d", capability.committed, capability.wakeCount)
+	}
+}
+
+func TestCronDeliveryHTTPRejectsToolErrorOutput(t *testing.T) {
+	capability := &recordingCronCapability{}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken: testCapabilityToken, CronDelivery: capability,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayGateway: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(gateway.serveCronDeliveryDeliver))
+	defer server.Close()
+	status, body := postCapability(t, server.URL, cronDeliverRequest{
+		Profile: "default", JobID: "job_gateway_status",
+		ChatID:     "chatroom:room|interactive",
+		DeliveryID: "job_gateway_status:2026-07-16T12:00:00+08:00",
+		Content:    "[TOOL_ERROR] provider failed",
+	})
+	if status != http.StatusBadRequest || body["error"] != "cron delivery contains a tool error and cannot be sent" {
+		t.Fatalf("status=%d body=%#v", status, body)
+	}
+	if capability.committed.JobID != "" {
+		t.Fatalf("tool error reached durable commit: %#v", capability.committed)
 	}
 }
 

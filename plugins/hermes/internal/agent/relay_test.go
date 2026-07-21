@@ -113,6 +113,19 @@ func TestRelayGatewayRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRelayChatIDUsesSessionNamespace(t *testing.T) {
+	request := RunRequest{
+		SessionID: "chatroom:room-1", SessionNamespace: "social-v2", Lane: domain.LaneInteractive,
+	}
+	if got, want := relayChatID(request), "social-v2|chatroom:room-1|interactive"; got != want {
+		t.Fatalf("relayChatID=%q want=%q", got, want)
+	}
+	request.SessionNamespace = ""
+	if got, want := relayChatID(request), "chatroom:room-1|interactive"; got != want {
+		t.Fatalf("relayChatID without namespace=%q want=%q", got, want)
+	}
+}
+
 func TestRelayRunWaitingForGatewayCanBeCancelled(t *testing.T) {
 	gateway, err := NewRelayGateway(RelayConfig{})
 	if err != nil {
@@ -261,6 +274,58 @@ func TestRelayObserveTokenCompletesWithoutReplyProposal(t *testing.T) {
 	completed, err := stream.Recv(context.Background())
 	if err != nil || completed.Kind != EventRunCompleted || completed.Proposal != nil || completed.Text != "" {
 		t.Fatalf("completed event=%#v err=%v", completed, err)
+	}
+}
+
+func TestRelayExplicitObserveTokenIsRejected(t *testing.T) {
+	tests := []struct {
+		name     string
+		chatType string
+		session  string
+	}{
+		{name: "addressed group", chatType: "group", session: "chatroom:room-1"},
+		{name: "private", chatType: "dm", session: "private:user-1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gateway, err := NewRelayGateway(RelayConfig{})
+			if err != nil {
+				t.Fatalf("NewRelayGateway: %v", err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(gateway.serveRelay))
+			defer server.Close()
+			connection, _, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			defer connection.Close(websocket.StatusNormalClosure, "test complete")
+
+			writeRelayFrame(t, connection, map[string]any{"type": "hello", "platform": "relay", "botId": "golem"})
+			_ = readRelayFrame(t, connection)
+			request := RunRequest{
+				RunID: "run-explicit-" + test.name, SessionID: test.session, Lane: domain.LaneInteractive,
+				Principal: domain.Principal{ID: "user-1"}, Input: "say something", ChatType: test.chatType,
+				RequireVisibleReply: true,
+			}
+			stream, err := gateway.Start(context.Background(), request)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer stream.Close()
+			_ = readRelayFrame(t, connection)
+			writeRelayFrame(t, connection, map[string]any{
+				"type": "outbound", "requestId": "request-observe-explicit",
+				"action": map[string]any{
+					"op": "send", "chat_id": relayChatID(request), "content": relayObserveToken,
+					"metadata": map[string]any{"notify": true},
+				},
+			})
+			result := readRelayFrame(t, connection)
+			body, _ := result["result"].(map[string]any)
+			if body["success"] != false || body["error"] != "observation is not valid for an addressed message" {
+				t.Fatalf("explicit observe result=%#v", result)
+			}
+		})
 	}
 }
 

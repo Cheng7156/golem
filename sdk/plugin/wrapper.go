@@ -657,5 +657,10 @@ func (s *server) SetConfig(ctx context.Context, req *SetConfig_Request) (*SetCon
 	if err := toml.Unmarshal(req.Data, field.Addr().Interface()); err != nil {
 		return &SetConfig_Response{Result: false}, err
 	}
+	if handler, ok := s.impl.(ConfigChangeHandler); ok {
+		if err := handler.OnConfigChange(); err != nil {
+			return &SetConfig_Response{Result: false}, err
+		}
+	}
 	return &SetConfig_Response{Result: true}, nil
 }

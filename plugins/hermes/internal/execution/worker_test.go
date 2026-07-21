@@ -270,6 +270,9 @@ func TestRelayWorkerIgnoresLegacyAbsoluteDeadline(t *testing.T) {
 		if !request.Deadline.IsZero() {
 			t.Fatalf("Relay request inherited connector deadline: %v", request.Deadline)
 		}
+		if !request.RequireVisibleReply {
+			t.Fatal("private Relay request did not require a visible reply")
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Relay engine was not started")
 	}

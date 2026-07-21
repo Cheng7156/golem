@@ -86,7 +86,7 @@ display:
 
 相同开关也启用 Hermes `0.18.2` cron 主动投递。cron 创建时必须处于真实 Golem Relay Turn，插件把 `job_id` 绑定到当前微信会话；触发结果经 Bearer 鉴权的 capability HTTP 直接进入 Transactional Outbox，不要求 active Run，也不放宽普通 Relay orphan send。升级前创建的 cron 没有该绑定，必须删除后从目标微信会话重新创建。
 
-自然群聊模式还要求插件侧 `routing.social_mode = "agent"`。`group_sessions_per_user: false` 让同一微信群共享 Hermes 上下文；普通消息标记为 ambient，Hermes 自主决定参与或返回内部观察标记。观察标记由 Connector 消化为无 Outbox 的成功完成，不会发到微信。`rules` 模式才保留传统的仅私聊/@/引用触发行为。
+推荐使用插件侧 `routing.social_mode = "hybrid"`。`group_sessions_per_user: false` 让同一微信群共享 Hermes 上下文；普通消息先经过快速规则和独立 SocialDecider，观察消息会进入影子上下文，值得参与时才运行 Hermes。`agent` 保留全部普通消息直接交给 Hermes 的完全自主模式，`mentions` 则只处理私聊、@机器人或引用机器人。
 
 插件 `0.4.2` 起，Relay 模式忽略 Golem `agent.timeout_seconds`，不再用墙钟 Deadline 提前放弃仍在运行的 Hermes Turn。任务活性由 Hermes `agent.gateway_timeout`（无活动超时，`0` 表示无限）管理；Relay 断线会保留 Run 并退避重试。插件内部失败只写 SQLite 和日志，不再生成 `The request failed temporarily. Please try again later.` 之类的微信聊天回复。
 

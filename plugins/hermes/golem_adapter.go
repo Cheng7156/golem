@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"golem_plugin_hermes/internal/domain"
 
@@ -15,9 +16,25 @@ import (
 func (p *HermesPlugin) GetSubscriptions() []string {
 	return []string{
 		message.TypeText.Topic,
-		message.TypeAppQuote.Topic,
 		message.TypeImage.Topic,
+		message.TypeFile.Topic,
+		message.TypeVoice.Topic,
+		message.TypePersonalCard.Topic,
+		message.TypeVideo.Topic,
 		message.TypeEmoji.Topic,
+		message.TypeLocation.Topic,
+		message.TypeApplication.Topic,
+		message.TypeAppNote.Topic,
+		message.TypeAppMiniapp.Topic,
+		message.TypeAppFileNotify.Topic,
+		message.TypeAppFileAttach.Topic,
+		message.TypeAppChatRecord.Topic,
+		message.TypeAppMusic.Topic,
+		message.TypeAppLink.Topic,
+		message.TypeAppQuote.Topic,
+		message.TypeAppFinder.Topic,
+		message.TypeTinyVideo.Topic,
+		message.TypeBusinessCard.Topic,
 	}
 }
 
@@ -67,16 +84,18 @@ func (p *HermesPlugin) normalizeMessage(
 		return domain.InboxEvent{}, false, nil
 	}
 	occurredAt := messageTime(msg.GetTimestamp())
+	mentions := classifyMentions(msg, self, botNames)
 	incoming := domain.InboundMessage{
-		Text:        text,
-		IsChatroom:  speaker.chatroom,
-		Mentioned:   mentionedSelf(msg, self, botNames),
-		Quoted:      quotedSelf(msg, self, botNames),
-		SpeakerID:   speaker.id,
-		SpeakerName: speaker.name,
-		RoomName:    speaker.roomName,
-		OccurredAt:  occurredAt,
-		Media:       media,
+		Text:            text,
+		IsChatroom:      speaker.chatroom,
+		Mentioned:       mentions.self,
+		MentionedOthers: mentions.others,
+		Quoted:          quotedSelf(msg, self, botNames),
+		SpeakerID:       speaker.id,
+		SpeakerName:     speaker.name,
+		RoomName:        speaker.roomName,
+		OccurredAt:      occurredAt,
+		Media:           media,
 	}
 	inbox, err := newWechatInboxEvent(msg, speaker, incoming)
 	if err != nil {
@@ -87,9 +106,9 @@ func (p *HermesPlugin) normalizeMessage(
 
 func (p *HermesPlugin) identitySnapshot() (*contact.SelfInfo, string) {
 	p.identityMu.RLock()
-	self, ownerID := p.self, p.ownerID
+	self, ownerID, updatedAt := p.self, p.ownerID, p.identityUpdatedAt
 	p.identityMu.RUnlock()
-	if self != nil {
+	if self != nil && time.Since(updatedAt) < identityRefreshTTL {
 		return self, ownerID
 	}
 	p.refreshIdentity()
@@ -98,16 +117,32 @@ func (p *HermesPlugin) identitySnapshot() (*contact.SelfInfo, string) {
 	return p.self, p.ownerID
 }
 
+const identityRefreshTTL = 30 * time.Second
+
 func (p *HermesPlugin) refreshIdentity() {
 	if p.contact == nil {
 		return
 	}
+	p.identityRefreshMu.Lock()
+	defer p.identityRefreshMu.Unlock()
+	p.identityMu.RLock()
+	fresh := p.self != nil && time.Since(p.identityUpdatedAt) < identityRefreshTTL
+	p.identityMu.RUnlock()
+	if fresh {
+		return
+	}
 	self := p.contact.GetSelf()
 	owner := p.contact.GetOwner()
+	ownerID := strings.TrimSpace(owner.GetUsername())
 	p.identityMu.Lock()
 	if self != nil {
 		p.self = proto.Clone(self).(*contact.SelfInfo)
 	}
-	p.ownerID = strings.TrimSpace(owner.GetUsername())
+	if ownerID != "" {
+		p.ownerID = ownerID
+	}
+	if self != nil || ownerID != "" {
+		p.identityUpdatedAt = time.Now()
+	}
 	p.identityMu.Unlock()
 }

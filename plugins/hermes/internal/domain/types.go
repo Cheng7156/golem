@@ -14,16 +14,17 @@ type Principal struct {
 }
 
 type InboundMessage struct {
-	Text          string         `json:"text"`
-	HermesCommand string         `json:"hermes_command,omitempty"`
-	IsChatroom    bool           `json:"is_chatroom"`
-	Mentioned     bool           `json:"mentioned"`
-	Quoted        bool           `json:"quoted"`
-	SpeakerID     string         `json:"speaker_id"`
-	SpeakerName   string         `json:"speaker_name,omitempty"`
-	RoomName      string         `json:"room_name,omitempty"`
-	OccurredAt    time.Time      `json:"occurred_at"`
-	Media         []InboundMedia `json:"media,omitempty"`
+	Text            string         `json:"text"`
+	HermesCommand   string         `json:"hermes_command,omitempty"`
+	IsChatroom      bool           `json:"is_chatroom"`
+	Mentioned       bool           `json:"mentioned"`
+	MentionedOthers bool           `json:"mentioned_others,omitempty"`
+	Quoted          bool           `json:"quoted"`
+	SpeakerID       string         `json:"speaker_id"`
+	SpeakerName     string         `json:"speaker_name,omitempty"`
+	RoomName        string         `json:"room_name,omitempty"`
+	OccurredAt      time.Time      `json:"occurred_at"`
+	Media           []InboundMedia `json:"media,omitempty"`
 }
 
 type InboundMedia struct {
@@ -93,6 +94,14 @@ type InboxEvent struct {
 	Payload    json.RawMessage
 	Status     InboxStatus
 	AcceptSeq  int64
+}
+
+type ContextMessage struct {
+	AcceptSeq  int64
+	OccurredAt time.Time
+	Binding    ChannelBinding
+	Message    InboundMessage
+	Route      Route
 }
 
 func (e InboxEvent) Validate() error {

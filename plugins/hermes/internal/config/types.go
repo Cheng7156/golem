@@ -65,10 +65,21 @@ type IngressConfig struct {
 }
 
 type RoutingConfig struct {
-	SocialMode                  string  `toml:"social_mode"`
-	SampleRate                  float64 `toml:"sample_rate"`
-	DecisionTimeoutMilliseconds int     `toml:"decision_timeout_milliseconds"`
-	OrdinaryFreshnessSeconds    int     `toml:"ordinary_freshness_seconds"`
+	SocialMode                  string   `toml:"social_mode"`
+	SampleRate                  float64  `toml:"sample_rate"`
+	DecisionTimeoutMilliseconds int      `toml:"decision_timeout_milliseconds"`
+	DecisionContextMessages     int      `toml:"decision_context_messages"`
+	DecisionBaseURL             string   `toml:"decision_base_url,omitempty"`
+	DecisionModel               string   `toml:"decision_model,omitempty"`
+	DecisionAPIKeyEnv           string   `toml:"decision_api_key_env,omitempty"`
+	DecisionEnvironmentFile     string   `toml:"decision_environment_file,omitempty"`
+	OrdinaryFreshnessSeconds    int      `toml:"ordinary_freshness_seconds"`
+	CoalesceWindowMilliseconds  int      `toml:"coalesce_window_milliseconds"`
+	AmbientCooldownSeconds      int      `toml:"ambient_cooldown_seconds"`
+	AmbientWindowSeconds        int      `toml:"ambient_window_seconds"`
+	AmbientMaxReplies           int      `toml:"ambient_max_replies"`
+	AutomatedSpeakerNames       []string `toml:"automated_speaker_names,omitempty"`
+	AutomatedSpeakerIDs         []string `toml:"automated_speaker_ids,omitempty"`
 }
 
 type SchedulerConfig struct {
@@ -81,18 +92,19 @@ type SchedulerConfig struct {
 }
 
 type AgentConfig struct {
-	Mode                 string `toml:"mode" comment:"Agent Runtime：relay 或 http"`
-	RelayListen          string `toml:"relay_listen" comment:"Hermes Gateway relay connector 监听地址"`
-	RelayPath            string `toml:"relay_path" comment:"Hermes Gateway relay WebSocket 路径"`
-	SilenceRulesFile     string `toml:"silence_rules_file,omitempty" comment:"Relay 群聊静默回复规则文件；运行时热读取"`
-	AsyncDeliveryEnabled bool   `toml:"async_delivery_enabled" comment:"是否启用 Hermes 后台子代理持久异步回流"`
-	RelayGatewayID       string `toml:"relay_gateway_id,omitempty" comment:"Hermes Gateway 鉴权 ID"`
-	RelaySharedSecret    string `toml:"relay_shared_secret,omitempty" comment:"Hermes Gateway relay HMAC 密钥"`
-	BaseURL              string `toml:"base_url,omitempty" comment:"HTTP 兼容模式接口地址"`
-	APIKey               string `toml:"api_key,omitempty" comment:"HTTP 兼容模式密钥"`
-	Model                string `toml:"model,omitempty" comment:"HTTP 兼容模式 Agent 模型"`
-	SystemPrompt         string `toml:"system_prompt,omitempty" comment:"HTTP 兼容模式系统提示词"`
-	TimeoutSeconds       int    `toml:"timeout_seconds" comment:"HTTP 兼容模式单个 Run 超时秒数；relay 由 Hermes gateway_timeout 管理"`
+	Mode                  string `toml:"mode" comment:"Agent Runtime：relay 或 http"`
+	RelayListen           string `toml:"relay_listen" comment:"Hermes Gateway relay connector 监听地址"`
+	RelayPath             string `toml:"relay_path" comment:"Hermes Gateway relay WebSocket 路径"`
+	RelaySessionNamespace string `toml:"relay_session_namespace,omitempty" comment:"Relay 会话命名空间；修改后无损创建新 Hermes 会话"`
+	SilenceRulesFile      string `toml:"silence_rules_file,omitempty" comment:"Relay 群聊静默回复规则文件；运行时热读取"`
+	AsyncDeliveryEnabled  bool   `toml:"async_delivery_enabled" comment:"是否启用 Hermes 后台子代理持久异步回流"`
+	RelayGatewayID        string `toml:"relay_gateway_id,omitempty" comment:"Hermes Gateway 鉴权 ID"`
+	RelaySharedSecret     string `toml:"relay_shared_secret,omitempty" comment:"Hermes Gateway relay HMAC 密钥"`
+	BaseURL               string `toml:"base_url,omitempty" comment:"HTTP 兼容模式接口地址"`
+	APIKey                string `toml:"api_key,omitempty" comment:"HTTP 兼容模式密钥"`
+	Model                 string `toml:"model,omitempty" comment:"HTTP 兼容模式 Agent 模型"`
+	SystemPrompt          string `toml:"system_prompt,omitempty" comment:"HTTP 兼容模式系统提示词"`
+	TimeoutSeconds        int    `toml:"timeout_seconds" comment:"HTTP 兼容模式单个 Run 超时秒数；relay 由 Hermes gateway_timeout 管理"`
 }
 
 type OutputConfig struct {

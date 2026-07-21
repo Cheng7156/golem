@@ -214,10 +214,19 @@ reorder_window_milliseconds = 120
 durable_accept_timeout_milliseconds = 100
 
 [hermes.config.routing]
-social_mode = "agent"
+social_mode = "hybrid"
 sample_rate = 1.0
-decision_timeout_milliseconds = 800
-ordinary_freshness_seconds = 5
+decision_timeout_milliseconds = 2500
+decision_context_messages = 10
+decision_base_url = "https://open.bigmodel.cn/api/paas/v4"
+decision_model = "glm-4.5-air"
+decision_api_key_env = "GLM_API_KEY"
+decision_environment_file = "/root/.hermes/.env"
+ordinary_freshness_seconds = 8
+coalesce_window_milliseconds = 900
+ambient_cooldown_seconds = 20
+ambient_window_seconds = 60
+ambient_max_replies = 2
 
 [hermes.config.scheduler]
 router_workers = 2
@@ -231,6 +240,7 @@ max_active_sessions = 512
 mode = "relay"
 relay_listen = "127.0.0.1:8789"
 relay_path = "/relay"
+relay_session_namespace = "social-v2"
 silence_rules_file = "/opt/software/wechat/data/hermes/workspace/silence-rules.txt"
 async_delivery_enabled = true
 
@@ -248,7 +258,9 @@ send_jitter_milliseconds = 250
 
 说明：
 
-- `social_mode = "agent"` 表示所有群消息都先持久化，再交给 Hermes 结合共享群聊上下文与自身兴趣决定是否自然参与；@/引用只作为 `group addressed` 信号，不是硬门槛。
+- `social_mode = "hybrid"` 表示所有群消息先持久化；明确 @/引用直接处理，普通群聊先经过本地快速过滤与独立 SocialDecider，只有值得参与的消息才运行 Hermes。被观察的消息仍会作为后续影子上下文。
+- `social_mode = "agent"` 表示所有群消息直接交给 Hermes 自主决定，保留完全 Agent 化行为，但调用量和误参与风险更高。
+- `social_mode = "mentions"` 表示私聊照常处理，群聊只把结构化 @机器人、文本 `@别名` 或引用机器人的消息交给 Hermes；仅 @其他参与者的消息不会进入 Hermes。
 - `relay_path` 应保持 `/relay`。Hermes 官方 Gateway 会把 base URL 规范化到 `/relay`。
 - `data_dir` 相对于 Host 工作目录。生产环境推荐改为双方都能访问的绝对路径。
 - `delivery_semantics` 当前只支持 `at_least_once`。发送结果不确定时可能重复，但不会静默丢弃已提交回复。
@@ -323,14 +335,19 @@ HMAC 防止未授权 Gateway 接入，但不替代 TLS。
 | `bot_names` | `["hermes"]` | 群聊中识别 @/称呼的别名 |
 | `ingress.reorder_window_milliseconds` | `120` | 普通消息短窗口重排时间 |
 | `ingress.durable_accept_timeout_milliseconds` | `100` | OnEvent 等待 Inbox 持久化的上限 |
-| `routing.social_mode` | `agent` | `agent` 让 Hermes 自主参与；`rules` 仅处理私聊/@/引用；`observe` 只观察普通群聊；`hybrid` 预留给独立 SocialDecider，未注入时安全降级观察 |
+| `routing.social_mode` | `agent` | `hybrid` 用快速规则、独立 SocialDecider、影子上下文和频控实现受控自主参与；`agent` 将普通群聊直接交给 Hermes；`mentions` 仅处理私聊、@机器人或引用机器人；`rules`/`observe` 观察普通群聊 |
 | `routing.sample_rate` | `1.0` | SocialDecider 的确定性采样率 |
+| `routing.decision_timeout_milliseconds` | `1800` | hybrid 模式独立 SocialDecider 的硬超时；生产配置可设为 `2500`，失败时安全降级观察 |
+| `routing.coalesce_window_milliseconds` | `900` | 普通群聊等待同一发送者续句的短合并窗口 |
+| `routing.ambient_cooldown_seconds` | `20` | 同一群两次自主参与之间的最短间隔 |
+| `routing.ambient_max_replies` | `2` | 滑动窗口内最多自主参与次数 |
 | `scheduler.interactive_workers` | `4` | 短对话 worker 数量 |
 | `scheduler.job_workers` | `2` | 长任务 worker 数量 |
 | `scheduler.tool_workers` | `8` | Go Capability Broker 全局并发上限 |
 | `agent.mode` | `relay` | 推荐 `relay`；`http` 仅作兼容模式 |
 | `agent.relay_listen` | `127.0.0.1:8789` | Golem connector 监听地址 |
 | `agent.relay_path` | `/relay` | 官方 Gateway WebSocket 路径 |
+| `agent.relay_session_namespace` | 空 | Relay 会话命名空间；变更后创建新 Hermes 会话而不删除旧历史 |
 | `agent.silence_rules_file` | 空 | 可热更新的群聊静默回复规则文件；仅支持 `exact:`、`prefix:`、`suffix:` |
 | `agent.async_delivery_enabled` | `false` | 为 Hermes `0.18.2` 后台子代理启用稳定票据与 Transactional Outbox 回流 |
 | `agent.timeout_seconds` | `120` | 仅用于 `http` 兼容模式的墙钟超时；`relay` 模式忽略该值，由 Hermes `agent.gateway_timeout` 管理活性 |

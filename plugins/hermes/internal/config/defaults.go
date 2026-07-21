@@ -12,8 +12,14 @@ func Default() Config {
 		Routing: RoutingConfig{
 			SocialMode:                  "agent",
 			SampleRate:                  1,
-			DecisionTimeoutMilliseconds: 800,
-			OrdinaryFreshnessSeconds:    5,
+			DecisionTimeoutMilliseconds: 1800,
+			DecisionContextMessages:     10,
+			DecisionAPIKeyEnv:           "GLM_API_KEY",
+			OrdinaryFreshnessSeconds:    8,
+			CoalesceWindowMilliseconds:  900,
+			AmbientCooldownSeconds:      20,
+			AmbientWindowSeconds:        60,
+			AmbientMaxReplies:           2,
 		},
 		Scheduler: SchedulerConfig{
 			RouterWorkers:              2,

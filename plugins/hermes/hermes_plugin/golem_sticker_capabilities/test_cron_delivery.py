@@ -146,6 +146,24 @@ class CronDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(payload["chat_id"], "room-1|interactive")
 
+    def test_tool_error_output_is_not_delivered(self):
+        scheduler = _Scheduler()
+        job = {
+            "id": "job-1",
+            "origin": {"platform": "relay", "chat_id": "room-1|interactive"},
+            "deliver": "origin",
+            "next_run_at": "2026-07-16T12:00:00+08:00",
+            "golem_cron_profile": "default",
+        }
+        with mock.patch.object(
+            cron_delivery.cron_delivery_api, "direct_output_count", return_value=0
+        ), mock.patch.object(cron_delivery.client, "post_json") as posted:
+            cron_delivery._patch_deliver_result(scheduler)
+            error = scheduler._deliver_result(job, "[TOOL_ERROR] provider failed")
+
+        self.assertEqual(error, "Golem cron delivery refused tool error output")
+        posted.assert_not_called()
+
     def test_manual_run_gets_unique_delivery_identity(self):
         tools = _CronTools()
         cron_delivery._patch_execute_now(tools)

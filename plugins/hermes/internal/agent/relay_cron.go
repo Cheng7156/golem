@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -81,9 +82,14 @@ func cronRegistration(
 	input cronRegisterRequest,
 	run *relayRun,
 ) (domain.CronDeliveryRegistration, error) {
+	// Relay chat IDs may carry a session namespace (for example social-v2),
+	// while durable Golem runs and cron bindings use the canonical session|lane
+	// identity. capabilityRun already proved that the namespaced context belongs
+	// to this run, so persist the canonical ID derived from the verified run.
+	chatID := run.request.SessionID + "|" + string(run.request.Lane)
 	value := domain.CronDeliveryRegistration{
 		Profile: strings.TrimSpace(input.Context.Profile),
-		JobID:   strings.TrimSpace(input.JobID), ChatID: strings.TrimSpace(input.Context.ChatID),
+		JobID:   strings.TrimSpace(input.JobID), ChatID: chatID,
 		ParentRunID: run.request.RunID,
 	}
 	return value, value.Validate()
@@ -116,6 +122,9 @@ func (g *RelayGateway) serveCronDeliveryDeliver(w http.ResponseWriter, request *
 
 func cronCommit(input cronDeliverRequest) (domain.CronDeliveryCommit, error) {
 	content := unwrapHermesPlainTextFallback(input.Content)
+	if strings.Contains(content, "[TOOL_ERROR]") {
+		return domain.CronDeliveryCommit{}, errors.New("cron delivery contains a tool error and cannot be sent")
+	}
 	visible, _, err := newRelayTextProposal(content)
 	if err != nil {
 		return domain.CronDeliveryCommit{}, err

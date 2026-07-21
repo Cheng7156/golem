@@ -139,6 +139,8 @@ def _patch_deliver_result(scheduler: Any) -> None:
                 return None
         except CapabilityError as exc:
             return f"Golem cron direct delivery status failed: {exc}"
+        if "[TOOL_ERROR]" in str(content or ""):
+            return "Golem cron delivery refused tool error output"
         del adapters, loop
         payload = {
             "profile": profile,

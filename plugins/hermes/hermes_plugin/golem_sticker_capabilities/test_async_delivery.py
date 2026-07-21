@@ -125,6 +125,23 @@ class AsyncDeliveryTests(unittest.TestCase):
         self.assertEqual(calls[0][2], binding())
         self.assertIsNone(calls[1][2])
 
+    def test_real_completion_preserves_original_acceptance_result(self):
+        class Runner:
+            async def _inject_watch_notification(self, _text, _evt):
+                return True
+
+        runtime._patch_injection(Runner)
+        state.mark_ready(binding())
+        with mock.patch.object(runtime, "delivery_status", return_value="pending"):
+            accepted = asyncio.run(
+                Runner()._inject_watch_notification(
+                    "done",
+                    {"type": "async_delegation", "delegation_id": "deleg_1234abcd"},
+                )
+            )
+
+        self.assertIs(accepted, True)
+
     def test_inactive_completion_is_not_injected(self):
         called = []
 

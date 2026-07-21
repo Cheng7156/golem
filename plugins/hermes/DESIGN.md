@@ -289,12 +289,13 @@ Job 饱和时不会占用 Interactive 的保留容量。
 - @ 机器人直接进入 Interactive。
 - 引用机器人直接进入 Interactive。
 
-只有普通群聊消息需要 Social Router。支持四种配置模式：
+只有普通群聊消息需要 Social Router。支持五种配置模式：
 
 | 模式 | 行为 |
 | --- | --- |
 | observe | 只记录，不调用决策模型 |
 | rules | 仅使用本地规则 |
+| mentions | 私聊照常处理；群聊仅 @机器人或引用机器人时调用 Hermes，@其他人保持观察 |
 | hybrid | 本地规则过滤后调用决策 Agent |
 | agent | 每条合格普通群消息调用决策 Agent |
 
@@ -761,10 +762,17 @@ SDK Ability 使用同步调用。Golem Adapter 优先从注入的 message.Client
     durable_accept_timeout_milliseconds = 100
 
     [hermes.config.routing]
-    social_mode = "agent"
+    social_mode = "hybrid"
     sample_rate = 1.0
-    decision_timeout_milliseconds = 800
-    ordinary_freshness_seconds = 5
+    decision_timeout_milliseconds = 2500
+    decision_context_messages = 10
+    decision_base_url = "https://open.bigmodel.cn/api/paas/v4"
+    decision_model = "glm-4.5-air"
+    ordinary_freshness_seconds = 8
+    coalesce_window_milliseconds = 900
+    ambient_cooldown_seconds = 20
+    ambient_window_seconds = 60
+    ambient_max_replies = 2
 
     [hermes.config.scheduler]
     router_workers = 2

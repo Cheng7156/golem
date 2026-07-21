@@ -6,6 +6,10 @@
 *.dylib
 *.bak
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # jetbrains
 .idea
 

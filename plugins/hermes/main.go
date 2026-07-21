@@ -33,9 +33,11 @@ type HermesPlugin struct {
 	commands    *plugin.CommandRegistry
 	commandErr  error
 
-	identityMu sync.RWMutex
-	self       *contact.SelfInfo
-	ownerID    string
+	identityMu        sync.RWMutex
+	identityRefreshMu sync.Mutex
+	self              *contact.SelfInfo
+	ownerID           string
+	identityUpdatedAt time.Time
 }
 
 func newHermesPlugin() *HermesPlugin {
@@ -53,7 +55,7 @@ func (p *HermesPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "hermes",
 		Author:      "Golem Team",
-		Version:     "0.7.4",
+		Version:     "0.8.0",
 		Description: "事件驱动、可恢复、全异步的 Hermes 对话内核",
 		Priority:    1<<31 - 2,
 		Next:        false,
@@ -75,6 +77,43 @@ func (p *HermesPlugin) OnUnload() error {
 
 func (p *HermesPlugin) OnDisable() error {
 	return p.stop()
+}
+
+func (p *HermesPlugin) OnConfigChange() error {
+	cfg, err := config.Normalize(p.Config)
+	if err != nil {
+		return fmt.Errorf("规范化热重载 Hermes 配置: %w", err)
+	}
+	p.lifecycleMu.Lock()
+	manager := p.config
+	if manager == nil {
+		p.lifecycleMu.Unlock()
+		return nil
+	}
+	current := manager.Current()
+	if current != nil && socialDeciderStaticConfigChanged(current.Routing, cfg.Routing) {
+		p.lifecycleMu.Unlock()
+		return errors.New("routing SocialDecider 的 endpoint/model/key/context 配置已变化，需要 reload Hermes 插件")
+	}
+	snapshot, err := manager.Publish(cfg)
+	p.lifecycleMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("发布热重载 Hermes 配置: %w", err)
+	}
+	slog.Info("[hermes] 运行时配置已生效",
+		"version", snapshot.Version,
+		"social_mode", snapshot.Routing.SocialMode,
+		"sample_rate", snapshot.Routing.SampleRate,
+	)
+	return nil
+}
+
+func socialDeciderStaticConfigChanged(current, next config.RoutingConfig) bool {
+	return current.DecisionBaseURL != next.DecisionBaseURL ||
+		current.DecisionModel != next.DecisionModel ||
+		current.DecisionAPIKeyEnv != next.DecisionAPIKeyEnv ||
+		current.DecisionEnvironmentFile != next.DecisionEnvironmentFile ||
+		current.DecisionContextMessages != next.DecisionContextMessages
 }
 
 func (p *HermesPlugin) start() error {

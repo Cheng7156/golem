@@ -183,7 +183,11 @@ func (a runtimeAssembly) createRunners() ([]app.Runner, *ingress.Processor, erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Hermes capability broker: %w", err)
 	}
-	router, err := routing.NewRulesRouter(a.manager.Current, nil)
+	social, err := buildSocialDecider(a.config, a.store)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Hermes SocialDecider: %w", err)
+	}
+	router, err := routing.NewRulesRouter(a.manager.Current, social, a.store)
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建 Hermes Router: %w", err)
 	}

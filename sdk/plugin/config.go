@@ -26,6 +26,12 @@ type ConfigAbility[T any] struct {
 	hostSave func(pluginName string, data []byte) error // 宿主注入，不导出
 }
 
+// ConfigChangeHandler lets a running plugin publish newly injected config to
+// long-lived runtime components. The host calls it after Config is replaced.
+type ConfigChangeHandler interface {
+	OnConfigChange() error
+}
+
 // SaveConfig 保存插件配置到宿主
 func (c *ConfigAbility[T]) SaveConfig(p Plugin) error {
 	if c.hostSave == nil {
