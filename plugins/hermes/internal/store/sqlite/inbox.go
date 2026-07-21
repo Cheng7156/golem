@@ -63,6 +63,41 @@ func (s *Store) AcceptInbox(ctx context.Context, event domain.InboxEvent) (domai
 		inserted = rows == 1
 		query := `SELECT ` + inboxColumns + ` FROM inbox_events WHERE dedupe_key=? OR id=? ORDER BY accept_seq LIMIT 1`
 		stored, err = scanInbox(tx.QueryRowContext(ctx, query, event.DedupeKey, event.ID))
+		if err != nil {
+			return err
+		}
+		var contextExists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM context_outbox WHERE event_id=?`, stored.ID).Scan(&contextExists); err != nil {
+			return err
+		}
+		if contextExists != 0 {
+			return nil
+		}
+		observation, err := domain.NewConversationObservation(stored)
+		if err != nil {
+			return fmt.Errorf("build conversation observation: %w", err)
+		}
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(conversation_seq),0)+1 FROM context_outbox WHERE conversation_id=?`,
+			observation.ConversationID,
+		).Scan(&observation.ConversationSeq); err != nil {
+			return err
+		}
+		if err := domain.FinalizeObservationHash(&observation); err != nil {
+			return err
+		}
+		observationJSON, err := json.Marshal(observation)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO context_outbox(
+				id,conversation_id,accept_seq,conversation_seq,event_id,payload_hash,observation_json,state,attempt,
+				lease_token,lease_until,next_attempt_at,last_error,created_at,updated_at
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`, observation.ObservationID, observation.ConversationID, observation.AcceptSeq, observation.ConversationSeq,
+			stored.ID, observation.PayloadHash, observationJSON, domain.ContextPending, 0, "", 0,
+			unixMillis(stored.AcceptedAt), "", unixMillis(stored.AcceptedAt), unixMillis(stored.AcceptedAt))
 		return err
 	})
 	if err != nil {

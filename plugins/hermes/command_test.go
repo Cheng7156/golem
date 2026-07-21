@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golem_plugin_hermes/internal/config"
 	"golem_plugin_hermes/internal/domain"
@@ -37,10 +38,47 @@ func TestHermesCommandSchemaAndChineseHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnCommand(help): %v", err)
 	}
-	for _, expected := range []string{"仅机器人所有者可用", "/hermes status", "/hermes personality"} {
+	for _, expected := range []string{"仅机器人所有者可用", "/hermes status", "/hermes personality", "/hermes observations repair current"} {
 		if !strings.Contains(result, expected) {
 			t.Errorf("help missing %q:\n%s", expected, result)
 		}
+	}
+}
+
+func TestOwnerCanRepairCurrentObservationConversationLocally(t *testing.T) {
+	p, store := newCommandTestPlugin(t)
+	ctx := context.Background()
+	now := time.Now()
+	event := domain.InboxEvent{ID: "event-observation-repair", DedupeKey: "wechat/message/observation-repair",
+		Topic: "message.text", SessionID: "private:" + commandTestOwner, OccurredAt: now,
+		Binding: domain.ChannelBinding{Channel: "wechat", SessionID: "private:" + commandTestOwner,
+			ReceiverID: commandTestOwner, Principal: domain.Principal{ID: commandTestOwner, IsOwner: true}},
+		Payload: json.RawMessage(`{"text":"hello"}`)}
+	if _, inserted, err := store.AcceptInbox(ctx, event); err != nil || !inserted {
+		t.Fatalf("AcceptInbox inserted=%v err=%v", inserted, err)
+	}
+	batch, err := store.LeaseNextObservationBatch(ctx, now.Add(time.Second), time.Minute, 8)
+	if err != nil {
+		t.Fatalf("LeaseNextObservationBatch: %v", err)
+	}
+	if err := store.MarkObservationBatchTerminal(ctx, batch, domain.ContextConflict, "conflict"); err != nil {
+		t.Fatalf("MarkObservationBatchTerminal: %v", err)
+	}
+
+	result, err := p.OnCommand(privateHermesCommand("observations", "repair", "current"))
+	if err != nil {
+		t.Fatalf("OnCommand(observations repair): %v", err)
+	}
+	if !strings.Contains(result, "已校验并重排") || !strings.Contains(result, "未跳过序号") {
+		t.Fatalf("repair result=%q", result)
+	}
+	status, err := store.ObservationMaintenanceStatus(ctx)
+	if err != nil || status.Conflict != 0 || status.RetryWait != 1 {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+	events := acceptedCommandEvents(t, store)
+	if len(events) != 1 || events[0].ID != event.ID {
+		t.Fatalf("local maintenance unexpectedly forwarded an Inbox command: %#v", events)
 	}
 }
 

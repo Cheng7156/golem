@@ -287,3 +287,22 @@ func TestNormalizeRejectsStickerCapabilityOutsideRelayMode(t *testing.T) {
 		t.Fatal("expected non-relay sticker capability to be rejected")
 	}
 }
+
+func TestNormalizeRejectsProjectionLimitsAboveRelayContract(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{name: "raw messages", mutate: func(value *config.Config) { value.Context.RecentRawMessages = 201 }},
+		{name: "token budget", mutate: func(value *config.Config) { value.Context.MaxProjectionTokens = 65537 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := config.Default()
+			test.mutate(&value)
+			if _, err := config.Normalize(value); err == nil {
+				t.Fatal("expected projection limit validation error")
+			}
+		})
+	}
+}

@@ -38,6 +38,15 @@ func (s *Store) CreateRun(ctx context.Context, value domain.Run) (domain.Run, er
 	if value.Revision < 0 {
 		return domain.Run{}, errors.New("Run revision 不能为负数")
 	}
+	if value.ConversationID != "" && (value.CurrentObservationID == "" || value.RequiredContextSeq <= 0) {
+		return domain.Run{}, errors.New("Run observation context is incomplete")
+	}
+	if value.TriggerKind == "" && value.ConversationID != "" {
+		value.TriggerKind = domain.TriggerAmbient
+	}
+	if value.InvocationID == "" && value.ConversationID != "" {
+		value.InvocationID = fmt.Sprintf("invoke_v1:%s:%d", value.ID, value.Revision)
+	}
 	if len(value.Checkpoint) > 0 && !json.Valid(value.Checkpoint) {
 		return domain.Run{}, errors.New("Run checkpoint 不是有效 JSON")
 	}
@@ -59,8 +68,9 @@ func (s *Store) CreateRun(ctx context.Context, value domain.Run) (domain.Run, er
 			INSERT INTO runs(
 				id,turn_id,session_id,lane,state,revision,attempt,lease_token,
 				lease_until,deadline,next_attempt_at,checkpoint_json,last_error,
-				created_at,updated_at
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+					created_at,updated_at,conversation_id,current_observation_id,
+					current_payload_hash,required_context_seq,trigger_kind,invocation_id
+				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		`,
 			value.ID,
 			value.TurnID,
@@ -77,6 +87,12 @@ func (s *Store) CreateRun(ctx context.Context, value domain.Run) (domain.Run, er
 			value.LastError,
 			unixMillis(value.CreatedAt),
 			unixMillis(value.UpdatedAt),
+			value.ConversationID,
+			value.CurrentObservationID,
+			value.CurrentPayloadHash,
+			value.RequiredContextSeq,
+			value.TriggerKind,
+			value.InvocationID,
 		)
 		return err
 	})

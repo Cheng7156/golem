@@ -75,13 +75,15 @@ func scanTurn(row scanner) (domain.Turn, error) {
 const runColumns = `
 r.id,r.turn_id,r.session_id,r.lane,r.state,r.revision,r.attempt,
 r.lease_token,r.lease_until,r.deadline,r.next_attempt_at,r.checkpoint_json,
-r.last_error,r.created_at,r.updated_at
+r.last_error,r.created_at,r.updated_at,r.conversation_id,r.current_observation_id,
+r.current_payload_hash,r.required_context_seq,r.trigger_kind,r.invocation_id
 `
 
 const directRunColumns = `
 id,turn_id,session_id,lane,state,revision,attempt,
 lease_token,lease_until,deadline,next_attempt_at,checkpoint_json,
-last_error,created_at,updated_at
+last_error,created_at,updated_at,conversation_id,current_observation_id,
+current_payload_hash,required_context_seq,trigger_kind,invocation_id
 `
 
 func scanRun(row scanner) (domain.Run, error) {
@@ -104,6 +106,12 @@ func scanRun(row scanner) (domain.Run, error) {
 		&value.LastError,
 		&createdAt,
 		&updatedAt,
+		&value.ConversationID,
+		&value.CurrentObservationID,
+		&value.CurrentPayloadHash,
+		&value.RequiredContextSeq,
+		&value.TriggerKind,
+		&value.InvocationID,
 	); err != nil {
 		return domain.Run{}, mapScanError(err)
 	}

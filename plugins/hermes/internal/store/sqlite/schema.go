@@ -219,3 +219,40 @@ CREATE TABLE IF NOT EXISTS cron_delivery_direct_outputs (
 CREATE INDEX IF NOT EXISTS idx_cron_direct_delivery
   ON cron_delivery_direct_outputs(binding_id, delivery_id, created_at);
 `
+
+const schemaV7 = `
+CREATE TABLE IF NOT EXISTS context_outbox (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  accept_seq INTEGER NOT NULL,
+  conversation_seq INTEGER NOT NULL,
+  event_id TEXT NOT NULL UNIQUE REFERENCES inbox_events(id),
+  payload_hash TEXT NOT NULL,
+  observation_json BLOB NOT NULL,
+  state TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT NOT NULL DEFAULT '',
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(conversation_id, conversation_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_context_outbox_sched
+  ON context_outbox(state, next_attempt_at, conversation_id, conversation_seq);
+CREATE INDEX IF NOT EXISTS idx_context_outbox_barrier
+  ON context_outbox(conversation_id, conversation_seq, state);
+
+CREATE TABLE IF NOT EXISTS relay_run_results (
+  proposal_id TEXT PRIMARY KEY,
+  invocation_id TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+  result_kind TEXT NOT NULL,
+  result_hash TEXT NOT NULL,
+  outbox_ids_json BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_result_invocation_proposal
+  ON relay_run_results(invocation_id, proposal_id);
+`

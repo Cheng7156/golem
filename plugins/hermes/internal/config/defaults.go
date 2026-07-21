@@ -21,6 +21,9 @@ func Default() Config {
 			AmbientWindowSeconds:        60,
 			AmbientMaxReplies:           2,
 		},
+		Context: ContextConfig{
+			Mode: "legacy_shadow", Backfill: "from_now", RecentRawMessages: 10, MaxProjectionTokens: 4000,
+		},
 		Scheduler: SchedulerConfig{
 			RouterWorkers:              2,
 			InteractiveWorkers:         4,

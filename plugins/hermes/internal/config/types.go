@@ -6,10 +6,18 @@ type Config struct {
 	BotNames             []string         `toml:"bot_names,omitempty" comment:"群聊中识别机器人的名称或别名"`
 	Ingress              IngressConfig    `toml:"ingress" comment:"输入持久化与重排配置"`
 	Routing              RoutingConfig    `toml:"routing" comment:"普通群聊路由配置"`
+	Context              ContextConfig    `toml:"context" comment:"Hermes 会话上下文投影配置"`
 	Scheduler            SchedulerConfig  `toml:"scheduler" comment:"有界并发与会话容量配置"`
 	Agent                AgentConfig      `toml:"agent" comment:"Agent Engine 配置"`
 	Output               OutputConfig     `toml:"output" comment:"至少一次发送与重试配置"`
 	Capabilities         CapabilityConfig `toml:"capabilities" comment:"由 Hermes Agent 自主调用的扩展能力"`
+}
+
+type ContextConfig struct {
+	Mode                string `toml:"mode" comment:"legacy_shadow、full 或 none"`
+	Backfill            string `toml:"backfill" comment:"当前仅支持 from_now"`
+	RecentRawMessages   int    `toml:"recent_raw_messages"`
+	MaxProjectionTokens int    `toml:"max_projection_tokens"`
 }
 
 type CapabilityConfig struct {

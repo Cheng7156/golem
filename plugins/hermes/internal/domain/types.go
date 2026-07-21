@@ -142,21 +142,27 @@ type Turn struct {
 }
 
 type Run struct {
-	ID          string
-	TurnID      string
-	SessionID   string
-	Lane        Lane
-	State       RunState
-	Revision    int
-	Attempt     int
-	LeaseToken  string
-	LeaseUntil  time.Time
-	Deadline    time.Time
-	NextAttempt time.Time
-	Checkpoint  json.RawMessage
-	LastError   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                   string
+	TurnID               string
+	SessionID            string
+	Lane                 Lane
+	State                RunState
+	Revision             int
+	ConversationID       string
+	CurrentObservationID string
+	CurrentPayloadHash   string
+	RequiredContextSeq   int64
+	TriggerKind          TriggerKind
+	InvocationID         string
+	Attempt              int
+	LeaseToken           string
+	LeaseUntil           time.Time
+	Deadline             time.Time
+	NextAttempt          time.Time
+	Checkpoint           json.RawMessage
+	LastError            string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type OutboxDraft struct {

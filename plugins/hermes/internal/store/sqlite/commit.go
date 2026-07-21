@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,7 +18,19 @@ func (s *Store) CommitRunSuccess(
 	leaseToken string,
 	drafts []domain.OutboxDraft,
 ) ([]domain.OutboxItem, error) {
-	return s.commitRunOutcome(ctx, runID, leaseToken, domain.RunSucceeded, domain.TurnCompleted, domain.InboxDone, "", drafts)
+	return s.commitRunOutcome(ctx, runID, leaseToken, domain.RunSucceeded, domain.TurnCompleted, domain.InboxDone, "", nil, drafts)
+}
+
+func (s *Store) CommitRelayRunResult(ctx context.Context, runID, leaseToken string,
+	proposal domain.RelayRunResult, drafts []domain.OutboxDraft) ([]domain.OutboxItem, error) {
+	if err := proposal.Validate(); err != nil {
+		return nil, err
+	}
+	if proposal.RunID != runID {
+		return nil, storeport.ErrConflict
+	}
+	return s.commitRunOutcome(ctx, runID, leaseToken, domain.RunSucceeded, domain.TurnCompleted,
+		domain.InboxDone, "", &proposal, drafts)
 }
 
 func (s *Store) CommitRunFailure(
@@ -27,7 +40,7 @@ func (s *Store) CommitRunFailure(
 	message string,
 	drafts []domain.OutboxDraft,
 ) ([]domain.OutboxItem, error) {
-	return s.commitRunOutcome(ctx, runID, leaseToken, domain.RunFailed, domain.TurnFailed, domain.InboxFailed, message, drafts)
+	return s.commitRunOutcome(ctx, runID, leaseToken, domain.RunFailed, domain.TurnFailed, domain.InboxFailed, message, nil, drafts)
 }
 
 func (s *Store) commitRunOutcome(
@@ -38,6 +51,7 @@ func (s *Store) commitRunOutcome(
 	turnTarget domain.TurnState,
 	inboxTarget domain.InboxStatus,
 	lastError string,
+	proposal *domain.RelayRunResult,
 	drafts []domain.OutboxDraft,
 ) ([]domain.OutboxItem, error) {
 	success := runTarget == domain.RunSucceeded && turnTarget == domain.TurnCompleted && inboxTarget == domain.InboxDone
@@ -47,6 +61,25 @@ func (s *Store) commitRunOutcome(
 	}
 	var committed []domain.OutboxItem
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if proposal != nil {
+			var existing domain.RelayRunResult
+			var outboxJSON []byte
+			var createdAt int64
+			err := tx.QueryRowContext(ctx, `SELECT proposal_id,invocation_id,run_id,result_kind,result_hash,
+				outbox_ids_json,created_at FROM relay_run_results WHERE proposal_id=?`, proposal.ProposalID).Scan(
+				&existing.ProposalID, &existing.InvocationID, &existing.RunID, &existing.ResultKind,
+				&existing.ResultHash, &outboxJSON, &createdAt)
+			switch {
+			case err == nil:
+				if existing.InvocationID != proposal.InvocationID || existing.RunID != proposal.RunID ||
+					existing.ResultKind != proposal.ResultKind || existing.ResultHash != proposal.ResultHash {
+					return storeport.ErrConflict
+				}
+				return nil
+			case !errors.Is(err, sql.ErrNoRows):
+				return err
+			}
+		}
 		run, err := scanRun(tx.QueryRowContext(ctx,
 			`SELECT `+directRunColumns+` FROM runs WHERE id=?`,
 			runID,
@@ -202,6 +235,22 @@ func (s *Store) commitRunOutcome(
 				return storeport.ErrConflict
 			}
 		}
+		if proposal != nil {
+			outboxIDs := make([]string, 0, len(committed))
+			for _, item := range committed {
+				outboxIDs = append(outboxIDs, item.ID)
+			}
+			encoded, err := json.Marshal(outboxIDs)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO relay_run_results(
+					proposal_id,invocation_id,run_id,result_kind,result_hash,outbox_ids_json,created_at
+				) VALUES(?,?,?,?,?,?,?)`, proposal.ProposalID, proposal.InvocationID, run.ID,
+				proposal.ResultKind, proposal.ResultHash, encoded, unixMillis(now)); err != nil {
+				return fmt.Errorf("persist relay run result: %w", err)
+			}
+		}
 		inboxResult, err := tx.ExecContext(ctx,
 			`UPDATE inbox_events SET status=?,updated_at=? WHERE id=(SELECT event_id FROM turns WHERE id=?)`,
 			inboxTarget,
@@ -223,4 +272,26 @@ func (s *Store) commitRunOutcome(
 		return nil, err
 	}
 	return committed, nil
+}
+
+func (s *Store) GetRelayRunResult(ctx context.Context, proposalID string) (domain.RelayRunResult, error) {
+	db, err := s.readable()
+	if err != nil {
+		return domain.RelayRunResult{}, err
+	}
+	var result domain.RelayRunResult
+	var outboxJSON []byte
+	var createdAt int64
+	err = db.QueryRowContext(ctx, `SELECT proposal_id,invocation_id,run_id,result_kind,result_hash,
+		outbox_ids_json,created_at FROM relay_run_results WHERE proposal_id=?`, proposalID).Scan(
+		&result.ProposalID, &result.InvocationID, &result.RunID, &result.ResultKind, &result.ResultHash,
+		&outboxJSON, &createdAt)
+	if err != nil {
+		return domain.RelayRunResult{}, mapScanError(err)
+	}
+	if err := json.Unmarshal(outboxJSON, &result.OutboxIDs); err != nil {
+		return domain.RelayRunResult{}, err
+	}
+	result.CreatedAt = fromUnixMillis(createdAt)
+	return result, nil
 }

@@ -18,6 +18,9 @@ func Normalize(value Config) (Config, error) {
 	if err := normalizeRouting(&value.Routing, defaults.Routing); err != nil {
 		return Config{}, err
 	}
+	if err := normalizeContext(&value.Context, defaults.Context); err != nil {
+		return Config{}, err
+	}
 	if err := normalizeScheduler(&value.Scheduler, defaults.Scheduler); err != nil {
 		return Config{}, err
 	}
@@ -34,6 +37,38 @@ func Normalize(value Config) (Config, error) {
 		return Config{}, errors.New("Hermes 扩展能力只支持 agent.mode = relay")
 	}
 	return value, nil
+}
+
+func normalizeContext(value *ContextConfig, defaults ContextConfig) error {
+	value.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
+	if value.Mode == "" {
+		value.Mode = defaults.Mode
+	}
+	switch value.Mode {
+	case "legacy_shadow", "full", "none":
+	default:
+		return fmt.Errorf("不支持的 context.mode: %s", value.Mode)
+	}
+	value.Backfill = strings.ToLower(strings.TrimSpace(value.Backfill))
+	if value.Backfill == "" {
+		value.Backfill = defaults.Backfill
+	}
+	if value.Backfill != "from_now" {
+		return fmt.Errorf("context.backfill=%s 尚未安全实现；当前仅支持 from_now", value.Backfill)
+	}
+	if value.RecentRawMessages <= 0 {
+		value.RecentRawMessages = defaults.RecentRawMessages
+	}
+	if value.RecentRawMessages > 200 {
+		return errors.New("context.recent_raw_messages 不能大于 200")
+	}
+	if value.MaxProjectionTokens <= 0 {
+		value.MaxProjectionTokens = defaults.MaxProjectionTokens
+	}
+	if value.MaxProjectionTokens > 65536 {
+		return errors.New("context.max_projection_tokens 不能大于 65536")
+	}
+	return nil
 }
 
 func normalizeBase(value *Config, defaults Config) error {

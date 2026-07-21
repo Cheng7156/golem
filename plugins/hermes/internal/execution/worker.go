@@ -127,6 +127,9 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	}
 	runCtx, cancel, deadline := executionContext(parent, cfg, run, w.now())
 	defer cancel()
+	if err := w.waitContextBarrier(runCtx, run); err != nil {
+		return w.finishFailure(parent, run, fmt.Errorf("wait observation context barrier: %w", err))
+	}
 	media := append([]domain.InboundMedia(nil), incoming.Media...)
 	if w.media != nil {
 		media, err = w.media.Resolve(runCtx, media)
@@ -135,26 +138,37 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		}
 	}
 	scope := toolScope(run, inbox.Binding.Principal)
-	contextMessages := w.shadowContext(runCtx, inbox, cfg)
+	var contextMessages []domain.ContextMessage
+	if cfg.Context.Mode == "legacy_shadow" {
+		contextMessages = w.shadowContext(runCtx, inbox, cfg)
+	}
 	stream, err := w.engine.Start(runCtx, agent.RunRequest{
-		RunID:               run.ID,
-		SessionID:           run.SessionID,
-		Principal:           inbox.Binding.Principal,
-		Lane:                run.Lane,
-		BaseSessionVersion:  turn.BaseSessionVersion,
-		Input:               formatAgentInputWithContext(cfg.Agent.Mode, incoming, inbox.Binding.Principal, contextMessages),
-		SessionNamespace:    cfg.Agent.RelaySessionNamespace,
-		SystemPrompt:        cfg.Agent.SystemPrompt,
-		Model:               cfg.Agent.Model,
-		ToolSpecs:           w.tools.Specs(runCtx, scope),
-		Deadline:            deadline,
-		Checkpoint:          append(json.RawMessage(nil), run.Checkpoint...),
-		Revision:            run.Revision,
-		ChatType:            chatType(incoming),
-		ChatName:            incoming.RoomName,
-		MessageID:           inbox.ID,
-		RequireVisibleReply: incoming.Explicit(),
-		Media:               media,
+		RunID:                run.ID,
+		SessionID:            run.SessionID,
+		Principal:            inbox.Binding.Principal,
+		Lane:                 run.Lane,
+		BaseSessionVersion:   turn.BaseSessionVersion,
+		Input:                formatAgentInputWithContext(cfg.Agent.Mode, incoming, inbox.Binding.Principal, contextMessages),
+		SessionNamespace:     cfg.Agent.RelaySessionNamespace,
+		SystemPrompt:         cfg.Agent.SystemPrompt,
+		Model:                cfg.Agent.Model,
+		ToolSpecs:            w.tools.Specs(runCtx, scope),
+		Deadline:             deadline,
+		Checkpoint:           append(json.RawMessage(nil), run.Checkpoint...),
+		Revision:             run.Revision,
+		ConversationID:       run.ConversationID,
+		CurrentObservationID: run.CurrentObservationID,
+		CurrentPayloadHash:   run.CurrentPayloadHash,
+		RequiredContextSeq:   run.RequiredContextSeq,
+		TriggerKind:          run.TriggerKind,
+		InvocationID:         run.InvocationID,
+		VerifiedActor:        verifiedActor(inbox.Binding.Principal),
+		Addressing:           observationAddressing(incoming),
+		ChatType:             chatType(incoming),
+		ChatName:             incoming.RoomName,
+		MessageID:            inbox.ID,
+		RequireVisibleReply:  incoming.Explicit(),
+		Media:                media,
 	})
 	if err != nil {
 		return w.finishFailure(parent, run, err)
@@ -164,6 +178,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	var drafts []domain.OutboxDraft
 	var lastSequence uint64
 	completed := false
+	var durableResult *domain.RelayRunResult
 	for {
 		event, recvErr := stream.Recv(runCtx)
 		if recvErr != nil {
@@ -229,6 +244,11 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 			}
 			return w.finishFailure(parent, run, event.Err)
 		case agent.EventRunCompleted:
+			if event.ProposalID != "" {
+				durableResult = &domain.RelayRunResult{ProposalID: event.ProposalID,
+					InvocationID: event.InvocationID, RunID: run.ID, ResultKind: event.ResultKind,
+					ResultHash: event.ResultHash}
+			}
 			completed = true
 		}
 		if completed {
@@ -250,11 +270,64 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		)
 		drafts = guarded
 	}
-	if _, err := w.store.CommitRunSuccess(parent, run.ID, run.LeaseToken, drafts); err != nil {
+	if durableResult != nil {
+		_, err = w.store.CommitRelayRunResult(parent, run.ID, run.LeaseToken, *durableResult, drafts)
+		sendErr := stream.Send(parent, agent.Command{Kind: agent.CommandProposalResult, RunID: run.ID,
+			ProposalID: durableResult.ProposalID, Err: err})
+		if err != nil {
+			return err
+		}
+		if sendErr != nil {
+			return sendErr
+		}
+	} else if _, err := w.store.CommitRunSuccess(parent, run.ID, run.LeaseToken, drafts); err != nil {
 		return err
 	}
 	signal(w.outputWake)
 	return nil
+}
+
+type observationBarrierStore interface {
+	ObservationContextReady(context.Context, string, int64) (bool, error)
+}
+
+func (w *Worker) waitContextBarrier(ctx context.Context, run domain.Run) error {
+	observer, ok := w.engine.(agent.ObservationGateway)
+	cfg := w.config()
+	if cfg == nil || cfg.Context.Mode != "full" || !ok || !observer.SupportsObservationV2() || run.RequiredContextSeq <= 0 {
+		return nil
+	}
+	store, ok := w.store.(observationBarrierStore)
+	if !ok {
+		return errors.New("store does not support observation context barrier")
+	}
+	for {
+		ready, err := store.ObservationContextReady(ctx, run.ConversationID, run.RequiredContextSeq)
+		if err != nil || ready {
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func verifiedActor(principal domain.Principal) domain.VerifiedActor {
+	role := "participant_not_owner"
+	if principal.IsOwner {
+		role = "owner_of_this_agent"
+	}
+	return domain.VerifiedActor{ActorID: principal.ID, DisplayName: principal.Name, Role: role,
+		ActorKind: "unknown", VerifiedBy: "golem_wechat_protocol"}
+}
+
+func observationAddressing(message domain.InboundMessage) domain.Addressing {
+	return domain.Addressing{Self: message.Mentioned, Others: message.MentionedOthers,
+		QuotedSelf: message.Quoted, MentionTargetIDs: []string{}}
 }
 
 type inboundContextReader interface {
@@ -659,11 +732,13 @@ func formatAgentInputWithContext(
 		if command := strings.TrimSpace(message.HermesCommand); command != "" {
 			return command
 		}
-		switch strings.ToLower(strings.TrimSpace(message.Text)) {
-		case "hermes:new":
-			return "/new"
-		case "hermes:reset":
-			return "/reset"
+		if principal.IsOwner {
+			switch strings.ToLower(strings.TrimSpace(message.Text)) {
+			case "hermes:new":
+				return "/new"
+			case "hermes:reset":
+				return "/reset"
+			}
 		}
 	}
 	current := formatInput(message, principal)

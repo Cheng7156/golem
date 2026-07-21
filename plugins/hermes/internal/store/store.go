@@ -23,6 +23,12 @@ type Store interface {
 	GetInbox(context.Context, string) (domain.InboxEvent, error)
 	ListInbox(context.Context, domain.InboxStatus, int) ([]domain.InboxEvent, error)
 	TransitionInbox(context.Context, string, domain.InboxStatus, domain.InboxStatus) error
+	LeaseNextObservationBatch(context.Context, time.Time, time.Duration, int) (domain.ObservationBatch, error)
+	MarkObservationBatchAcked(context.Context, domain.ObservationBatch, domain.ObservationAck) error
+	MarkObservationBatchRetry(context.Context, domain.ObservationBatch, string, time.Time) error
+	MarkObservationBatchTerminal(context.Context, domain.ObservationBatch, domain.ContextOutboxState, string) error
+	ObservationContextReady(context.Context, string, int64) (bool, error)
+	GetContextOutboxByEvent(context.Context, string) (domain.ContextOutboxItem, error)
 
 	CreateTurn(context.Context, domain.Turn) (domain.Turn, error)
 	MaterializeTurn(context.Context, string, int) (domain.Turn, error)
@@ -42,6 +48,8 @@ type Store interface {
 	FailRun(context.Context, string, string, string, bool, time.Time) error
 	CommitRunSuccess(context.Context, string, string, []domain.OutboxDraft) ([]domain.OutboxItem, error)
 	CommitRunFailure(context.Context, string, string, string, []domain.OutboxDraft) ([]domain.OutboxItem, error)
+	CommitRelayRunResult(context.Context, string, string, domain.RelayRunResult, []domain.OutboxDraft) ([]domain.OutboxItem, error)
+	GetRelayRunResult(context.Context, string) (domain.RelayRunResult, error)
 	RegisterAsyncDelivery(context.Context, domain.AsyncDeliveryRegistration) (domain.AsyncDeliveryTicket, error)
 	GetAsyncDelivery(context.Context, string) (domain.AsyncDeliveryTicket, error)
 	CommitAsyncDelivery(context.Context, domain.AsyncDeliveryCommit) (domain.AsyncDeliveryResult, error)

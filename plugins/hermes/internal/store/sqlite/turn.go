@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -252,12 +253,44 @@ func (s *Store) RouteTurn(
 				CreatedAt: now,
 				UpdatedAt: now,
 			}
+			var bindingJSON, payloadJSON []byte
+			var acceptSeq int64
+			if err := tx.QueryRowContext(ctx,
+				`SELECT binding_json,payload_json,accept_seq FROM inbox_events WHERE id=?`,
+				value.EventID,
+			).Scan(&bindingJSON, &payloadJSON, &acceptSeq); err != nil {
+				return err
+			}
+			var binding domain.ChannelBinding
+			if err := json.Unmarshal(bindingJSON, &binding); err != nil {
+				return err
+			}
+			var message domain.InboundMessage
+			if err := json.Unmarshal(payloadJSON, &message); err != nil {
+				return err
+			}
+			if err := tx.QueryRowContext(ctx,
+				`SELECT id,payload_hash,conversation_id,conversation_seq FROM context_outbox WHERE event_id=?`,
+				value.EventID,
+			).Scan(&created.CurrentObservationID, &created.CurrentPayloadHash,
+				&created.ConversationID, &created.RequiredContextSeq); err != nil {
+				return err
+			}
+			_ = acceptSeq
+			created.TriggerKind = domain.TriggerAmbient
+			if route == domain.RouteControl {
+				created.TriggerKind = domain.TriggerControl
+			} else if message.Explicit() {
+				created.TriggerKind = domain.TriggerExplicit
+			}
+			created.InvocationID = fmt.Sprintf("invoke_v1:%s:%d", created.ID, created.Revision)
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO runs(
-					id,turn_id,session_id,lane,state,revision,attempt,lease_token,
-					lease_until,deadline,next_attempt_at,checkpoint_json,last_error,
-					created_at,updated_at
-				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+					INSERT INTO runs(
+						id,turn_id,session_id,lane,state,revision,attempt,lease_token,
+						lease_until,deadline,next_attempt_at,checkpoint_json,last_error,
+						created_at,updated_at,conversation_id,current_observation_id,
+						current_payload_hash,required_context_seq,trigger_kind,invocation_id
+					) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`,
 				created.ID,
 				created.TurnID,
@@ -274,6 +307,12 @@ func (s *Store) RouteTurn(
 				"",
 				unixMillis(created.CreatedAt),
 				unixMillis(created.UpdatedAt),
+				created.ConversationID,
+				created.CurrentObservationID,
+				created.CurrentPayloadHash,
+				created.RequiredContextSeq,
+				created.TriggerKind,
+				created.InvocationID,
 			); err != nil {
 				return err
 			}

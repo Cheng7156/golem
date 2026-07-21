@@ -14,6 +14,7 @@ import (
 	"golem_plugin_hermes/internal/execution"
 	"golem_plugin_hermes/internal/ingress"
 	"golem_plugin_hermes/internal/mediaobject"
+	"golem_plugin_hermes/internal/observation"
 	"golem_plugin_hermes/internal/output"
 	"golem_plugin_hermes/internal/routing"
 	sqlitestore "golem_plugin_hermes/internal/store/sqlite"
@@ -136,19 +137,23 @@ func buildRelayGateway(
 		return gatewayBuild{}, err
 	}
 	relay, err := agent.NewRelayGateway(agent.RelayConfig{
-		ListenAddress:     cfg.Agent.RelayListen,
-		Path:              cfg.Agent.RelayPath,
-		GatewayID:         cfg.Agent.RelayGatewayID,
-		SharedSecret:      cfg.Agent.RelaySharedSecret,
-		SilenceRulesFile:  cfg.Agent.SilenceRulesFile,
-		CapabilityToken:   capabilities.token,
-		Stickers:          capabilities.stickers,
-		Videos:            capabilities.videos,
-		VideoLinkFallback: cfg.Capabilities.Video.LinkFallbackEnabled,
-		AsyncDelivery:     asyncDeliveryCapability(cfg, store),
-		CronDelivery:      cronDeliveryCapability(cfg, store),
-		AsyncDeliveryWake: func() { signalWake(outputWake) },
-		MediaDirectory:    filepath.Join(cfg.DataDir, "media"),
+		ListenAddress:        cfg.Agent.RelayListen,
+		Path:                 cfg.Agent.RelayPath,
+		GatewayID:            cfg.Agent.RelayGatewayID,
+		SharedSecret:         cfg.Agent.RelaySharedSecret,
+		SilenceRulesFile:     cfg.Agent.SilenceRulesFile,
+		CapabilityToken:      capabilities.token,
+		Stickers:             capabilities.stickers,
+		Videos:               capabilities.videos,
+		VideoLinkFallback:    cfg.Capabilities.Video.LinkFallbackEnabled,
+		AsyncDelivery:        asyncDeliveryCapability(cfg, store),
+		CronDelivery:         cronDeliveryCapability(cfg, store),
+		AsyncDeliveryWake:    func() { signalWake(outputWake) },
+		MediaDirectory:       filepath.Join(cfg.DataDir, "media"),
+		RunResults:           store,
+		ObservationV2Enabled: cfg.Context.Mode == "full",
+		RecentRawMessages:    cfg.Context.RecentRawMessages,
+		MaxProjectionTokens:  cfg.Context.MaxProjectionTokens,
 	})
 	if err != nil {
 		return gatewayBuild{}, fmt.Errorf("create Hermes Gateway relay: %w", err)
@@ -200,6 +205,17 @@ func (a runtimeAssembly) createRunners() ([]app.Runner, *ingress.Processor, erro
 		return nil, nil, fmt.Errorf("创建 Hermes Ingress Processor: %w", err)
 	}
 	runners := []app.Runner{processor}
+	if observer, ok := a.engine.(agent.ObservationGateway); ok {
+		dispatcher, observeErr := observation.NewDispatcher(a.store, observer, nil)
+		if observeErr != nil {
+			return nil, nil, observeErr
+		}
+		dispatcher.SetEnabled(func() bool {
+			current := a.manager.Current()
+			return current != nil && current.Context.Mode == "full"
+		})
+		runners = append(runners, dispatcher)
+	}
 	runners, err = a.appendDispatchers(runners)
 	if err != nil {
 		return nil, nil, err

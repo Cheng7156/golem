@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golem_plugin_hermes/internal/domain"
 	storeport "golem_plugin_hermes/internal/store"
 
 	_ "modernc.org/sqlite"
@@ -82,6 +84,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, schemaV6); err != nil {
 			return fmt.Errorf("execute Hermes Cron Direct Output Schema: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, schemaV7); err != nil {
+			return fmt.Errorf("execute Hermes Observation V2 Schema: %w", err)
+		}
+		for _, column := range []struct{ name, ddl string }{
+			{"conversation_id", "TEXT NOT NULL DEFAULT ''"},
+			{"current_observation_id", "TEXT NOT NULL DEFAULT ''"},
+			{"current_payload_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"required_context_seq", "INTEGER NOT NULL DEFAULT 0"},
+			{"trigger_kind", "TEXT NOT NULL DEFAULT 'ambient'"},
+			{"invocation_id", "TEXT NOT NULL DEFAULT ''"},
+		} {
+			if err := ensureTableColumn(ctx, tx, "runs", column.name, column.ddl); err != nil {
+				return err
+			}
+		}
+		if err := backfillPendingContext(ctx, tx); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?)`,
 			unixMillis(time.Now()),
@@ -112,12 +132,109 @@ func (s *Store) migrate(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(6,?)`,
+			unixMillis(time.Now()),
+		); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(7,?)`,
 			unixMillis(time.Now()),
 		)
 		return err
 	})
+}
+
+func backfillPendingContext(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_events
+		WHERE status IN (?,?,?) ORDER BY accept_seq`, domain.InboxAccepted, domain.InboxOrdered, domain.InboxRouted)
+	if err != nil {
+		return err
+	}
+	var events []domain.InboxEvent
+	for rows.Next() {
+		event, scanErr := scanInbox(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		events = append(events, event)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, event := range events {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM context_outbox WHERE event_id=?`, event.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 0 {
+			continue
+		}
+		observation, err := domain.NewConversationObservation(event)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(conversation_seq),0)+1 FROM context_outbox WHERE conversation_id=?`,
+			observation.ConversationID).Scan(&observation.ConversationSeq); err != nil {
+			return err
+		}
+		if err := domain.FinalizeObservationHash(&observation); err != nil {
+			return err
+		}
+		payload, err := json.Marshal(observation)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO context_outbox(
+			id,conversation_id,accept_seq,conversation_seq,event_id,payload_hash,observation_json,
+			state,attempt,lease_token,lease_until,next_attempt_at,last_error,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, observation.ObservationID, observation.ConversationID,
+			observation.AcceptSeq, observation.ConversationSeq, event.ID, observation.PayloadHash, payload,
+			domain.ContextPending, 0, "", 0, unixMillis(event.AcceptedAt), "",
+			unixMillis(event.AcceptedAt), unixMillis(event.AcceptedAt)); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE runs SET
+		conversation_id=COALESCE(NULLIF(conversation_id,''),(SELECT c.conversation_id FROM turns t JOIN context_outbox c ON c.event_id=t.event_id WHERE t.id=runs.turn_id)),
+		current_observation_id=COALESCE(NULLIF(current_observation_id,''),(SELECT c.id FROM turns t JOIN context_outbox c ON c.event_id=t.event_id WHERE t.id=runs.turn_id)),
+		current_payload_hash=COALESCE(NULLIF(current_payload_hash,''),(SELECT c.payload_hash FROM turns t JOIN context_outbox c ON c.event_id=t.event_id WHERE t.id=runs.turn_id)),
+		required_context_seq=CASE WHEN required_context_seq=0 THEN COALESCE((SELECT c.conversation_seq FROM turns t JOIN context_outbox c ON c.event_id=t.event_id WHERE t.id=runs.turn_id),0) ELSE required_context_seq END,
+		invocation_id=CASE WHEN invocation_id='' AND EXISTS(SELECT 1 FROM turns t JOIN context_outbox c ON c.event_id=t.event_id WHERE t.id=runs.turn_id) THEN 'invoke_v1:'||id||':'||revision ELSE invocation_id END
+		WHERE state IN ('queued','retry_wait','leased','running','cancel_requested')`)
+	return err
+}
+
+func ensureTableColumn(ctx context.Context, tx *sql.Tx, table, name, ddl string) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var columnName, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if columnName == name {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+name+` `+ddl)
+	return err
 }
 
 func (s *Store) Close() error {

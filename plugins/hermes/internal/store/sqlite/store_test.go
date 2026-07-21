@@ -350,6 +350,33 @@ func TestRunCommitAndOutboxDeliveryAreTransactionalAndOrdered(t *testing.T) {
 	}
 }
 
+func TestRelayRunResultCommitIsIdempotentAfterRunCompleted(t *testing.T) {
+	t.Parallel()
+	value := openStore(t)
+	fixture := createRunningRun(t, value, "relay-result-idempotent")
+	ctx := context.Background()
+	proposal := domain.RelayRunResult{ProposalID: "proposal-1", InvocationID: "invoke-1",
+		RunID: fixture.run.ID, ResultKind: "visible_reply", ResultHash: "hash-1"}
+	drafts := []domain.OutboxDraft{{SessionID: fixture.event.SessionID,
+		ReceiverID: fixture.event.Binding.ReceiverID, Kind: "text", Payload: json.RawMessage(`{"content":"hello"}`)}}
+	items, err := value.CommitRelayRunResult(ctx, fixture.run.ID, fixture.run.LeaseToken, proposal, drafts)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("first CommitRelayRunResult items=%d err=%v", len(items), err)
+	}
+	if _, err := value.CommitRelayRunResult(ctx, fixture.run.ID, "lost-lease", proposal, drafts); err != nil {
+		t.Fatalf("duplicate CommitRelayRunResult after completion: %v", err)
+	}
+	conflict := proposal
+	conflict.ResultHash = "different"
+	if _, err := value.CommitRelayRunResult(ctx, fixture.run.ID, "lost-lease", conflict, drafts); !errors.Is(err, storeport.ErrConflict) {
+		t.Fatalf("conflicting duplicate error=%v, want conflict", err)
+	}
+	stored, err := value.GetRelayRunResult(ctx, proposal.ProposalID)
+	if err != nil || len(stored.OutboxIDs) != 1 || stored.OutboxIDs[0] != items[0].ID {
+		t.Fatalf("stored relay result=%#v err=%v", stored, err)
+	}
+}
+
 func TestWrongRunLeaseCannotCommitOutbox(t *testing.T) {
 	t.Parallel()
 	value := openStore(t)

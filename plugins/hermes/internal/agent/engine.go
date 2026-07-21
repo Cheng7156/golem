@@ -33,6 +33,14 @@ type RunRequest struct {
 	Deadline             time.Time
 	Checkpoint           json.RawMessage
 	Revision             int
+	ConversationID       string
+	CurrentObservationID string
+	CurrentPayloadHash   string
+	RequiredContextSeq   int64
+	TriggerKind          domain.TriggerKind
+	InvocationID         string
+	VerifiedActor        domain.VerifiedActor
+	Addressing           domain.Addressing
 	ChatType             string
 	ChatName             string
 	MessageID            string
@@ -89,14 +97,19 @@ type Event struct {
 	ToolCall      *tool.Call
 	Checkpoint    json.RawMessage
 	Err           error
+	ProposalID    string
+	InvocationID  string
+	ResultKind    string
+	ResultHash    string
 }
 
 type CommandKind string
 
 const (
-	CommandCancel     CommandKind = "cancel_run"
-	CommandRevise     CommandKind = "revise_run"
-	CommandToolResult CommandKind = "tool_result"
+	CommandCancel         CommandKind = "cancel_run"
+	CommandRevise         CommandKind = "revise_run"
+	CommandToolResult     CommandKind = "tool_result"
+	CommandProposalResult CommandKind = "proposal_result"
 )
 
 type Command struct {
@@ -105,6 +118,8 @@ type Command struct {
 	Revision   int
 	Input      string
 	ToolResult *tool.Result
+	ProposalID string
+	Err        error
 }
 
 type Stream interface {
@@ -136,6 +151,11 @@ type Canceller interface {
 	CancelRun(context.Context, string) error
 }
 
+type ObservationGateway interface {
+	SupportsObservationV2() bool
+	ObserveBatch(context.Context, domain.ObservationBatch) (domain.ObservationAck, error)
+}
+
 type Runtime struct {
 	gateway Gateway
 }
@@ -161,6 +181,19 @@ func (r *Runtime) CancelRun(ctx context.Context, runID string) error {
 		return ErrCommandUnsupported
 	}
 	return canceller.CancelRun(ctx, runID)
+}
+
+func (r *Runtime) SupportsObservationV2() bool {
+	observer, ok := r.gateway.(ObservationGateway)
+	return ok && observer.SupportsObservationV2()
+}
+
+func (r *Runtime) ObserveBatch(ctx context.Context, batch domain.ObservationBatch) (domain.ObservationAck, error) {
+	observer, ok := r.gateway.(ObservationGateway)
+	if !ok {
+		return domain.ObservationAck{}, ErrObservationUnsupported
+	}
+	return observer.ObserveBatch(ctx, batch)
 }
 
 func (r *Runtime) Close(ctx context.Context) error {

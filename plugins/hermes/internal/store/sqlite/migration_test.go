@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenMigratesSchemaV1ToV6(t *testing.T) {
+func TestOpenMigratesSchemaV1ToV7(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hermes.db")
 	db, err := sql.Open("sqlite", path)
@@ -37,8 +37,8 @@ func TestOpenMigratesSchemaV1ToV6(t *testing.T) {
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("schema version=%d, want 6", version)
+	if version != 7 {
+		t.Fatalf("schema version=%d, want 7", version)
 	}
 	var table string
 	if err := store.db.QueryRowContext(ctx,

@@ -55,7 +55,7 @@ func (p *HermesPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "hermes",
 		Author:      "Golem Team",
-		Version:     "0.8.0",
+		Version:     "0.9.0",
 		Description: "事件驱动、可恢复、全异步的 Hermes 对话内核",
 		Priority:    1<<31 - 2,
 		Next:        false,
@@ -95,6 +95,10 @@ func (p *HermesPlugin) OnConfigChange() error {
 		p.lifecycleMu.Unlock()
 		return errors.New("routing SocialDecider 的 endpoint/model/key/context 配置已变化，需要 reload Hermes 插件")
 	}
+	if current != nil && contextStaticConfigChanged(current.Context, cfg.Context) {
+		p.lifecycleMu.Unlock()
+		return errors.New("context 配置已变化，需要 reload Hermes 插件以重新协商 Relay 协议")
+	}
 	snapshot, err := manager.Publish(cfg)
 	p.lifecycleMu.Unlock()
 	if err != nil {
@@ -106,6 +110,10 @@ func (p *HermesPlugin) OnConfigChange() error {
 		"sample_rate", snapshot.Routing.SampleRate,
 	)
 	return nil
+}
+
+func contextStaticConfigChanged(current, next config.ContextConfig) bool {
+	return current != next
 }
 
 func socialDeciderStaticConfigChanged(current, next config.RoutingConfig) bool {

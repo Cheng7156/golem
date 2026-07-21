@@ -30,12 +30,12 @@ func decodeInputSection(t *testing.T, input, tag string, target any) {
 
 func TestFormatAgentInputBridgesRelaySessionReset(t *testing.T) {
 	message := domain.InboundMessage{Text: "hermes:new", SpeakerID: "user-1"}
-	if actual := formatAgentInput("relay", message, domain.Principal{}); actual != "/new" {
+	if actual := formatAgentInput("relay", message, domain.Principal{IsOwner: true}); actual != "/new" {
 		t.Fatalf("formatAgentInput relay command=%q, want /new", actual)
 	}
 
 	message.Text = " HERMES:RESET "
-	if actual := formatAgentInput("RELAY", message, domain.Principal{}); actual != "/reset" {
+	if actual := formatAgentInput("RELAY", message, domain.Principal{IsOwner: true}); actual != "/reset" {
 		t.Fatalf("formatAgentInput relay command=%q, want /reset", actual)
 	}
 }
