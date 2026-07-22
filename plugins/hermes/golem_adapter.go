@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"golem_plugin_hermes/internal/config"
 	"golem_plugin_hermes/internal/domain"
 
 	"github.com/sbgayhub/golem/sdk/contact"
@@ -50,7 +51,11 @@ func (p *HermesPlugin) OnEvent(event *plugin.Event) (bool, error) {
 		return false, errors.New("Hermes Kernel 尚未启动")
 	}
 	snapshot := manager.Current()
-	inbox, ok, err := p.normalizeMessage(payload.Message, snapshot.BotNames)
+	inbox, ok, err := p.normalizeMessage(
+		payload.Message,
+		snapshot.BotNames,
+		snapshot.Routing,
+	)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -63,6 +68,7 @@ func (p *HermesPlugin) OnEvent(event *plugin.Event) (bool, error) {
 func (p *HermesPlugin) normalizeMessage(
 	msg *message.Message,
 	botNames []string,
+	routing config.RoutingConfig,
 ) (domain.InboxEvent, bool, error) {
 	text := strings.TrimSpace(messageText(msg))
 	media, err := inboundMedia(msg)
@@ -80,6 +86,7 @@ func (p *HermesPlugin) normalizeMessage(
 	if !ok {
 		return domain.InboxEvent{}, false, nil
 	}
+	speaker.actorKind = configuredActorKind(routing, speaker.id, speaker.name)
 	if selfID := strings.TrimSpace(self.GetUsername()); selfID != "" && speaker.id == selfID {
 		return domain.InboxEvent{}, false, nil
 	}
@@ -102,6 +109,22 @@ func (p *HermesPlugin) normalizeMessage(
 		return domain.InboxEvent{}, false, err
 	}
 	return inbox, true, nil
+}
+
+func configuredActorKind(cfg config.RoutingConfig, id, name string) string {
+	id = strings.TrimSpace(id)
+	for _, candidate := range cfg.AutomatedSpeakerIDs {
+		if id != "" && strings.EqualFold(id, candidate) {
+			return "bot"
+		}
+	}
+	name = strings.TrimSpace(name)
+	for _, candidate := range cfg.AutomatedSpeakerNames {
+		if name != "" && strings.EqualFold(name, candidate) {
+			return "bot"
+		}
+	}
+	return "human"
 }
 
 func (p *HermesPlugin) identitySnapshot() (*contact.SelfInfo, string) {

@@ -1,9 +1,34 @@
 package domain
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestNewConversationObservationCarriesPrincipalActorKind(t *testing.T) {
+	payload, err := json.Marshal(InboundMessage{Text: "hello", IsChatroom: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := InboxEvent{
+		ID: "event-1", DedupeKey: "wechat/message/1", MessageID: 1,
+		SessionID: "chatroom:room", OccurredAt: time.Now(), AcceptedAt: time.Now(),
+		Binding: ChannelBinding{
+			Channel: "wechat", SessionID: "chatroom:room", ReceiverID: "room",
+			Principal: Principal{ID: "wxid_ovo", Name: "ovo", Kind: "bot"},
+		},
+		Payload: payload,
+	}
+
+	observation, err := NewConversationObservation(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.VerifiedActor.ActorKind != "bot" {
+		t.Fatalf("actor_kind=%q, want bot", observation.VerifiedActor.ActorKind)
+	}
+}
 
 func TestObservationCanonicalHashGolden(t *testing.T) {
 	occurredAt, err := time.Parse(time.RFC3339, "2026-07-21T12:34:56Z")

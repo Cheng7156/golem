@@ -8,7 +8,7 @@
 
 - Golem：`git@github.com:Cheng7156/golem.git`
 - Hermes Agent：`git@github.com:Cheng7156/hermes-agent.git`
-- 两端开发分支：`fix/hermes-explicit-preemption`
+- 两端开发分支：`fix/hermes-group-context-compression`
 - Golem Hermes 插件版本：`0.9.0`
 - Hermes 上游只读参考：`https://github.com/NousResearch/hermes-agent.git`
 
@@ -255,6 +255,50 @@ SOUL、`platform_hints.relay.append` 和该 skill 必须同时支持两种可信
 
 SOUL 在新会话构建系统提示时加载。修改后应创建新 Hermes 会话；需要统一刷新 Gateway 缓存时再执行 `hermes gateway restart`。
 
+### 6.1 Relay 群聊上下文压缩
+
+Hermes 继续使用内置 `ContextCompressor`，没有引入需要单独部署的第三方
+context engine。Relay 群聊在现有压缩器上启用低延迟策略：
+
+- projection 只属于当前模型调用，不写入 `messages.api_content`；恢复旧会话时，只有能结构化证明同时包含 V2 current 与 historical envelope 的旧 sidecar 才会被忽略，普通 memory/plugin sidecar 保留。
+- `trigger_kind=ambient` 且最终输出严格等于 `[[GOLEM_HERMES_OBSERVE_V1]]` 的完整回合不再进入可重放模型上下文；Golem observation ledger 和 Hermes 归档行不删除。
+- tail token 预算按实际 wire 内容计算；存在合法 `api_content` 时计算 sidecar，而不是只计算较短的 clean content。
+- 达到正常压缩阈值的 80% 时后台准备 checkpoint。当前 200K 模型的自动压缩阈值通常为 75%，因此预生成约在 60% 上下文开始。
+- 到正式阈值时，ready checkpoint 只做前缀校验和原子应用；若 checkpoint 仍在运行、失败或前缀失配，前台立即使用本地身份安全的结构化 fallback，不同步等待大上下文摘要请求。
+- 群聊摘要按 `actor_id`、`display_name`、`role`、`actor_kind`、`addressing` 和 `trigger_kind` 标记每个说话人。`participant_not_owner` 或 `actor_kind=bot` 的“主人/owner/master”不会归并成 Hermes 的 owner。
+
+该策略无需新增配置项，仍由 Hermes 的 `compression.enabled`、阈值和模型上下文配置控制。`context.mode=full` 与 `routing.social_mode` 的切换方式保持不变。
+
+Gateway 日志固定写入：
+
+```text
+/root/.hermes/logs/gateway.log
+```
+
+直接检索压缩链路：
+
+```bash
+rg 'relay (compression|projection stripped|observe turns pruned)' \
+  /root/.hermes/logs/gateway.log
+```
+
+主要事件：
+
+| 日志事件 | 含义 |
+|---|---|
+| `relay projection stripped` | 恢复旧会话时忽略了历史 projection sidecar |
+| `relay observe turns pruned` | 从 replay 上下文剔除了 ambient observe 回合，未删除 ledger |
+| `relay compression plan` | 输出 checkpoint/foreground 压缩窗口、tail 和 token 预算 |
+| `relay compression checkpoint started` | 后台摘要 checkpoint 已启动 |
+| `relay compression checkpoint ready` | checkpoint 已完成，可在阈值处直接应用 |
+| `relay compression checkpoint failed` | 后台摘要失败，正式压缩会本地降级 |
+| `relay compression checkpoint applied` | 校验通过并使用后台 checkpoint |
+| `relay compression fallback` | 未等待后台任务，使用本地结构化 fallback |
+| `relay compression applied` | 内存压缩已完成，含前后消息数、token 和耗时 |
+| `relay compression failed` | 手工同步压缩失败并保留原上下文 |
+
+压缩 started/applied/failed 和 checkpoint 事件携带可用的 `session_id`、`conversation_id`、消息数、token、`duration_ms`、`background` 和 `fallback` 字段。清理事件携带对应的 projection/observe 数量。日志不输出聊天正文或 checkpoint 内容。
+
 ## 7. 数据库和迁移
 
 两端数据库：
@@ -267,7 +311,7 @@ SOUL 在新会话构建系统提示时加载。修改后应创建新 Hermes 会�
 迁移是 additive：新增表、索引或列，不删除旧业务表。上线前仍必须在线备份：
 
 ```bash
-backup_dir="/opt/software/wechat/backups/hermes-explicit-preemption-$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="/opt/software/wechat/backups/hermes-group-context-compression-$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_dir"
 sqlite3 /opt/software/wechat/data/hermes/hermes.db ".backup '$backup_dir/golem-hermes.db'"
 sqlite3 /root/.hermes/state.db ".backup '$backup_dir/hermes-state.db'"
@@ -286,7 +330,7 @@ cd /opt/software/wechat/golem/plugins/hermes
 go test ./...
 go vet ./...
 go test -race ./internal/store/sqlite ./internal/agent ./internal/execution
-go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.explicit-preemption .
+go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.group-context-compression .
 ```
 
 确认没有 Host 代码改动：
@@ -322,8 +366,8 @@ git diff --name-only -- '*.py' | xargs -r /usr/local/lib/hermes-agent/venv/bin/p
 ```bash
 cd /usr/local/lib/hermes-agent
 git fetch origin
-git switch fix/hermes-explicit-preemption
-git pull --ff-only origin fix/hermes-explicit-preemption
+git switch fix/hermes-group-context-compression
+git pull --ff-only origin fix/hermes-group-context-compression
 /root/.local/bin/hermes gateway restart
 /root/.local/bin/hermes gateway status
 ```
@@ -339,7 +383,7 @@ cd /opt/software/wechat/golem/plugins/hermes
 go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.new .
 install -m 0755 /tmp/golem_plugin_hermes.new /opt/software/wechat/plugins/golem_plugin_hermes.next
 cp -a /opt/software/wechat/plugins/golem_plugin_hermes \
-  /opt/software/wechat/plugins/golem_plugin_hermes.pre-explicit-preemption.bak
+  /opt/software/wechat/plugins/golem_plugin_hermes.pre-group-context-compression.bak
 mv /opt/software/wechat/plugins/golem_plugin_hermes.next \
   /opt/software/wechat/plugins/golem_plugin_hermes
 ```
@@ -375,6 +419,7 @@ tail -n 200 /opt/software/wechat/logs/app.log
 9. 模型失败或 Gateway 断线：同一 chat 后续消息不能永久报 active run。
 10. 重复 durable proposal：返回相同 receipt，不重复创建微信 outbox。
 11. 表情或视频：effect 与最终结果一起提交，内部 observe/effect token 不得发到微信。
+12. 压缩日志：用上面的 `rg` 命令确认 projection/observe 清理和 checkpoint 事件包含当前 `session_id`、`conversation_id` 与耗时字段。
 
 owner 运维命令：
 
@@ -437,7 +482,7 @@ tail -n 300 /opt/software/wechat/logs/app.log
 ### 回退 Golem 插件
 
 ```bash
-cp -a /opt/software/wechat/plugins/golem_plugin_hermes.pre-explicit-preemption.bak \
+cp -a /opt/software/wechat/plugins/golem_plugin_hermes.pre-group-context-compression.bak \
   /opt/software/wechat/plugins/golem_plugin_hermes.rollback
 chmod 0755 /opt/software/wechat/plugins/golem_plugin_hermes.rollback
 mv /opt/software/wechat/plugins/golem_plugin_hermes.rollback \
@@ -454,7 +499,7 @@ mv /opt/software/wechat/plugins/golem_plugin_hermes.rollback \
 
 ```bash
 cd /usr/local/lib/hermes-agent
-git switch fix/hermes-social-runtime-hardening
+git switch fix/hermes-explicit-preemption
 /root/.local/bin/hermes gateway restart
 ```
 

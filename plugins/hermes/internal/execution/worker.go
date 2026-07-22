@@ -201,7 +201,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		RequiredContextSeq:   run.RequiredContextSeq,
 		TriggerKind:          run.TriggerKind,
 		InvocationID:         run.InvocationID,
-		VerifiedActor:        verifiedActor(inbox.Binding.Principal),
+		VerifiedActor:        verifiedActor(inbox.Binding.Principal, incoming, cfg.Routing),
 		Addressing:           observationAddressing(incoming),
 		ChatType:             chatType(incoming),
 		ChatName:             incoming.RoomName,
@@ -368,13 +368,24 @@ func (w *Worker) waitContextBarrier(ctx context.Context, run domain.Run) error {
 	}
 }
 
-func verifiedActor(principal domain.Principal) domain.VerifiedActor {
+func verifiedActor(
+	principal domain.Principal,
+	message domain.InboundMessage,
+	cfg config.RoutingConfig,
+) domain.VerifiedActor {
 	role := "participant_not_owner"
 	if principal.IsOwner {
 		role = "owner_of_this_agent"
 	}
+	actorKind := strings.ToLower(strings.TrimSpace(principal.Kind))
+	if actorKind != "bot" && actorKind != "human" {
+		actorKind = "human"
+		if configuredAutomatedSpeaker(cfg, principal, message) {
+			actorKind = "bot"
+		}
+	}
 	return domain.VerifiedActor{ActorID: principal.ID, DisplayName: principal.Name, Role: role,
-		ActorKind: "unknown", VerifiedBy: "golem_wechat_protocol"}
+		ActorKind: actorKind, VerifiedBy: "golem_wechat_protocol"}
 }
 
 func observationAddressing(message domain.InboundMessage) domain.Addressing {

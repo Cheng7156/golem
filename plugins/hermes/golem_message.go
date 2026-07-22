@@ -28,6 +28,7 @@ type messageSpeaker struct {
 	roomName  string
 	receiver  string
 	isOwner   bool
+	actorKind string
 }
 
 func resolveMessageSpeaker(msg *message.Message, ownerID string) (messageSpeaker, bool) {
@@ -83,6 +84,7 @@ func newWechatInboxEvent(
 				ID:      speaker.id,
 				Name:    speaker.name,
 				IsOwner: speaker.isOwner,
+				Kind:    speaker.actorKind,
 			},
 		},
 		Payload: payload,

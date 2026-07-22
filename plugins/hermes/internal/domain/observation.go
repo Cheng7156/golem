@@ -152,6 +152,10 @@ func NewConversationObservation(event InboxEvent) (ConversationObservation, erro
 	if event.Binding.Principal.IsOwner {
 		role = "owner_of_this_agent"
 	}
+	actorKind := strings.ToLower(strings.TrimSpace(event.Binding.Principal.Kind))
+	if actorKind != "bot" && actorKind != "human" {
+		actorKind = "unknown"
+	}
 	contentType := "text"
 	if len(message.Media) > 0 && strings.TrimSpace(message.Media[0].Kind) != "" {
 		contentType = strings.TrimSpace(message.Media[0].Kind)
@@ -177,7 +181,7 @@ func NewConversationObservation(event InboxEvent) (ConversationObservation, erro
 		PlatformMessageID: platformMessageID, OccurredAt: event.OccurredAt,
 		AcceptedAt: event.AcceptedAt,
 		VerifiedActor: VerifiedActor{ActorID: event.Binding.Principal.ID, DisplayName: event.Binding.Principal.Name,
-			Role: role, ActorKind: "unknown", VerifiedBy: "golem_wechat_protocol"},
+			Role: role, ActorKind: actorKind, VerifiedBy: "golem_wechat_protocol"},
 		Addressing: Addressing{Self: message.Mentioned, Others: message.MentionedOthers,
 			QuotedSelf: message.Quoted, MentionTargetIDs: []string{}},
 		ReplyContext: ReplyContext{}, Content: ObservationContent{Type: contentType, Text: message.Text},

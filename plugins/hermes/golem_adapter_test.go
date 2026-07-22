@@ -7,6 +7,8 @@ import (
 	"sort"
 	"testing"
 
+	"golem_plugin_hermes/internal/config"
+
 	"github.com/sbgayhub/golem/sdk/chatroom"
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
@@ -25,7 +27,7 @@ func TestNormalizeMessageRejectsSelfMessages(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, accepted, err := plugin.normalizeMessage(test.msg, nil); err != nil || accepted {
+			if _, accepted, err := plugin.normalizeMessage(test.msg, nil, config.RoutingConfig{}); err != nil || accepted {
 				t.Fatalf("normalizeMessage accepted self message: accepted=%v err=%v", accepted, err)
 			}
 		})
@@ -37,7 +39,7 @@ func TestNormalizeMessageAcceptsOtherChatroomMember(t *testing.T) {
 	plugin.self = &contact.SelfInfo{Username: "wxid_bot"}
 	msg := textMessage(room("room@chatroom"), &chatroom.Member{Username: "wxid_member"})
 
-	event, accepted, err := plugin.normalizeMessage(msg, nil)
+	event, accepted, err := plugin.normalizeMessage(msg, nil, config.RoutingConfig{})
 	if err != nil || !accepted {
 		t.Fatalf("normalizeMessage rejected member message: accepted=%v err=%v", accepted, err)
 	}
@@ -103,7 +105,7 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 			msg := textMessage(room("room@chatroom"), &chatroom.Member{Username: "wxid_member"})
 			msg.GetText().Content = test.content
 			msg.GetText().Reminds = test.reminds
-			event, accepted, err := plugin.normalizeMessage(msg, test.botNames)
+			event, accepted, err := plugin.normalizeMessage(msg, test.botNames, config.RoutingConfig{})
 			if err != nil || !accepted {
 				t.Fatalf("normalizeMessage accepted=%v err=%v", accepted, err)
 			}
@@ -117,6 +119,41 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 			if incoming.Mentioned != test.wantSelf || incoming.MentionedOthers != test.wantOthers {
 				t.Fatalf("mentions self=%v others=%v, want self=%v others=%v",
 					incoming.Mentioned, incoming.MentionedOthers, test.wantSelf, test.wantOthers)
+			}
+		})
+	}
+}
+
+func TestNormalizeMessagePersistsConfiguredActorKind(t *testing.T) {
+	plugin := newHermesPlugin()
+	plugin.self = &contact.SelfInfo{Username: "wxid_bot"}
+
+	for _, test := range []struct {
+		name     string
+		member   *chatroom.Member
+		routing  config.RoutingConfig
+		wantKind string
+	}{
+		{
+			name:     "configured bot id",
+			member:   &chatroom.Member{Username: "wxid_ovo", DisplayName: "ovo"},
+			routing:  config.RoutingConfig{AutomatedSpeakerIDs: []string{"wxid_ovo"}},
+			wantKind: "bot",
+		},
+		{
+			name:     "ordinary human",
+			member:   &chatroom.Member{Username: "wxid_member", DisplayName: "Member"},
+			wantKind: "human",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := textMessage(room("room@chatroom"), test.member)
+			event, accepted, err := plugin.normalizeMessage(msg, nil, test.routing)
+			if err != nil || !accepted {
+				t.Fatalf("normalizeMessage accepted=%v err=%v", accepted, err)
+			}
+			if event.Binding.Principal.Kind != test.wantKind {
+				t.Fatalf("principal kind=%q, want %q", event.Binding.Principal.Kind, test.wantKind)
 			}
 		})
 	}
