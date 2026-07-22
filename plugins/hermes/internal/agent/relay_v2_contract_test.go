@@ -217,6 +217,38 @@ func TestV2VisibleAndObserveResultHashInterop(t *testing.T) {
 	}
 }
 
+func TestV2InvalidRequiredObserveFailsRunAndReleasesChatSlot(t *testing.T) {
+	request := RunRequest{RunID: "run-required", SessionID: "chatroom:room", Lane: domain.LaneInteractive,
+		Input: "@ccff hello", ChatType: "group", ConversationID: "wechat:group:room",
+		CurrentObservationID: "obs-1", CurrentPayloadHash: "payload", RequiredContextSeq: 1,
+		InvocationID: "invoke-required", RequireVisibleReply: true}
+	gateway, _, connection, stream := startV2Relay(t, request)
+	proposalID := "proposal-invalid-observe"
+	hash := resultHash(t, request.InvocationID, proposalID, "observe", nil, []OutputProposal{})
+	writeRelayFrame(t, connection, map[string]any{"type": "outbound", "requestId": "request-invalid",
+		"action": map[string]any{"op": "commit_run_result_v1", "invocation_id": request.InvocationID,
+			"proposal_id": proposalID, "result_kind": "observe", "content": nil,
+			"effects": []any{}, "result_hash": hash}})
+
+	failed, err := stream.Recv(context.Background())
+	if err != nil || failed.Kind != EventRunFailed || failed.Err == nil ||
+		!strings.Contains(failed.Err.Error(), "invalid observe result") {
+		t.Fatalf("failed=%#v err=%v", failed, err)
+	}
+	result := readRelayFrame(t, connection)
+	body := result["result"].(map[string]any)
+	if result["type"] != "outbound_result" || body["success"] != false ||
+		body["error"] != "invalid observe result" {
+		t.Fatalf("result=%#v", result)
+	}
+	gateway.mu.Lock()
+	_, stillPending := gateway.pending[relayChatID(request)]
+	gateway.mu.Unlock()
+	if stillPending {
+		t.Fatal("invalid durable proposal kept the chat admission slot")
+	}
+}
+
 func TestV2ProgressDoesNotCompleteAndStagedEffectIsMerged(t *testing.T) {
 	request := RunRequest{RunID: "run-progress", SessionID: "private:user", Lane: domain.LaneInteractive,
 		Input: "hello", ChatType: "dm", ConversationID: "wechat:dm:user", CurrentObservationID: "obs",

@@ -1162,35 +1162,37 @@ func (g *RelayGateway) acceptDurableResult(
 	}
 	proposal.RunID = run.request.RunID
 	if err := proposal.Validate(); err != nil {
-		return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+		return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 	}
 
 	var events []Event
 	switch proposal.ResultKind {
 	case "observe":
 		if run.request.RequireVisibleReply || strings.TrimSpace(contentText) != "" || len(effects) != 0 {
-			return g.writeResult(ctx, connection, requestID, false, "", "invalid observe result")
+			return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID,
+				"invalid observe result")
 		}
 	case "visible_reply":
 		text, textProposal, err := newRelayTextProposal(contentText)
 		if err != nil {
-			return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+			return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 		}
 		events = append(events, Event{Kind: EventReplyProposed, Text: text, Proposal: textProposal})
 		for index := range effects {
 			if err := effects[index].Validate(); err != nil {
-				return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+				return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 			}
 			effect := effects[index]
 			events = append(events, Event{Kind: EventEffectProposed, Proposal: &effect})
 		}
 	case "effect_only":
 		if strings.TrimSpace(contentText) != "" || len(effects) == 0 {
-			return g.writeResult(ctx, connection, requestID, false, "", "invalid effect-only result")
+			return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID,
+				"invalid effect-only result")
 		}
 		for index := range effects {
 			if err := effects[index].Validate(); err != nil {
-				return g.writeResult(ctx, connection, requestID, false, "", err.Error())
+				return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 			}
 			effect := effects[index]
 			events = append(events, Event{Kind: EventEffectProposed, Proposal: &effect})
@@ -1228,6 +1230,37 @@ func (g *RelayGateway) acceptDurableResult(
 		}
 		return g.writeDurableResult(ctx, connection, requestID, committed, "committed")
 	}
+}
+
+func (g *RelayGateway) rejectDurableResult(
+	ctx context.Context,
+	connection *relayConnection,
+	requestID string,
+	run *relayRun,
+	proposalID string,
+	message string,
+) error {
+	failure := fmt.Errorf("Hermes durable result rejected: %s", message)
+	slog.Warn("[hermes] rejected invalid durable result and released active Run",
+		"run_id", run.request.RunID,
+		"invocation_id", run.request.InvocationID,
+		"proposal_id", proposalID,
+		"error", message,
+	)
+	// This failure originates from a Hermes proposal. Complete the local stream
+	// without echoing run_terminated_v1 back to Hermes; outbound_result already
+	// provides the protocol response and lets Hermes re-admit the invocation.
+	run.mu.Lock()
+	if !run.finished {
+		run.completeLocked(Event{Kind: EventRunFailed, Err: failure,
+			InvocationID: run.request.InvocationID, ProposalID: proposalID})
+	}
+	run.mu.Unlock()
+	g.removeRun(run)
+	if run.cancel != nil {
+		run.cancel()
+	}
+	return g.writeResult(ctx, connection, requestID, false, "", message)
 }
 
 func (g *RelayGateway) writeDurableResult(ctx context.Context, connection *relayConnection, requestID string,
