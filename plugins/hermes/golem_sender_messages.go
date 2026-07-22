@@ -24,9 +24,25 @@ func textOutboxMessage(receiver *contact.Contact, payloadJSON json.RawMessage) (
 	if payload.Content == "" {
 		return nil, errors.New("text outbox content is empty")
 	}
+	var reminds []string
+	var delivery domain.DeliveryTarget
+	if payload.Delivery != nil {
+		delivery = *payload.Delivery
+	}
+	mentionID := strings.TrimSpace(delivery.MentionActorID)
+	mentionName := strings.TrimSpace(delivery.MentionActorName)
+	if mentionID != "" {
+		reminds = []string{mentionID}
+		if mentionName != "" {
+			prefix := "@" + mentionName
+			if !strings.HasPrefix(payload.Content, prefix) {
+				payload.Content = prefix + " " + payload.Content
+			}
+		}
+	}
 	return &message.Message{
 		Type: message.TypeText, Receiver: receiver, Content: payload.Content,
-		Data: &message.Message_Text{Text: &message.TextData{Content: payload.Content}},
+		Data: &message.Message_Text{Text: &message.TextData{Content: payload.Content, Reminds: reminds}},
 	}, nil
 }
 

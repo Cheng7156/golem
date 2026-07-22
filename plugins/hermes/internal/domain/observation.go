@@ -183,8 +183,8 @@ func NewConversationObservation(event InboxEvent) (ConversationObservation, erro
 		VerifiedActor: VerifiedActor{ActorID: event.Binding.Principal.ID, DisplayName: event.Binding.Principal.Name,
 			Role: role, ActorKind: actorKind, VerifiedBy: "golem_wechat_protocol"},
 		Addressing: Addressing{Self: message.Mentioned, Others: message.MentionedOthers,
-			QuotedSelf: message.Quoted, MentionTargetIDs: []string{}},
-		ReplyContext: ReplyContext{}, Content: ObservationContent{Type: contentType, Text: message.Text},
+			QuotedSelf: message.Quoted, MentionTargetIDs: append([]string(nil), message.MentionTargetIDs...)},
+		ReplyContext: message.ReplyContext, Content: ObservationContent{Type: contentType, Text: message.Text},
 		Media: media,
 	}
 	if err := FinalizeObservationHash(&observation); err != nil {

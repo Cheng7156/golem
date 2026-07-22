@@ -42,6 +42,7 @@ type Store interface {
 	LeaseNextRun(context.Context, domain.Lane, time.Time, time.Duration) (domain.Run, error)
 	LeaseNextRunByTrigger(context.Context, domain.Lane, domain.TriggerKind, time.Time, time.Duration) (domain.Run, error)
 	ReconcileRunAdmission(context.Context, string, domain.RunAdmissionMode) (domain.RunAdmissionResult, error)
+	ReserveAmbientReply(context.Context, string, time.Time, time.Duration, time.Duration, int) (bool, error)
 	MarkRunRunning(context.Context, string, string) error
 	SaveRunCheckpoint(context.Context, string, string, json.RawMessage) error
 	RequestRunCancel(context.Context, string) error
@@ -52,6 +53,7 @@ type Store interface {
 	CommitRunFailure(context.Context, string, string, string, []domain.OutboxDraft) ([]domain.OutboxItem, error)
 	CommitRelayRunResult(context.Context, string, string, domain.RelayRunResult, []domain.OutboxDraft) ([]domain.OutboxItem, error)
 	GetRelayRunResult(context.Context, string) (domain.RelayRunResult, error)
+	GetRelayInvocationStatus(context.Context, string) (domain.RelayInvocationStatus, error)
 	RegisterAsyncDelivery(context.Context, domain.AsyncDeliveryRegistration) (domain.AsyncDeliveryTicket, error)
 	GetAsyncDelivery(context.Context, string) (domain.AsyncDeliveryTicket, error)
 	CommitAsyncDelivery(context.Context, domain.AsyncDeliveryCommit) (domain.AsyncDeliveryResult, error)

@@ -467,39 +467,22 @@ func TestHybridCoalescesNewerFragmentBeforeSocialDecision(t *testing.T) {
 	}
 }
 
-func TestHybridAppliesAmbientCooldownAndWindowLimit(t *testing.T) {
-	value := validHybridConfig()
-	value.Routing.AmbientCooldownSeconds = 10
-	value.Routing.AmbientWindowSeconds = 60
-	value.Routing.AmbientMaxReplies = 2
+func TestAgentCoalescesNewerFragmentBeforeModelRun(t *testing.T) {
+	value := config.Default()
+	value.Routing.SocialMode = "agent"
 	manager, _ := config.NewManager(value)
-	decider := &fixedSocialDecider{route: domain.RouteChat}
-	router, _ := NewRulesRouter(manager.Current, decider)
-	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
-	router.now = func() time.Time { return now }
-	route := func(id, text string) domain.Route {
-		decision, err := router.Route(context.Background(), domain.InboxEvent{
-			ID: id, SessionID: "chatroom:test",
-		}, domain.InboundMessage{Text: text, SpeakerID: "member", IsChatroom: true})
-		if err != nil {
-			t.Fatalf("Route: %v", err)
-		}
-		return decision.Route
+	router, _ := NewRulesRouter(manager.Current, nil, fixedContextReader{newer: true})
+	decision, err := router.Route(context.Background(), domain.InboxEvent{
+		ID: "agent-fragment", SessionID: "chatroom:test", AcceptSeq: 10,
+	}, domain.InboundMessage{
+		Text: "还没说完", SpeakerID: "member", IsChatroom: true,
+		OccurredAt: time.Now().Add(-2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
 	}
-	if got := route("one", "first"); got != domain.RouteChat {
-		t.Fatalf("first route=%s", got)
-	}
-	now = now.Add(5 * time.Second)
-	if got := route("two", "second"); got != domain.RouteObserve {
-		t.Fatalf("cooldown route=%s", got)
-	}
-	now = now.Add(6 * time.Second)
-	if got := route("three", "third"); got != domain.RouteChat {
-		t.Fatalf("second allowed route=%s", got)
-	}
-	now = now.Add(11 * time.Second)
-	if got := route("four", "fourth"); got != domain.RouteObserve {
-		t.Fatalf("window-limit route=%s", got)
+	if decision.Route != domain.RouteObserve {
+		t.Fatalf("decision=%#v", decision)
 	}
 }
 

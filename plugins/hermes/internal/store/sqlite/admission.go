@@ -190,5 +190,8 @@ func cancelAdmissionRun(
 		}
 		return storeport.ErrConflict
 	}
+	if err := releaseAmbientReplyBudget(ctx, tx, candidate.id); err != nil {
+		return err
+	}
 	return cancelTurn(ctx, tx, candidate.turnID, now)
 }

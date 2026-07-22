@@ -31,6 +31,23 @@ func (s *relayResultMemoryStore) GetRelayRunResult(_ context.Context, id string)
 	}
 	return value, nil
 }
+func (s *relayResultMemoryStore) GetRelayInvocationStatus(
+	_ context.Context,
+	invocationID string,
+) (domain.RelayInvocationStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, value := range s.values {
+		if value.InvocationID == invocationID {
+			return domain.RelayInvocationStatus{
+				InvocationID: invocationID, RunID: value.RunID, RunState: domain.RunSucceeded,
+				ProposalID: value.ProposalID, ResultKind: value.ResultKind,
+				ResultHash: value.ResultHash, OutboxIDs: append([]string(nil), value.OutboxIDs...),
+			}, nil
+		}
+	}
+	return domain.RelayInvocationStatus{}, storeport.ErrNotFound
+}
 func (s *relayResultMemoryStore) put(value domain.RelayRunResult) {
 	s.mu.Lock()
 	s.values[value.ProposalID] = value
@@ -203,7 +220,7 @@ func TestV2VisibleAndObserveResultHashInterop(t *testing.T) {
 				t.Fatalf("completed=%#v err=%v", completed, err)
 			}
 			results.put(domain.RelayRunResult{ProposalID: proposalID, InvocationID: request.InvocationID,
-				RunID: request.RunID, ResultKind: test.kind, ResultHash: hash})
+				RunID: request.RunID, ResultKind: test.kind, ResultHash: hash, OutboxIDs: []string{"outbox-1"}})
 			if err := stream.Send(context.Background(), Command{Kind: CommandProposalResult, RunID: request.RunID,
 				ProposalID: proposalID}); err != nil {
 				t.Fatal(err)
@@ -212,6 +229,16 @@ func TestV2VisibleAndObserveResultHashInterop(t *testing.T) {
 			body := result["result"].(map[string]any)
 			if body["success"] != true || body["result_hash"] != hash {
 				t.Fatalf("result=%#v", result)
+			}
+			writeRelayFrame(t, connection, map[string]any{
+				"type": "golem_invocation_status_v1", "request_id": "status-1",
+				"invocation_id": request.InvocationID,
+			})
+			status := readRelayFrame(t, connection)
+			if status["type"] != "golem_invocation_status_result_v1" ||
+				status["status"] != string(domain.RunSucceeded) || status["proposal_id"] != proposalID ||
+				status["result_hash"] != hash {
+				t.Fatalf("invocation status=%#v", status)
 			}
 		})
 	}
@@ -316,7 +343,7 @@ func TestV2TerminalProposalReleasesRunBeforeReceipt(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- gateway.acceptDurableResult(ctx, serverConnection, "request-disconnect", request.InvocationID,
-			proposalID, "visible_reply", hash, "hello", []OutputProposal{})
+			proposalID, "visible_reply", hash, "hello", []OutputProposal{}, nil)
 	}()
 	if event, err := stream.Recv(context.Background()); err != nil || event.Kind != EventReplyProposed {
 		t.Fatalf("reply=%#v err=%v", event, err)

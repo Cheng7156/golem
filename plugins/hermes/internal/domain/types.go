@@ -15,17 +15,19 @@ type Principal struct {
 }
 
 type InboundMessage struct {
-	Text            string         `json:"text"`
-	HermesCommand   string         `json:"hermes_command,omitempty"`
-	IsChatroom      bool           `json:"is_chatroom"`
-	Mentioned       bool           `json:"mentioned"`
-	MentionedOthers bool           `json:"mentioned_others,omitempty"`
-	Quoted          bool           `json:"quoted"`
-	SpeakerID       string         `json:"speaker_id"`
-	SpeakerName     string         `json:"speaker_name,omitempty"`
-	RoomName        string         `json:"room_name,omitempty"`
-	OccurredAt      time.Time      `json:"occurred_at"`
-	Media           []InboundMedia `json:"media,omitempty"`
+	Text             string         `json:"text"`
+	HermesCommand    string         `json:"hermes_command,omitempty"`
+	IsChatroom       bool           `json:"is_chatroom"`
+	Mentioned        bool           `json:"mentioned"`
+	MentionedOthers  bool           `json:"mentioned_others,omitempty"`
+	Quoted           bool           `json:"quoted"`
+	MentionTargetIDs []string       `json:"mention_target_ids,omitempty"`
+	ReplyContext     ReplyContext   `json:"reply_context,omitempty"`
+	SpeakerID        string         `json:"speaker_id"`
+	SpeakerName      string         `json:"speaker_name,omitempty"`
+	RoomName         string         `json:"room_name,omitempty"`
+	OccurredAt       time.Time      `json:"occurred_at"`
+	Media            []InboundMedia `json:"media,omitempty"`
 }
 
 type InboundMedia struct {
@@ -42,7 +44,20 @@ func (m InboundMessage) Explicit() bool {
 }
 
 type TextOutput struct {
-	Content string `json:"content"`
+	Content  string          `json:"content"`
+	Delivery *DeliveryTarget `json:"delivery,omitempty"`
+}
+
+type DeliveryTarget struct {
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	MentionActorID   string `json:"mention_actor_id,omitempty"`
+	MentionActorName string `json:"mention_actor_name,omitempty"`
+}
+
+func (d DeliveryTarget) Empty() bool {
+	return strings.TrimSpace(d.ReplyToMessageID) == "" &&
+		strings.TrimSpace(d.MentionActorID) == "" &&
+		strings.TrimSpace(d.MentionActorName) == ""
 }
 
 type ImageOutput struct {

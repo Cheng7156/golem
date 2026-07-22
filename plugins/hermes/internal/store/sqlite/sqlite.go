@@ -87,6 +87,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, schemaV7); err != nil {
 			return fmt.Errorf("execute Hermes Observation V2 Schema: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, schemaV8); err != nil {
+			return fmt.Errorf("execute Hermes Ambient Reply Budget Schema: %w", err)
+		}
 		for _, column := range []struct{ name, ddl string }{
 			{"conversation_id", "TEXT NOT NULL DEFAULT ''"},
 			{"current_observation_id", "TEXT NOT NULL DEFAULT ''"},
@@ -98,6 +101,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			if err := ensureTableColumn(ctx, tx, "runs", column.name, column.ddl); err != nil {
 				return err
 			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`CREATE INDEX IF NOT EXISTS idx_runs_invocation ON runs(invocation_id)`,
+		); err != nil {
+			return err
 		}
 		if err := backfillPendingContext(ctx, tx); err != nil {
 			return err
@@ -138,8 +146,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(7,?)`,
+			unixMillis(time.Now()),
+		); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?)`,
 			unixMillis(time.Now()),
 		)
 		return err

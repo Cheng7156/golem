@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenMigratesSchemaV1ToV7(t *testing.T) {
+func TestOpenMigratesSchemaV1ToV8(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hermes.db")
 	db, err := sql.Open("sqlite", path)
@@ -37,8 +37,8 @@ func TestOpenMigratesSchemaV1ToV7(t *testing.T) {
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 7 {
-		t.Fatalf("schema version=%d, want 7", version)
+	if version != 8 {
+		t.Fatalf("schema version=%d, want 8", version)
 	}
 	var table string
 	if err := store.db.QueryRowContext(ctx,
@@ -65,5 +65,10 @@ func TestOpenMigratesSchemaV1ToV7(t *testing.T) {
 		`SELECT name FROM sqlite_master WHERE type='table' AND name='cron_delivery_direct_outputs'`,
 	).Scan(&table); err != nil {
 		t.Fatalf("cron direct output table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='ambient_reply_budget'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("ambient reply budget table missing: %v", err)
 	}
 }

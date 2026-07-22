@@ -66,6 +66,10 @@ type RelayRunResultStore interface {
 	GetRelayRunResult(context.Context, string) (domain.RelayRunResult, error)
 }
 
+type RelayInvocationStatusStore interface {
+	GetRelayInvocationStatus(context.Context, string) (domain.RelayInvocationStatus, error)
+}
+
 func (c RelayConfig) normalize() (RelayConfig, error) {
 	c.ListenAddress = strings.TrimSpace(c.ListenAddress)
 	if c.ListenAddress == "" {
@@ -732,6 +736,7 @@ func (g *RelayGateway) handleFrame(ctx context.Context, connection *relayConnect
 		Type                        string          `json:"type"`
 		ObservationProtocolVersion  int             `json:"observation_protocol_version"`
 		RequestID                   string          `json:"requestId"`
+		ReconcileRequestID          string          `json:"request_id"`
 		Action                      json.RawMessage `json:"action"`
 		SessionKey                  string          `json:"session_key"`
 		ObservationAck              json.RawMessage `json:"observation_ack"`
@@ -816,9 +821,56 @@ func (g *RelayGateway) handleFrame(ctx context.Context, connection *relayConnect
 			return err
 		}
 		return g.acceptRunTerminated(terminated)
+	case "golem_invocation_status_v1":
+		return g.writeInvocationStatus(ctx, connection, envelope.ReconcileRequestID, envelope.InvocationID)
 	default:
 		return fmt.Errorf("unsupported relay frame type %q", envelope.Type)
 	}
+}
+
+func (g *RelayGateway) writeInvocationStatus(
+	ctx context.Context,
+	connection *relayConnection,
+	requestID string,
+	invocationID string,
+) error {
+	response := map[string]any{
+		"type": "golem_invocation_status_result_v1", "request_id": requestID,
+		"invocation_id": strings.TrimSpace(invocationID),
+	}
+	if !connection.v2 {
+		response["status"] = "error"
+		response["error"] = "invocation reconciliation requires observation v2"
+		return g.writeFrame(ctx, connection, response)
+	}
+	store, ok := g.config.RunResults.(RelayInvocationStatusStore)
+	if !ok {
+		response["status"] = "error"
+		response["error"] = "invocation status store is unavailable"
+		return g.writeFrame(ctx, connection, response)
+	}
+	status, err := store.GetRelayInvocationStatus(ctx, strings.TrimSpace(invocationID))
+	if errors.Is(err, storeport.ErrNotFound) {
+		response["status"] = "not_found"
+		return g.writeFrame(ctx, connection, response)
+	}
+	if err != nil {
+		response["status"] = "error"
+		response["error"] = "invocation status lookup failed"
+		return g.writeFrame(ctx, connection, response)
+	}
+	response["status"] = string(status.RunState)
+	response["run_id"] = status.RunID
+	if status.LastError != "" {
+		response["error"] = status.LastError
+	}
+	if status.ProposalID != "" {
+		response["proposal_id"] = status.ProposalID
+		response["result_kind"] = status.ResultKind
+		response["result_hash"] = status.ResultHash
+		response["outbox_ids"] = status.OutboxIDs
+	}
+	return g.writeFrame(ctx, connection, response)
 }
 
 type runTerminated struct {
@@ -978,16 +1030,17 @@ func (g *RelayGateway) handleOutbound(
 		return errors.New("relay outbound frame has no requestId")
 	}
 	var action struct {
-		Op           string           `json:"op"`
-		ChatID       string           `json:"chat_id"`
-		MessageID    string           `json:"message_id"`
-		Content      any              `json:"content"`
-		Metadata     map[string]any   `json:"metadata"`
-		InvocationID string           `json:"invocation_id"`
-		ProposalID   string           `json:"proposal_id"`
-		ResultKind   string           `json:"result_kind"`
-		ResultHash   string           `json:"result_hash"`
-		Effects      []OutputProposal `json:"effects"`
+		Op           string                 `json:"op"`
+		ChatID       string                 `json:"chat_id"`
+		MessageID    string                 `json:"message_id"`
+		Content      any                    `json:"content"`
+		Metadata     map[string]any         `json:"metadata"`
+		InvocationID string                 `json:"invocation_id"`
+		ProposalID   string                 `json:"proposal_id"`
+		ResultKind   string                 `json:"result_kind"`
+		ResultHash   string                 `json:"result_hash"`
+		Effects      []OutputProposal       `json:"effects"`
+		Delivery     *domain.DeliveryTarget `json:"delivery,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &action); err != nil {
 		return g.writeResult(ctx, connection, requestID, false, "", "invalid action")
@@ -998,7 +1051,7 @@ func (g *RelayGateway) handleOutbound(
 			return g.writeResult(ctx, connection, requestID, false, "", "durable run result requires observation v2")
 		}
 		return g.acceptDurableResult(ctx, connection, requestID, action.InvocationID, action.ProposalID,
-			action.ResultKind, action.ResultHash, action.Content, action.Effects)
+			action.ResultKind, action.ResultHash, action.Content, action.Effects, action.Delivery)
 	case "typing":
 		return g.writeResult(ctx, connection, requestID, true, "", "")
 	case "get_chat_info":
@@ -1099,7 +1152,7 @@ func (g *RelayGateway) acceptDurableResult(
 	ctx context.Context,
 	connection *relayConnection,
 	requestID, invocationID, proposalID, resultKind, resultHash string, content any,
-	effects []OutputProposal,
+	effects []OutputProposal, delivery *domain.DeliveryTarget,
 ) error {
 	proposal := domain.RelayRunResult{ProposalID: strings.TrimSpace(proposalID),
 		InvocationID: strings.TrimSpace(invocationID), ResultKind: strings.TrimSpace(resultKind),
@@ -1111,6 +1164,9 @@ func (g *RelayGateway) acceptDurableResult(
 		"result_kind":   proposal.ResultKind,
 		"content":       content,
 		"effects":       effects,
+	}
+	if delivery != nil {
+		hashInput["delivery"] = *delivery
 	}
 	canonical, err := domain.CanonicalJSON(hashInput)
 	if err != nil {
@@ -1165,6 +1221,11 @@ func (g *RelayGateway) acceptDurableResult(
 		return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 	}
 
+	normalizedDelivery, err := normalizeDeliveryTarget(run.request, delivery)
+	if err != nil {
+		return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
+	}
+
 	var events []Event
 	switch proposal.ResultKind {
 	case "observe":
@@ -1173,7 +1234,7 @@ func (g *RelayGateway) acceptDurableResult(
 				"invalid observe result")
 		}
 	case "visible_reply":
-		text, textProposal, err := newRelayTextProposal(contentText)
+		text, textProposal, err := newRelayTextProposalWithDelivery(contentText, normalizedDelivery)
 		if err != nil {
 			return g.rejectDurableResult(ctx, connection, requestID, run, proposal.ProposalID, err.Error())
 		}

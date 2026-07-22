@@ -223,6 +223,7 @@ func imageDownloadSource(msg *message.Message, kind string, data []byte) ([]byte
 type mentionTargets struct {
 	self   bool
 	others bool
+	ids    []string
 }
 
 func classifyMentions(msg *message.Message, self *contact.SelfInfo, botNames []string) mentionTargets {
@@ -230,6 +231,7 @@ func classifyMentions(msg *message.Message, self *contact.SelfInfo, botNames []s
 	if text := msg.GetText(); text != nil {
 		var result mentionTargets
 		structured := false
+		seen := make(map[string]struct{})
 		for _, remind := range text.GetReminds() {
 			for _, part := range strings.FieldsFunc(remind, mentionSeparator) {
 				part = strings.TrimPrefix(strings.TrimSpace(part), "@")
@@ -237,6 +239,10 @@ func classifyMentions(msg *message.Message, self *contact.SelfInfo, botNames []s
 					continue
 				}
 				structured = true
+				if _, exists := seen[part]; !exists {
+					seen[part] = struct{}{}
+					result.ids = append(result.ids, part)
+				}
 				if containsIdentity(part, identities) {
 					result.self = true
 				} else {
@@ -284,25 +290,9 @@ func containsFallbackMention(content string, identity string) bool {
 }
 
 func quotedSelf(msg *message.Message, self *contact.SelfInfo, botNames []string) bool {
-	var raw string
-	if app := msg.GetApp(); app != nil {
-		raw = app.GetXml()
-	}
-	if strings.TrimSpace(raw) == "" {
+	refer, ok := quoteFromMessage(msg)
+	if !ok {
 		return false
-	}
-	var value struct {
-		AppMsg struct {
-			Refer quoteRefer `xml:"refermsg"`
-		} `xml:"appmsg"`
-		Refer quoteRefer `xml:"refermsg"`
-	}
-	if xml.Unmarshal([]byte(raw), &value) != nil {
-		return false
-	}
-	refer := value.AppMsg.Refer
-	if refer.FromUser == "" && refer.ChatUser == "" && refer.DisplayName == "" {
-		refer = value.Refer
 	}
 	identities := selfIdentities(self, botNames)
 	return containsIdentity(refer.FromUser, identities) ||
@@ -311,9 +301,82 @@ func quotedSelf(msg *message.Message, self *contact.SelfInfo, botNames []string)
 }
 
 type quoteRefer struct {
-	DisplayName string `xml:"displayname"`
-	FromUser    string `xml:"fromusr"`
-	ChatUser    string `xml:"chatusr"`
+	DisplayName  string `xml:"displayname"`
+	FromUser     string `xml:"fromusr"`
+	ChatUser     string `xml:"chatusr"`
+	Content      string `xml:"content"`
+	MessageID    string `xml:"svrid"`
+	NewMessageID string `xml:"newmsgid"`
+}
+
+func (r quoteRefer) hasValue() bool {
+	return strings.TrimSpace(r.FromUser) != "" || strings.TrimSpace(r.ChatUser) != "" ||
+		strings.TrimSpace(r.DisplayName) != "" || strings.TrimSpace(r.Content) != "" ||
+		strings.TrimSpace(r.MessageID) != "" || strings.TrimSpace(r.NewMessageID) != ""
+}
+
+func quoteFromMessage(msg *message.Message) (quoteRefer, bool) {
+	if msg == nil {
+		return quoteRefer{}, false
+	}
+	raw := ""
+	if app := msg.GetApp(); app != nil {
+		raw = app.GetXml()
+	}
+	if strings.TrimSpace(raw) == "" && strings.TrimSpace(msg.GetRaw()) != "" {
+		var envelope struct {
+			Content struct {
+				Value string `json:"value"`
+			} `json:"content"`
+		}
+		if json.Unmarshal([]byte(msg.GetRaw()), &envelope) == nil {
+			raw = envelope.Content.Value
+		}
+	}
+	if strings.TrimSpace(raw) == "" {
+		return quoteRefer{}, false
+	}
+	var value struct {
+		AppMsg struct {
+			Refer quoteRefer `xml:"refermsg"`
+		} `xml:"appmsg"`
+		Refer quoteRefer `xml:"refermsg"`
+	}
+	if xml.Unmarshal([]byte(raw), &value) != nil {
+		return quoteRefer{}, false
+	}
+	refer := value.AppMsg.Refer
+	if !refer.hasValue() {
+		refer = value.Refer
+	}
+	return refer, refer.hasValue()
+}
+
+func extractReplyContext(msg *message.Message) domain.ReplyContext {
+	refer, ok := quoteFromMessage(msg)
+	if !ok {
+		return domain.ReplyContext{}
+	}
+	messageID := strings.TrimSpace(refer.MessageID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(refer.NewMessageID)
+	}
+	actorID := strings.TrimSpace(refer.ChatUser)
+	if actorID == "" {
+		actorID = strings.TrimSpace(refer.FromUser)
+	}
+	content := strings.TrimSpace(refer.Content)
+	context := domain.ReplyContext{}
+	if messageID != "" {
+		context.MessageID = &messageID
+	}
+	if actorID != "" {
+		context.ActorID = &actorID
+	}
+	if content != "" {
+		context.Text = &content
+	}
+	return context
 }
 
 func selfIdentities(self *contact.SelfInfo, botNames []string) []string {

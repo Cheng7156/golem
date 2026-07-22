@@ -151,6 +151,30 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	if cfg == nil {
 		return w.finishFailure(parent, run, errors.New("agent configuration is unavailable"))
 	}
+	if run.TriggerKind == domain.TriggerAmbient {
+		allowed, reserveErr := w.store.ReserveAmbientReply(
+			parent,
+			run.ID,
+			w.now(),
+			time.Duration(cfg.Routing.AmbientCooldownSeconds)*time.Second,
+			time.Duration(cfg.Routing.AmbientWindowSeconds)*time.Second,
+			cfg.Routing.AmbientMaxReplies,
+		)
+		if reserveErr != nil {
+			return w.finishFailure(parent, run, fmt.Errorf("reserve ambient reply budget: %w", reserveErr))
+		}
+		if !allowed {
+			if err := w.store.RequestRunCancel(parent, run.ID); err != nil {
+				return err
+			}
+			if err := w.store.MarkRunCancelled(parent, run.ID, run.LeaseToken); err != nil {
+				return err
+			}
+			slog.Info("[hermes] ambient Run suppressed by durable reply budget",
+				"run_id", run.ID, "session_id", run.SessionID)
+			return nil
+		}
+	}
 	if staleAmbientRun(run, incoming, cfg, w.now()) {
 		if err := w.store.RequestRunCancel(parent, run.ID); err != nil {
 			return err
@@ -217,6 +241,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	defer stream.Close()
 
 	var drafts []domain.OutboxDraft
+	deliveryTarget := deliveryTargetForInbound(inbox, incoming)
 	var lastSequence uint64
 	completed := false
 	var durableResult *domain.RelayRunResult
@@ -242,7 +267,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		lastSequence = event.Sequence
 		switch event.Kind {
 		case agent.EventReplyProposed, agent.EventEffectProposed, agent.EventProgress:
-			draft, proposalErr := outputDraft(run, inbox.Binding.ReceiverID, event)
+			draft, proposalErr := outputDraft(run, inbox.Binding.ReceiverID, event, deliveryTarget)
 			if proposalErr != nil {
 				return w.finishFailure(parent, run, proposalErr)
 			}
@@ -399,7 +424,7 @@ func verifiedActor(
 
 func observationAddressing(message domain.InboundMessage) domain.Addressing {
 	return domain.Addressing{Self: message.Mentioned, Others: message.MentionedOthers,
-		QuotedSelf: message.Quoted, MentionTargetIDs: []string{}}
+		QuotedSelf: message.Quoted, MentionTargetIDs: append([]string(nil), message.MentionTargetIDs...)}
 }
 
 type inboundContextReader interface {
@@ -548,7 +573,12 @@ func validateEvent(runID string, previous uint64, event agent.Event) error {
 	return nil
 }
 
-func outputDraft(run domain.Run, receiverID string, event agent.Event) (domain.OutboxDraft, error) {
+func outputDraft(
+	run domain.Run,
+	receiverID string,
+	event agent.Event,
+	delivery domain.DeliveryTarget,
+) (domain.OutboxDraft, error) {
 	proposal := event.Proposal
 	if proposal == nil && strings.TrimSpace(event.Text) != "" {
 		value, err := agent.NewTextProposal(event.Text)
@@ -566,12 +596,43 @@ func outputDraft(run domain.Run, receiverID string, event agent.Event) (domain.O
 	if err := validateOutputPayload(*proposal); err != nil {
 		return domain.OutboxDraft{}, err
 	}
+	payload := append(json.RawMessage(nil), proposal.Payload...)
+	if proposal.Kind == "text" && !delivery.Empty() {
+		var output domain.TextOutput
+		if err := json.Unmarshal(payload, &output); err != nil {
+			return domain.OutboxDraft{}, err
+		}
+		output.Delivery = &delivery
+		var err error
+		payload, err = json.Marshal(output)
+		if err != nil {
+			return domain.OutboxDraft{}, err
+		}
+	}
 	return domain.OutboxDraft{
 		SessionID:  run.SessionID,
 		ReceiverID: receiverID,
 		Kind:       proposal.Kind,
-		Payload:    append(json.RawMessage(nil), proposal.Payload...),
+		Payload:    payload,
 	}, nil
+}
+
+func deliveryTargetForInbound(
+	inbox domain.InboxEvent,
+	message domain.InboundMessage,
+) domain.DeliveryTarget {
+	target := domain.DeliveryTarget{}
+	if !message.IsChatroom {
+		return target
+	}
+	if inbox.MessageID != 0 {
+		target.ReplyToMessageID = strconv.FormatInt(inbox.MessageID, 10)
+	}
+	if message.Explicit() {
+		target.MentionActorID = strings.TrimSpace(inbox.Binding.Principal.ID)
+		target.MentionActorName = strings.TrimSpace(inbox.Binding.Principal.Name)
+	}
+	return target
 }
 
 func validateOutputPayload(proposal agent.OutputProposal) error {

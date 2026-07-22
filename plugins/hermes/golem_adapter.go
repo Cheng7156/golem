@@ -92,17 +92,20 @@ func (p *HermesPlugin) normalizeMessage(
 	}
 	occurredAt := messageTime(msg.GetTimestamp())
 	mentions := classifyMentions(msg, self, botNames)
+	replyContext := extractReplyContext(msg)
 	incoming := domain.InboundMessage{
-		Text:            text,
-		IsChatroom:      speaker.chatroom,
-		Mentioned:       mentions.self,
-		MentionedOthers: mentions.others,
-		Quoted:          quotedSelf(msg, self, botNames),
-		SpeakerID:       speaker.id,
-		SpeakerName:     speaker.name,
-		RoomName:        speaker.roomName,
-		OccurredAt:      occurredAt,
-		Media:           media,
+		Text:             text,
+		IsChatroom:       speaker.chatroom,
+		Mentioned:        mentions.self,
+		MentionedOthers:  mentions.others,
+		Quoted:           quotedSelf(msg, self, botNames),
+		MentionTargetIDs: append([]string(nil), mentions.ids...),
+		ReplyContext:     replyContext,
+		SpeakerID:        speaker.id,
+		SpeakerName:      speaker.name,
+		RoomName:         speaker.roomName,
+		OccurredAt:       occurredAt,
+		Media:            media,
 	}
 	inbox, err := newWechatInboxEvent(msg, speaker, incoming)
 	if err != nil {

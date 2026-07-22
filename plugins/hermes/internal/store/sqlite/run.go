@@ -388,6 +388,9 @@ func (s *Store) RequestRunCancel(ctx context.Context, id string) error {
 		if target != domain.RunCancelled {
 			return nil
 		}
+		if err := releaseAmbientReplyBudget(ctx, tx, id); err != nil {
+			return err
+		}
 		return cancelTurn(ctx, tx, turnID, time.Now())
 	})
 }
@@ -452,6 +455,9 @@ func (s *Store) MarkRunCancelled(ctx context.Context, id, leaseToken string) err
 				return err
 			}
 			return storeport.ErrConflict
+		}
+		if err := releaseAmbientReplyBudget(ctx, tx, run.ID); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -652,6 +658,9 @@ func (s *Store) transitionLeasedRun(
 					return err
 				}
 				return storeport.ErrConflict
+			}
+			if err := releaseAmbientReplyBudget(ctx, tx, id); err != nil {
+				return err
 			}
 		}
 		return nil

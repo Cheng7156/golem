@@ -93,6 +93,9 @@ func (s *Store) commitRunOutcome(
 		if err := domain.ValidateRunTransition(run.State, runTarget); err != nil {
 			return errors.Join(storeport.ErrConflict, err)
 		}
+		if err := settleAmbientReplyBudget(ctx, tx, run, success && len(drafts) > 0, time.Now()); err != nil {
+			return err
+		}
 
 		var turnState domain.TurnState
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM turns WHERE id=?`, run.TurnID).Scan(&turnState); err != nil {
@@ -293,5 +296,42 @@ func (s *Store) GetRelayRunResult(ctx context.Context, proposalID string) (domai
 		return domain.RelayRunResult{}, err
 	}
 	result.CreatedAt = fromUnixMillis(createdAt)
+	return result, nil
+}
+
+func (s *Store) GetRelayInvocationStatus(
+	ctx context.Context,
+	invocationID string,
+) (domain.RelayInvocationStatus, error) {
+	db, err := s.readable()
+	if err != nil {
+		return domain.RelayInvocationStatus{}, err
+	}
+	var result domain.RelayInvocationStatus
+	var proposalID, resultKind, resultHash sql.NullString
+	var outboxJSON []byte
+	err = db.QueryRowContext(ctx, `
+		SELECT r.invocation_id,r.id,r.state,r.last_error,
+		       rr.proposal_id,rr.result_kind,rr.result_hash,rr.outbox_ids_json
+		FROM runs r
+		LEFT JOIN relay_run_results rr ON rr.run_id=r.id
+		WHERE r.invocation_id=?
+		ORDER BY r.created_at DESC
+		LIMIT 1
+	`, invocationID).Scan(
+		&result.InvocationID, &result.RunID, &result.RunState, &result.LastError,
+		&proposalID, &resultKind, &resultHash, &outboxJSON,
+	)
+	if err != nil {
+		return domain.RelayInvocationStatus{}, mapScanError(err)
+	}
+	result.ProposalID = proposalID.String
+	result.ResultKind = resultKind.String
+	result.ResultHash = resultHash.String
+	if len(outboxJSON) > 0 {
+		if err := json.Unmarshal(outboxJSON, &result.OutboxIDs); err != nil {
+			return domain.RelayInvocationStatus{}, err
+		}
+	}
 	return result, nil
 }

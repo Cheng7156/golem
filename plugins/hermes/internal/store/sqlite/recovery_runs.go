@@ -18,6 +18,11 @@ func recoverRuns(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) 
 			return 0, err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ambient_reply_budget
+		WHERE state='reserved' AND run_id IN (SELECT id FROM runs WHERE state=?)`,
+		domain.RunCancelRequested); err != nil {
+		return 0, err
+	}
 	cancelled, err := tx.ExecContext(ctx, `UPDATE runs
 		SET state=?,lease_token='',lease_until=0,updated_at=? WHERE state=?`,
 		domain.RunCancelled, unixMillis(now), domain.RunCancelRequested)

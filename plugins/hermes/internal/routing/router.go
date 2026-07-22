@@ -47,7 +47,6 @@ type RulesRouter struct {
 type ambientState struct {
 	lastHash string
 	lastSeen time.Time
-	replies  []time.Time
 }
 
 func NewRulesRouter(
@@ -96,6 +95,11 @@ func (r *RulesRouter) Route(
 			Reason:   "私聊、@ 或引用",
 		}, nil
 	}
+	if cfg.Routing.SocialMode == "agent" || cfg.Routing.SocialMode == "hybrid" {
+		if reason, observe := r.coalesceAmbient(ctx, event, message, cfg, now); observe {
+			return Decision{Route: domain.RouteObserve, Reason: reason}, nil
+		}
+	}
 
 	switch cfg.Routing.SocialMode {
 	case "observe", "rules":
@@ -138,9 +142,6 @@ func (r *RulesRouter) Route(
 		}
 		switch route {
 		case domain.RouteChat, domain.RouteJob:
-			if !r.reserveAmbientReply(event.SessionID, now, cfg.Routing) {
-				return Decision{Route: domain.RouteObserve, Reason: "命中群聊冷却或频率上限"}, nil
-			}
 			return Decision{
 				Route:    domain.RouteChat,
 				Lane:     domain.LaneInteractive,
@@ -181,28 +182,41 @@ func (r *RulesRouter) fastObserve(
 	if r.duplicateAmbient(event.SessionID, message, now) {
 		return "短时间重复群消息", true
 	}
-	if r.context != nil && event.AcceptSeq > 0 && message.SpeakerID != "" {
-		coalesceWindow := time.Duration(cfg.Routing.CoalesceWindowMilliseconds) * time.Millisecond
-		until := message.OccurredAt.Add(coalesceWindow)
-		if !message.OccurredAt.IsZero() {
-			if remaining := time.Until(until); remaining > 0 {
-				timer := time.NewTimer(remaining)
-				defer timer.Stop()
-				select {
-				case <-ctx.Done():
-					return "分段消息合并等待被取消", true
-				case <-timer.C:
-				}
+	return "", false
+}
+
+func (r *RulesRouter) coalesceAmbient(
+	ctx context.Context,
+	event domain.InboxEvent,
+	message domain.InboundMessage,
+	cfg *config.Snapshot,
+	now time.Time,
+) (string, bool) {
+	if r.context == nil || event.AcceptSeq <= 0 || strings.TrimSpace(message.SpeakerID) == "" {
+		return "", false
+	}
+	coalesceWindow := time.Duration(cfg.Routing.CoalesceWindowMilliseconds) * time.Millisecond
+	until := message.OccurredAt.Add(coalesceWindow)
+	if !message.OccurredAt.IsZero() {
+		if remaining := until.Sub(now); remaining > 0 {
+			timer := time.NewTimer(remaining)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return "分段消息合并等待被取消", true
+			case <-timer.C:
 			}
 		}
-		newer, err := r.context.HasNewerInboundFromSpeaker(
-			ctx, event.SessionID, event.AcceptSeq, message.SpeakerID, until,
-		)
-		if err != nil {
-			slog.Debug("[hermes] 检查分段消息失败，继续语义决策", "event_id", event.ID, "err", err)
-		} else if newer {
-			return "同一发送者存在紧随其后的消息，本条只作为分段上下文", true
-		}
+	}
+	newer, err := r.context.HasNewerInboundFromSpeaker(
+		ctx, event.SessionID, event.AcceptSeq, message.SpeakerID, until,
+	)
+	if err != nil {
+		slog.Debug("[hermes] 检查分段消息失败，继续语义决策", "event_id", event.ID, "err", err)
+		return "", false
+	}
+	if newer {
+		return "同一发送者存在紧随其后的消息，本条只作为分段上下文", true
 	}
 	return "", false
 }
@@ -279,36 +293,6 @@ func (r *RulesRouter) duplicateAmbient(sessionID string, message domain.InboundM
 	duplicate := state.lastHash == key && now.Sub(state.lastSeen) <= 2*time.Minute
 	state.lastHash, state.lastSeen = key, now
 	return duplicate
-}
-
-func (r *RulesRouter) reserveAmbientReply(
-	sessionID string,
-	now time.Time,
-	cfg config.RoutingConfig,
-) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.states[sessionID]
-	if state == nil {
-		state = &ambientState{}
-		r.states[sessionID] = state
-	}
-	windowStart := now.Add(-time.Duration(cfg.AmbientWindowSeconds) * time.Second)
-	replies := state.replies[:0]
-	for _, value := range state.replies {
-		if value.After(windowStart) {
-			replies = append(replies, value)
-		}
-	}
-	state.replies = replies
-	if len(replies) > 0 && now.Sub(replies[len(replies)-1]) < time.Duration(cfg.AmbientCooldownSeconds)*time.Second {
-		return false
-	}
-	if len(replies) >= cfg.AmbientMaxReplies {
-		return false
-	}
-	state.replies = append(state.replies, now)
-	return true
 }
 
 func agentDeadline(cfg *config.Snapshot, now time.Time, timeout time.Duration) time.Time {

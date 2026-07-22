@@ -256,3 +256,15 @@ CREATE TABLE IF NOT EXISTS relay_run_results (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_result_invocation_proposal
   ON relay_run_results(invocation_id, proposal_id);
 `
+
+const schemaV8 = `
+CREATE TABLE IF NOT EXISTS ambient_reply_budget (
+  run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('reserved','consumed')),
+  reserved_at INTEGER NOT NULL,
+  consumed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ambient_reply_budget_session
+  ON ambient_reply_budget(session_id, state, consumed_at, reserved_at);
+`

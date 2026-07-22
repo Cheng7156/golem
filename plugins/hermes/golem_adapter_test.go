@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"golem_plugin_hermes/internal/config"
+	"golem_plugin_hermes/internal/domain"
 
 	"github.com/sbgayhub/golem/sdk/chatroom"
 	"github.com/sbgayhub/golem/sdk/contact"
@@ -62,18 +63,21 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 		botNames   []string
 		wantSelf   bool
 		wantOthers bool
+		wantIDs    []string
 	}{
 		{
 			name:     "structured self mention",
 			content:  "@ccff hello",
 			reminds:  []string{"wxid_bot"},
 			wantSelf: true,
+			wantIDs:  []string{"wxid_bot"},
 		},
 		{
 			name:       "structured other mention",
 			content:    "@火 你在做什么",
 			reminds:    []string{"wxid_other"},
 			wantOthers: true,
+			wantIDs:    []string{"wxid_other"},
 		},
 		{
 			name:       "self and other mentions",
@@ -81,6 +85,7 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 			reminds:    []string{"wxid_bot", "wxid_other"},
 			wantSelf:   true,
 			wantOthers: true,
+			wantIDs:    []string{"wxid_bot", "wxid_other"},
 		},
 		{
 			name:     "fallback self mention",
@@ -110,8 +115,9 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 				t.Fatalf("normalizeMessage accepted=%v err=%v", accepted, err)
 			}
 			var incoming struct {
-				Mentioned       bool `json:"mentioned"`
-				MentionedOthers bool `json:"mentioned_others"`
+				Mentioned        bool     `json:"mentioned"`
+				MentionedOthers  bool     `json:"mentioned_others"`
+				MentionTargetIDs []string `json:"mention_target_ids"`
 			}
 			if err := json.Unmarshal(event.Payload, &incoming); err != nil {
 				t.Fatalf("decode payload: %v", err)
@@ -120,7 +126,25 @@ func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 				t.Fatalf("mentions self=%v others=%v, want self=%v others=%v",
 					incoming.Mentioned, incoming.MentionedOthers, test.wantSelf, test.wantOthers)
 			}
+			if !reflect.DeepEqual(incoming.MentionTargetIDs, test.wantIDs) {
+				t.Fatalf("mention target ids=%v, want %v", incoming.MentionTargetIDs, test.wantIDs)
+			}
 		})
+	}
+}
+
+func TestExtractReplyContextFromQuoteXML(t *testing.T) {
+	msg := &message.Message{Type: message.TypeAppQuote, Data: &message.Message_App{App: &message.AppData{
+		Xml: `<msg><appmsg><refermsg><svrid>99123</svrid><fromusr>room@chatroom</fromusr>` +
+			`<chatusr>wxid_alice</chatusr><displayname>Alice</displayname>` +
+			`<content>之前那句话</content></refermsg></appmsg></msg>`,
+	}}}
+
+	got := extractReplyContext(msg)
+	wantMessageID, wantActorID, wantText := "99123", "wxid_alice", "之前那句话"
+	want := domain.ReplyContext{MessageID: &wantMessageID, ActorID: &wantActorID, Text: &wantText}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reply context=%#v, want %#v", got, want)
 	}
 }
 

@@ -1,14 +1,24 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"html"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"golem_plugin_hermes/internal/domain"
 )
 
 func newRelayTextProposal(content string) (string, *OutputProposal, error) {
+	return newRelayTextProposalWithDelivery(content, domain.DeliveryTarget{})
+}
+
+func newRelayTextProposalWithDelivery(
+	content string,
+	delivery domain.DeliveryTarget,
+) (string, *OutputProposal, error) {
 	visibleContent := markdownToWeChatText(content)
 	if visibleContent == "" {
 		return "", nil, errors.New("reply is empty after Markdown normalization")
@@ -17,7 +27,50 @@ func newRelayTextProposal(content string) (string, *OutputProposal, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	if !delivery.Empty() {
+		var output domain.TextOutput
+		if err := json.Unmarshal(proposal.Payload, &output); err != nil {
+			return "", nil, err
+		}
+		output.Delivery = &delivery
+		proposal.Payload, err = json.Marshal(output)
+		if err != nil {
+			return "", nil, err
+		}
+	}
 	return visibleContent, &proposal, nil
+}
+
+func normalizeDeliveryTarget(
+	request RunRequest,
+	supplied *domain.DeliveryTarget,
+) (domain.DeliveryTarget, error) {
+	var target domain.DeliveryTarget
+	if supplied != nil {
+		target = *supplied
+	}
+	target.ReplyToMessageID = strings.TrimSpace(target.ReplyToMessageID)
+	target.MentionActorID = strings.TrimSpace(target.MentionActorID)
+	target.MentionActorName = strings.TrimSpace(target.MentionActorName)
+	expectedMessageID := strings.TrimSpace(request.PlatformMessageID)
+	if target.ReplyToMessageID != "" && target.ReplyToMessageID != expectedMessageID {
+		return domain.DeliveryTarget{}, errors.New("delivery reply target does not match the triggering message")
+	}
+	if target.MentionActorID != "" && target.MentionActorID != request.VerifiedActor.ActorID {
+		return domain.DeliveryTarget{}, errors.New("delivery mention target does not match the verified actor")
+	}
+	if target.MentionActorName != "" && target.MentionActorName != request.VerifiedActor.DisplayName {
+		return domain.DeliveryTarget{}, errors.New("delivery mention name does not match the verified actor")
+	}
+	target.ReplyToMessageID = expectedMessageID
+	if request.ChatType == "group" && request.RequireVisibleReply {
+		target.MentionActorID = strings.TrimSpace(request.VerifiedActor.ActorID)
+		target.MentionActorName = strings.TrimSpace(request.VerifiedActor.DisplayName)
+	} else {
+		target.MentionActorID = ""
+		target.MentionActorName = ""
+	}
+	return target, nil
 }
 
 var (
