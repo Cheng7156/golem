@@ -184,7 +184,7 @@ func (g *RelayGateway) capabilityRun(value capabilitySessionContext) (*relayRun,
 	if userID != run.request.Principal.ID {
 		return nil, errors.New("user context does not match the active run")
 	}
-	if messageID != run.request.MessageID {
+	if messageID != run.request.MessageID && messageID != run.request.PlatformMessageID {
 		return nil, errors.New("message context does not match the active run")
 	}
 	return run, nil

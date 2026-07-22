@@ -42,6 +42,7 @@ CRON_VIDEO_STATUS_PATH = "capabilities/v1/cron-delivery/videos/status"
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_DELIVERY_RESPONSE_BYTES = 12 << 20
 MAX_MEDIA_BYTES = 8 << 20
+MAX_ERROR_RESPONSE_BYTES = 16 << 10
 SUPPORTED_MEDIA_TYPES = {
     "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp",
 }
@@ -179,8 +180,9 @@ def _open(request: urllib.request.Request, maximum: int) -> Tuple[bytes, str]:
             raw = response.read(maximum + 1)
             content_type = response.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
+        detail = _read_http_error_detail(exc)
         exc.close()
-        _raise_http_error(exc)
+        _raise_http_error(exc, detail)
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError):
         raise RetryableCapabilityError(
             "Golem capability API is unavailable or timed out"
@@ -190,7 +192,28 @@ def _open(request: urllib.request.Request, maximum: int) -> Tuple[bytes, str]:
     return raw, content_type
 
 
-def _raise_http_error(error: urllib.error.HTTPError) -> NoReturn:
+def _read_http_error_detail(error: urllib.error.HTTPError) -> str:
+    content_type = str(error.headers.get("Content-Type", "") or "")
+    if content_type.partition(";")[0].strip().lower() != "application/json":
+        return ""
+    try:
+        raw = error.read(MAX_ERROR_RESPONSE_BYTES + 1)
+    except (OSError, ValueError):
+        return ""
+    if len(raw) > MAX_ERROR_RESPONSE_BYTES:
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    detail = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(detail, str):
+        return ""
+    detail = " ".join(detail.split())
+    return detail if 0 < len(detail) <= 512 else ""
+
+
+def _raise_http_error(error: urllib.error.HTTPError, detail: str = "") -> NoReturn:
     if error.code in {408, 425, 429} or 500 <= error.code < 600:
         raise RetryableCapabilityError(
             f"Golem capability API is temporarily unavailable (HTTP {error.code})"
@@ -201,8 +224,9 @@ def _raise_http_error(error: urllib.error.HTTPError) -> NoReturn:
         ) from None
     if 300 <= error.code < 400:
         raise CapabilityError("Golem capability API redirects are not allowed") from None
+    suffix = f": {detail}" if detail else ""
     raise CapabilityError(
-        f"Golem capability API rejected the request (HTTP {error.code})"
+        f"Golem capability API rejected the request (HTTP {error.code}){suffix}"
     ) from None
 
 

@@ -66,7 +66,8 @@ func TestStickerCapabilityRequiresAuthenticationAndExactRunContext(t *testing.T)
 	}
 	request := RunRequest{
 		RunID: "run-scope", SessionID: "chatroom:room-1", Lane: domain.LaneInteractive,
-		Principal: domain.Principal{ID: "wxid-owner"}, Input: "hello", ChatType: "group", MessageID: "event-scope",
+		Principal: domain.Principal{ID: "wxid-owner"}, Input: "hello", ChatType: "group",
+		MessageID: "event-scope", PlatformMessageID: "9001",
 	}
 	run := &relayRun{
 		engine: gateway, request: request, chatID: relayChatID(request), events: make(chan Event, 8),
@@ -105,7 +106,14 @@ func TestStickerCapabilityRequiresAuthenticationAndExactRunContext(t *testing.T)
 		t.Fatalf("stale message status=%d, want %d", status, http.StatusConflict)
 	}
 
-	status, response := postCapability(t, server.URL, payload)
+	platform := payload
+	platform.Context.MessageID = request.PlatformMessageID
+	status, response := postCapability(t, server.URL, platform)
+	if status != http.StatusOK {
+		t.Fatalf("platform message status=%d response=%v", status, response)
+	}
+
+	status, response = postCapability(t, server.URL, payload)
 	if status != http.StatusOK {
 		t.Fatalf("valid search status=%d response=%v", status, response)
 	}

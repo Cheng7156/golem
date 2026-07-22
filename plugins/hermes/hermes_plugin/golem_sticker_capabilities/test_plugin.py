@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -204,6 +205,26 @@ class PluginTests(unittest.TestCase):
         with mock.patch.object(plugin._opener, "open", side_effect=unavailable_error):
             with self.assertRaises(plugin._client.RetryableCapabilityError):
                 plugin._post("capabilities/v1/async-delivery/status", {})
+
+    def test_conflict_includes_bounded_golem_error_detail(self):
+        conflict = __import__("urllib.error").error.HTTPError(
+            "http://127.0.0.1:8789/capabilities/v1/async-delivery/register",
+            409,
+            "conflict",
+            {"Content-Type": "application/json; charset=utf-8"},
+            io.BytesIO(
+                json.dumps(
+                    {"error": "message context does not match the active run"}
+                ).encode()
+            ),
+        )
+        with mock.patch.object(plugin._opener, "open", side_effect=conflict):
+            with self.assertRaises(plugin.CapabilityError) as caught:
+                plugin._post("capabilities/v1/async-delivery/register", {})
+        self.assertIn("HTTP 409", str(caught.exception))
+        self.assertIn(
+            "message context does not match the active run", str(caught.exception)
+        )
 
     def test_materialize_reads_only_controlled_media(self):
         response = _Response(b"GIF89a", "image/gif; charset=binary")

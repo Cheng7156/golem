@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,6 +207,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		ChatType:             chatType(incoming),
 		ChatName:             incoming.RoomName,
 		MessageID:            inbox.ID,
+		PlatformMessageID:    platformMessageID(inbox.MessageID),
 		RequireVisibleReply:  incoming.Explicit(),
 		Media:                media,
 	})
@@ -324,6 +326,13 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	}
 	signal(w.outputWake)
 	return nil
+}
+
+func platformMessageID(value int64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
 }
 
 func staleAmbientRun(

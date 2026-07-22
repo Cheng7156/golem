@@ -44,6 +44,7 @@ type RunRequest struct {
 	ChatType             string
 	ChatName             string
 	MessageID            string
+	PlatformMessageID    string
 	RequireVisibleReply  bool
 	Media                []domain.InboundMedia
 }
