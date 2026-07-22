@@ -99,6 +99,10 @@ func (p *HermesPlugin) OnConfigChange() error {
 		p.lifecycleMu.Unlock()
 		return errors.New("context 配置已变化，需要 reload Hermes 插件以重新协商 Relay 协议")
 	}
+	if current != nil && current.Scheduler != cfg.Scheduler {
+		p.lifecycleMu.Unlock()
+		return errors.New("scheduler 配置已变化，需要 reload Hermes 插件以重建 worker 与准入策略")
+	}
 	snapshot, err := manager.Publish(cfg)
 	p.lifecycleMu.Unlock()
 	if err != nil {

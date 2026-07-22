@@ -27,6 +27,9 @@ func Normalize(value Config) (Config, error) {
 	if err := normalizeAgent(&value.Agent, defaults.Agent); err != nil {
 		return Config{}, err
 	}
+	if value.Scheduler.RunAdmissionMode == "active" && value.Agent.Mode != "relay" {
+		return Config{}, errors.New("scheduler.run_admission_mode=active requires agent.mode=relay")
+	}
 	if err := normalizeOutput(&value.Output, defaults.Output); err != nil {
 		return Config{}, err
 	}
@@ -158,6 +161,15 @@ func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 }
 
 func normalizeScheduler(value *SchedulerConfig, defaults SchedulerConfig) error {
+	value.RunAdmissionMode = strings.ToLower(strings.TrimSpace(value.RunAdmissionMode))
+	if value.RunAdmissionMode == "" {
+		value.RunAdmissionMode = defaults.RunAdmissionMode
+	}
+	switch value.RunAdmissionMode {
+	case "off", "queued", "active":
+	default:
+		return fmt.Errorf("不支持的 scheduler.run_admission_mode: %s", value.RunAdmissionMode)
+	}
 	if value.RouterWorkers <= 0 {
 		value.RouterWorkers = defaults.RouterWorkers
 	}

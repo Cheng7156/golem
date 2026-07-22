@@ -63,6 +63,22 @@ func TestOnConfigChangeRejectsContextProtocolChanges(t *testing.T) {
 	}
 }
 
+func TestOnConfigChangeRejectsSchedulerChanges(t *testing.T) {
+	p := newHermesPlugin()
+	initial := config.Default()
+	manager, err := config.NewManager(initial)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	p.config = manager
+	p.Config = initial
+	p.Config.Scheduler.RunAdmissionMode = "active"
+
+	if err := p.OnConfigChange(); err == nil {
+		t.Fatal("scheduler change was accepted without plugin reload")
+	}
+}
+
 func TestOnConfigChangeRejectsInvalidRuntimeConfig(t *testing.T) {
 	p := newHermesPlugin()
 	p.Config = config.Default()

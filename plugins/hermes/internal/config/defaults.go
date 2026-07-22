@@ -28,6 +28,7 @@ func Default() Config {
 			RouterWorkers:              2,
 			InteractiveWorkers:         4,
 			InteractiveReservedWorkers: 1,
+			RunAdmissionMode:           "off",
 			JobWorkers:                 2,
 			ToolWorkers:                8,
 			MaxActiveSessions:          512,

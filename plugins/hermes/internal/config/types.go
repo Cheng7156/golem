@@ -91,12 +91,13 @@ type RoutingConfig struct {
 }
 
 type SchedulerConfig struct {
-	RouterWorkers              int `toml:"router_workers"`
-	InteractiveWorkers         int `toml:"interactive_workers"`
-	InteractiveReservedWorkers int `toml:"interactive_reserved_workers"`
-	JobWorkers                 int `toml:"job_workers"`
-	ToolWorkers                int `toml:"tool_workers"`
-	MaxActiveSessions          int `toml:"max_active_sessions"`
+	RouterWorkers              int    `toml:"router_workers"`
+	InteractiveWorkers         int    `toml:"interactive_workers"`
+	InteractiveReservedWorkers int    `toml:"interactive_reserved_workers"`
+	RunAdmissionMode           string `toml:"run_admission_mode" comment:"off、queued 或 active"`
+	JobWorkers                 int    `toml:"job_workers"`
+	ToolWorkers                int    `toml:"tool_workers"`
+	MaxActiveSessions          int    `toml:"max_active_sessions"`
 }
 
 type AgentConfig struct {

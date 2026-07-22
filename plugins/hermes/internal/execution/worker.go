@@ -30,6 +30,15 @@ type Worker struct {
 	pollInterval  time.Duration
 	leaseDuration time.Duration
 	now           func() time.Time
+	triggerFilter domain.TriggerKind
+}
+
+type WorkerOption func(*Worker)
+
+func WithTriggerFilter(trigger domain.TriggerKind) WorkerOption {
+	return func(worker *Worker) {
+		worker.triggerFilter = trigger
+	}
 }
 
 type MediaResolver interface {
@@ -46,11 +55,12 @@ func NewWorker(
 	snapshot func() *config.Snapshot,
 	wake <-chan struct{},
 	outputWake chan<- struct{},
+	options ...WorkerOption,
 ) (*Worker, error) {
 	if store == nil || engine == nil || tools == nil || snapshot == nil {
 		return nil, errors.New("execution worker requires store, engine, tools, and config")
 	}
-	return &Worker{
+	worker := &Worker{
 		id:            id,
 		store:         store,
 		engine:        engine,
@@ -63,7 +73,13 @@ func NewWorker(
 		pollInterval:  50 * time.Millisecond,
 		leaseDuration: 45 * time.Second,
 		now:           time.Now,
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(worker)
+		}
+	}
+	return worker, nil
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -71,7 +87,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		run, err := w.store.LeaseNextRun(ctx, w.lane, w.now(), w.leaseDuration)
+		run, err := w.leaseNextRun(ctx)
 		if errors.Is(err, storeport.ErrNotFound) {
 			if err := w.wait(ctx); err != nil {
 				return err
@@ -90,6 +106,15 @@ func (w *Worker) Run(ctx context.Context) error {
 			)
 		}
 	}
+}
+
+func (w *Worker) leaseNextRun(ctx context.Context) (domain.Run, error) {
+	if w.triggerFilter != "" {
+		return w.store.LeaseNextRunByTrigger(
+			ctx, w.lane, w.triggerFilter, w.now(), w.leaseDuration,
+		)
+	}
+	return w.store.LeaseNextRun(ctx, w.lane, w.now(), w.leaseDuration)
 }
 
 func (w *Worker) wait(ctx context.Context) error {
@@ -124,6 +149,20 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	cfg := w.config()
 	if cfg == nil {
 		return w.finishFailure(parent, run, errors.New("agent configuration is unavailable"))
+	}
+	if staleAmbientRun(run, incoming, cfg, w.now()) {
+		if err := w.store.RequestRunCancel(parent, run.ID); err != nil {
+			return err
+		}
+		if err := w.store.MarkRunCancelled(parent, run.ID, run.LeaseToken); err != nil {
+			return err
+		}
+		slog.Info("[hermes] stale ambient Run expired before model execution",
+			"run_id", run.ID,
+			"session_id", run.SessionID,
+			"age", w.now().Sub(incoming.OccurredAt),
+		)
+		return nil
 	}
 	runCtx, cancel, deadline := executionContext(parent, cfg, run, w.now())
 	defer cancel()
@@ -285,6 +324,19 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	}
 	signal(w.outputWake)
 	return nil
+}
+
+func staleAmbientRun(
+	run domain.Run,
+	message domain.InboundMessage,
+	cfg *config.Snapshot,
+	now time.Time,
+) bool {
+	if run.TriggerKind != domain.TriggerAmbient || cfg == nil ||
+		cfg.Routing.OrdinaryFreshnessSeconds <= 0 || message.OccurredAt.IsZero() {
+		return false
+	}
+	return now.Sub(message.OccurredAt) > time.Duration(cfg.Routing.OrdinaryFreshnessSeconds)*time.Second
 }
 
 type observationBarrierStore interface {

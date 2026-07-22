@@ -40,6 +40,8 @@ type Store interface {
 	CreateRun(context.Context, domain.Run) (domain.Run, error)
 	GetRun(context.Context, string) (domain.Run, error)
 	LeaseNextRun(context.Context, domain.Lane, time.Time, time.Duration) (domain.Run, error)
+	LeaseNextRunByTrigger(context.Context, domain.Lane, domain.TriggerKind, time.Time, time.Duration) (domain.Run, error)
+	ReconcileRunAdmission(context.Context, string, domain.RunAdmissionMode) (domain.RunAdmissionResult, error)
 	MarkRunRunning(context.Context, string, string) error
 	SaveRunCheckpoint(context.Context, string, string, json.RawMessage) error
 	RequestRunCancel(context.Context, string) error

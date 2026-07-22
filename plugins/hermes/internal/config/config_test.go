@@ -61,6 +61,19 @@ func TestNormalizeRejectsUnsafeOrContradictoryValues(t *testing.T) {
 			},
 		},
 		{
+			name: "unknown run admission mode",
+			mutate: func(value *config.Config) {
+				value.Scheduler.RunAdmissionMode = "sometimes"
+			},
+		},
+		{
+			name: "active admission without cancellable relay",
+			mutate: func(value *config.Config) {
+				value.Scheduler.RunAdmissionMode = "active"
+				value.Agent.Mode = "http"
+			},
+		},
+		{
 			name: "at most once is unsupported",
 			mutate: func(value *config.Config) {
 				value.Output.DeliverySemantics = "at_most_once"

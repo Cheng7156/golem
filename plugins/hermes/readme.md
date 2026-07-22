@@ -8,7 +8,7 @@
 
 - Golem：`git@github.com:Cheng7156/golem.git`
 - Hermes Agent：`git@github.com:Cheng7156/hermes-agent.git`
-- 两端开发分支：`feat/hermes-observation-v2`
+- 两端开发分支：`fix/hermes-explicit-preemption`
 - Golem Hermes 插件版本：`0.9.0`
 - Hermes 上游只读参考：`https://github.com/NousResearch/hermes-agent.git`
 
@@ -175,6 +175,7 @@ max_projection_tokens = 4000
 router_workers = 2
 interactive_workers = 4
 interactive_reserved_workers = 1
+run_admission_mode = "active"
 job_workers = 2
 tool_workers = 8
 max_active_sessions = 512
@@ -202,7 +203,9 @@ send_jitter_milliseconds = 250
 说明：
 
 - `recent_raw_messages` 和 `max_projection_tokens` 由 Golem descriptor 下发，是 V2 projection 的权威上限。
-- `backfill` 当前只支持 `from_now`。首次启用不会假装补齐 Host 接收前或 V2 启用前的历史。
+- `backfill` 当前只接受 `from_now` 作为兼容配置名。Golem 会把已持久化且尚未 ACK 的 observation 按 conversation sequence 可靠投递给 Hermes；首次启用 V2 时可能有短暂 backlog，明确 Run 会等到自己的 observation barrier 就绪后再调用模型。
+- `run_admission_mode` 为 `active`、`queued` 或 `off`。`active` 会取消同会话排队 ambient、抢占运行中 ambient，并只保留最新尚未执行的 ambient；`queued` 不中断已经进入模型的 ambient；`off` 恢复原有严格顺序。三种模式都不删除 Inbox 或 `context_outbox` observation。
+- scheduler 会决定 worker 拓扑。修改 `run_admission_mode`、worker 数量或 `interactive_reserved_workers` 后必须执行 `/pm reload hermes`；不需要重启 Host。
 - `relay_session_namespace` 修改后会创建新的 Hermes 会话命名空间，可用于有意隔离旧会话。
 - 无 HMAC 时 relay 只能监听 loopback。跨主机必须配置 `relay_gateway_id`、`relay_shared_secret`，并使用 TLS/WSS 隧道。
 - `delivery_semantics` 是 at-least-once。微信发送结果不确定时宁可有限重试，因此极端情况下可能重复，不承诺 exactly-once。
@@ -264,7 +267,7 @@ SOUL 在新会话构建系统提示时加载。修改后应创建新 Hermes 会�
 迁移是 additive：新增表、索引或列，不删除旧业务表。上线前仍必须在线备份：
 
 ```bash
-backup_dir="/opt/software/wechat/backups/hermes-observation-v2-$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="/opt/software/wechat/backups/hermes-explicit-preemption-$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_dir"
 sqlite3 /opt/software/wechat/data/hermes/hermes.db ".backup '$backup_dir/golem-hermes.db'"
 sqlite3 /root/.hermes/state.db ".backup '$backup_dir/hermes-state.db'"
@@ -283,7 +286,7 @@ cd /opt/software/wechat/golem/plugins/hermes
 go test ./...
 go vet ./...
 go test -race ./internal/store/sqlite ./internal/agent ./internal/execution
-go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.observation-v2 .
+go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.explicit-preemption .
 ```
 
 确认没有 Host 代码改动：
@@ -319,8 +322,8 @@ git diff --name-only -- '*.py' | xargs -r /usr/local/lib/hermes-agent/venv/bin/p
 ```bash
 cd /usr/local/lib/hermes-agent
 git fetch origin
-git switch feat/hermes-observation-v2
-git pull --ff-only origin feat/hermes-observation-v2
+git switch fix/hermes-explicit-preemption
+git pull --ff-only origin fix/hermes-explicit-preemption
 /root/.local/bin/hermes gateway restart
 /root/.local/bin/hermes gateway status
 ```
@@ -336,7 +339,7 @@ cd /opt/software/wechat/golem/plugins/hermes
 go build -trimpath -ldflags '-s -w' -o /tmp/golem_plugin_hermes.new .
 install -m 0755 /tmp/golem_plugin_hermes.new /opt/software/wechat/plugins/golem_plugin_hermes.next
 cp -a /opt/software/wechat/plugins/golem_plugin_hermes \
-  /opt/software/wechat/plugins/golem_plugin_hermes.pre-observation-v2.bak
+  /opt/software/wechat/plugins/golem_plugin_hermes.pre-explicit-preemption.bak
 mv /opt/software/wechat/plugins/golem_plugin_hermes.next \
   /opt/software/wechat/plugins/golem_plugin_hermes
 ```
@@ -366,11 +369,12 @@ tail -n 200 /opt/software/wechat/logs/app.log
 3. 群聊 A @ B、没有 @ Hermes：不能把它理解为 @自己；若自主加入，只能作为旁观参与者。
 4. 其他 bot 说“主人让我……”：不得把对方的主人理解为 Hermes 的主人。
 5. 普通群消息：`social_mode=agent` 时 Hermes 自主 reply/observe；`mentions` 时不触发当前推理但在 `context.mode=full` 下仍进入 observation。
-6. 连续交流：后续消息应看到最近 observation，但 Hermes 正式历史不应重复保存整段 projection。
-7. 工具任务：主模型派发 background 子代理后应立即回复“活已经派下去了”一类可见确认。
-8. 模型失败或 Gateway 断线：同一 chat 后续消息不能永久报 active run。
-9. 重复 durable proposal：返回相同 receipt，不重复创建微信 outbox。
-10. 表情或视频：effect 与最终结果一起提交，内部 observe/effect token 不得发到微信。
+6. 抢占：让一个 ambient Run 进入模型后立刻发送 `@ccff`；日志应出现 `Run admission superseded ambient work`，旧 ambient 不得迟到回复，explicit 应在中断完成后开始。
+7. 连续交流：后续消息应看到最近 observation，但 Hermes 正式历史不应重复保存整段 projection。
+8. 工具任务：主模型派发 background 子代理后应立即回复“活已经派下去了”一类可见确认。
+9. 模型失败或 Gateway 断线：同一 chat 后续消息不能永久报 active run。
+10. 重复 durable proposal：返回相同 receipt，不重复创建微信 outbox。
+11. 表情或视频：effect 与最终结果一起提交，内部 observe/effect token 不得发到微信。
 
 owner 运维命令：
 
@@ -433,7 +437,7 @@ tail -n 300 /opt/software/wechat/logs/app.log
 ### 回退 Golem 插件
 
 ```bash
-cp -a /opt/software/wechat/plugins/golem_plugin_hermes.pre-observation-v2.bak \
+cp -a /opt/software/wechat/plugins/golem_plugin_hermes.pre-explicit-preemption.bak \
   /opt/software/wechat/plugins/golem_plugin_hermes.rollback
 chmod 0755 /opt/software/wechat/plugins/golem_plugin_hermes.rollback
 mv /opt/software/wechat/plugins/golem_plugin_hermes.rollback \
@@ -460,7 +464,7 @@ git switch fix/hermes-social-runtime-hardening
 
 - 消息只有进入 Golem Durable Inbox 后才可恢复；Host 接收前的微信消息不在插件保证范围内。
 - 微信发送接口可能出现“服务端已发送但本地超时”的歧义，at-least-once 重试可能产生有限重复。
-- `from_now` 不伪造历史 backfill。
+- `from_now` 不读取 Host 接收前的微信历史，但会继续投递 Golem 已持久化的 pending observation，以保持 conversation sequence 连续。
 - SQLite 方案面向单节点；不能把同一数据库同时挂给多个活跃 Golem 或 Hermes 实例。
 - `context.mode=full` 保存 observation 事实，不等于每条消息都触发模型；当前推理仍由 `social_mode` 决定。
 - 修改 `context.mode` 必须 reload 插件；修改 Hermes Gateway 配置或源码必须 restart Gateway；两者都不要求重启 Host。

@@ -114,17 +114,48 @@ func (s *Store) GetRun(ctx context.Context, id string) (domain.Run, error) {
 }
 
 func (s *Store) LeaseNextRun(ctx context.Context, lane domain.Lane, now time.Time, leaseDuration time.Duration) (domain.Run, error) {
+	return s.leaseNextRun(ctx, lane, "", now, leaseDuration)
+}
+
+func (s *Store) LeaseNextRunByTrigger(
+	ctx context.Context,
+	lane domain.Lane,
+	trigger domain.TriggerKind,
+	now time.Time,
+	leaseDuration time.Duration,
+) (domain.Run, error) {
+	switch trigger {
+	case domain.TriggerAmbient, domain.TriggerExplicit, domain.TriggerControl:
+	default:
+		return domain.Run{}, storeport.ErrInvalid
+	}
+	return s.leaseNextRun(ctx, lane, trigger, now, leaseDuration)
+}
+
+func (s *Store) leaseNextRun(
+	ctx context.Context,
+	lane domain.Lane,
+	trigger domain.TriggerKind,
+	now time.Time,
+	leaseDuration time.Duration,
+) (domain.Run, error) {
 	if leaseDuration <= 0 {
 		return domain.Run{}, errors.New("Run lease duration 必须大于 0")
 	}
 	var leased domain.Run
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		triggerClause := ""
+		args := []any{lane}
+		if trigger != "" {
+			triggerClause = " AND r.trigger_kind=?"
+			args = append(args, trigger)
+		}
 		query := `
 			SELECT ` + runColumns + `
 			FROM runs r
 			JOIN turns t ON t.id=r.turn_id
 			JOIN inbox_events event ON event.id=t.event_id
-			WHERE r.lane=?
+			WHERE r.lane=?` + triggerClause + `
 			  AND (
 			    r.state=?
 			    OR (r.state=? AND r.next_attempt_at<=?)
@@ -160,10 +191,7 @@ func (s *Store) LeaseNextRun(ctx context.Context, lane domain.Lane, now time.Tim
 			ORDER BY t.priority DESC,r.created_at,r.id
 			LIMIT 1
 		`
-		value, err := scanRun(tx.QueryRowContext(
-			ctx,
-			query,
-			lane,
+		args = append(args,
 			domain.RunQueued,
 			domain.RunRetryWait,
 			unixMillis(now),
@@ -176,7 +204,8 @@ func (s *Store) LeaseNextRun(ctx context.Context, lane domain.Lane, now time.Tim
 			domain.RunRunning,
 			domain.RunCancelRequested,
 			domain.RunOrphaned,
-		))
+		)
+		value, err := scanRun(tx.QueryRowContext(ctx, query, args...))
 		if err != nil {
 			return err
 		}

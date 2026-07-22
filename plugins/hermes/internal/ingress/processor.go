@@ -22,6 +22,11 @@ type Processor struct {
 	wake          chan struct{}
 	runWake       chan<- struct{}
 	now           func() time.Time
+	admitter      RunAdmitter
+}
+
+type RunAdmitter interface {
+	AdmitRun(context.Context, domain.Run) (domain.RunAdmissionResult, error)
 }
 
 func NewProcessor(
@@ -29,11 +34,12 @@ func NewProcessor(
 	router routing.Router,
 	reorderWindow time.Duration,
 	runWake chan<- struct{},
+	admitters ...RunAdmitter,
 ) (*Processor, error) {
 	if store == nil || router == nil {
 		return nil, errors.New("ingress processor 缺少 store 或 router")
 	}
-	return &Processor{
+	processor := &Processor{
 		store:         store,
 		router:        router,
 		reorderWindow: max(0, reorderWindow),
@@ -42,7 +48,11 @@ func NewProcessor(
 		wake:          make(chan struct{}, 1),
 		runWake:       runWake,
 		now:           time.Now,
-	}, nil
+	}
+	if len(admitters) > 0 {
+		processor.admitter = admitters[0]
+	}
+	return processor, nil
 }
 
 func (p *Processor) Notify() {
@@ -163,13 +173,20 @@ func (p *Processor) routeOrdered(ctx context.Context) (bool, error) {
 			}
 			return worked, err
 		}
+		admission := domain.RunAdmissionResult{}
+		if run != nil && p.admitter != nil {
+			admission, err = p.admitter.AdmitRun(ctx, *run)
+			if err != nil {
+				return worked, err
+			}
+		}
 		slog.Debug("[hermes] Turn 已路由",
 			"turn_id", routed.ID,
 			"session_id", routed.SessionID,
 			"route", routed.Route,
 			"reason", decision.Reason,
 		)
-		if run != nil {
+		if run != nil && !admission.CurrentSuperseded {
 			notify(p.runWake)
 		}
 		worked = true

@@ -196,10 +196,14 @@ func (a runtimeAssembly) createRunners() ([]app.Runner, *ingress.Processor, erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建 Hermes Router: %w", err)
 	}
+	admission, err := execution.NewRunAdmissionCoordinator(a.store, a.engine, a.manager.Current)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Hermes Run admission coordinator: %w", err)
+	}
 	processor, err := ingress.NewProcessor(
 		a.store, router,
 		time.Duration(a.config.Ingress.ReorderWindowMilliseconds)*time.Millisecond,
-		a.runWake,
+		a.runWake, admission,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建 Hermes Ingress Processor: %w", err)
@@ -273,9 +277,15 @@ func (a runtimeAssembly) appendLaneWorkers(
 		start = a.config.Scheduler.InteractiveWorkers
 	}
 	for index := range count {
+		var options []execution.WorkerOption
+		if lane == domain.LaneInteractive &&
+			a.config.Scheduler.RunAdmissionMode != string(domain.RunAdmissionOff) &&
+			index < a.config.Scheduler.InteractiveReservedWorkers {
+			options = append(options, execution.WithTriggerFilter(domain.TriggerExplicit))
+		}
 		worker, err := execution.NewWorker(
 			start+index, a.store, a.engine, broker, mediaResolver, lane,
-			a.manager.Current, a.runWake, a.outputWake,
+			a.manager.Current, a.runWake, a.outputWake, options...,
 		)
 		if err != nil {
 			return nil, err
