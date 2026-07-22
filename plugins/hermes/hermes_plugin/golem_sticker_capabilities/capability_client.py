@@ -215,8 +215,9 @@ def _read_http_error_detail(error: urllib.error.HTTPError) -> str:
 
 def _raise_http_error(error: urllib.error.HTTPError, detail: str = "") -> NoReturn:
     if error.code in {408, 425, 429} or 500 <= error.code < 600:
+        suffix = f": {detail}" if detail else ""
         raise RetryableCapabilityError(
-            f"Golem capability API is temporarily unavailable (HTTP {error.code})"
+            f"Golem capability API is temporarily unavailable (HTTP {error.code}){suffix}"
         ) from None
     if error.code in {401, 403}:
         raise CapabilityError(

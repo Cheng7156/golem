@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -44,7 +45,13 @@ func (g *RelayGateway) serveAsyncVideoSearch(w http.ResponseWriter, request *htt
 		ProviderID: strings.TrimSpace(input.ProviderID), Limit: input.Limit,
 	})
 	if err != nil {
-		writeCapabilityError(w, http.StatusBadGateway, err.Error())
+		slog.Warn("[hermes] async video search failed",
+			"delegation_id", ticket.DelegationID,
+			"provider_id", strings.TrimSpace(input.ProviderID),
+			"category", strings.TrimSpace(input.Category),
+			"err", err,
+		)
+		writeCapabilityError(w, videoSearchErrorStatus(err), err.Error())
 		return
 	}
 	writeCapabilityJSON(w, http.StatusOK, result)

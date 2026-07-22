@@ -95,6 +95,45 @@ send_timeout_seconds = 180
 
 Hermes 不感知各家 API 格式。Provider 负责把不同请求和响应统一为视频候选。
 
+当前生产环境的通用美女视频 Provider 使用以下配置；`video-sending` skill 中的
+`xjj_stream` 必须与这里及生产 `plugins/config.toml` 保持一致：
+
+```toml
+[[hermes.config.capabilities.video.providers]]
+id = "xjj_stream"
+categories = ["general", "xjj", "beauty", "美女", "小姐姐"]
+priority = 110
+endpoint = "https://api.yujn.cn/api/zzxjj.php"
+method = "GET"
+request_mode = "query"
+response_mode = "json"
+materialization_mode = "lazy"
+timeout_seconds = 15
+requests_per_minute = 30
+max_response_bytes = 1048576
+allowed_media_hosts = ["alimov2.a.kwimgs.com", "txmov2.a.kwimgs.com"]
+fallback_url_policy = "none"
+
+[hermes.config.capabilities.video.providers.headers]
+User-Agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+
+[hermes.config.capabilities.video.providers.query]
+type = "json"
+
+[hermes.config.capabilities.video.providers.response]
+success_path = "code"
+success_values = ["200"]
+items_path = "$"
+
+[hermes.config.capabilities.video.providers.response.url]
+path = "data"
+transforms = ["trim"]
+
+[hermes.config.capabilities.video.providers.response.title]
+path = "title"
+transforms = ["trim"]
+```
+
 ### 5.1 JSON 返回单个或多个 URL
 
 ```toml

@@ -48,7 +48,7 @@ func (g *RelayGateway) serveCronVideoSearch(w http.ResponseWriter, request *http
 		ProviderID: strings.TrimSpace(input.ProviderID), Limit: input.Limit,
 	})
 	if err != nil {
-		writeCapabilityError(w, http.StatusBadGateway, err.Error())
+		writeCapabilityError(w, videoSearchErrorStatus(err), err.Error())
 		return
 	}
 	writeCapabilityJSON(w, http.StatusOK, result)

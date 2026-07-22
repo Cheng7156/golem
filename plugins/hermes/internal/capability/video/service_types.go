@@ -16,6 +16,7 @@ var (
 	ErrCandidateScope    = errors.New("video candidate belongs to a different run or chat")
 	ErrRunVideoLimit     = errors.New("video limit for this run has been reached")
 	ErrProviderNotFound  = errors.New("video provider not found")
+	ErrProviderCategory  = errors.New("video provider does not handle category")
 )
 
 type Scope struct {

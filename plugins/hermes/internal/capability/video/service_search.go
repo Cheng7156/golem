@@ -70,7 +70,7 @@ func (s *service) matchProviders(request SearchRequest) ([]Provider, error) {
 			return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, request.ProviderID)
 		}
 		if !providerHandles(provider, request.Category) {
-			return nil, fmt.Errorf("video provider %s does not handle category %s", provider.ID(), request.Category)
+			return nil, fmt.Errorf("%w: provider %s, category %s", ErrProviderCategory, provider.ID(), request.Category)
 		}
 		return []Provider{provider}, nil
 	}

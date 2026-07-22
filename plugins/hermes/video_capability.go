@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -155,6 +156,9 @@ func (b *videoCapabilityBridge) Search(
 		ProviderID: input.ProviderID, Query: input.Query, Category: input.Category, Limit: input.Limit,
 	})
 	if err != nil {
+		if errors.Is(err, video.ErrProviderNotFound) || errors.Is(err, video.ErrProviderCategory) {
+			return agent.VideoSearchResult{}, fmt.Errorf("%w: %v", agent.ErrInvalidVideoSearch, err)
+		}
 		return agent.VideoSearchResult{}, err
 	}
 	return bridgeVideoSearchResult(result, b.expires), nil

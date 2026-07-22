@@ -226,6 +226,24 @@ class PluginTests(unittest.TestCase):
             "message context does not match the active run", str(caught.exception)
         )
 
+    def test_retryable_error_includes_bounded_golem_error_detail(self):
+        unavailable = __import__("urllib.error").error.HTTPError(
+            "http://127.0.0.1:8789/capabilities/v1/async-delivery/videos/search",
+            502,
+            "bad gateway",
+            {"Content-Type": "application/json; charset=utf-8"},
+            io.BytesIO(
+                json.dumps(
+                    {"error": "all video providers failed: upstream returned HTTP 520"}
+                ).encode()
+            ),
+        )
+        with mock.patch.object(plugin._opener, "open", side_effect=unavailable):
+            with self.assertRaises(plugin._client.RetryableCapabilityError) as caught:
+                plugin._post("capabilities/v1/async-delivery/videos/search", {})
+        self.assertIn("HTTP 502", str(caught.exception))
+        self.assertIn("upstream returned HTTP 520", str(caught.exception))
+
     def test_materialize_reads_only_controlled_media(self):
         response = _Response(b"GIF89a", "image/gif; charset=binary")
         with mock.patch.object(plugin._opener, "open", return_value=response) as opened:

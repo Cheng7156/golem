@@ -244,7 +244,12 @@ V2 projection 配额只接受 Golem descriptor 下发值；descriptor 缺失或�
 
 ```text
 /root/.hermes/skills/messaging/wechat-event-handling/SKILL.md
+/root/.hermes/skills/messaging/video-sending/SKILL.md
 ```
+
+视频发送 skill 的仓库规范副本位于
+`plugins/hermes/hermes_skills/video-sending/SKILL.md`。部署时必须从该副本覆盖运行时文件，
+避免 skill 中的 Provider ID 与 `plugins/config.toml` 漂移。
 
 SOUL、`platform_hints.relay.append` 和该 skill 必须同时支持两种可信身份格式：
 
@@ -386,6 +391,19 @@ cp -a /opt/software/wechat/plugins/golem_plugin_hermes \
   /opt/software/wechat/plugins/golem_plugin_hermes.pre-group-context-compression.bak
 mv /opt/software/wechat/plugins/golem_plugin_hermes.next \
   /opt/software/wechat/plugins/golem_plugin_hermes
+```
+
+同步 Hermes 用户插件和视频发送 skill：
+
+```bash
+install -d /root/.hermes/plugins/golem_sticker_capabilities
+cp -a /opt/software/wechat/golem/plugins/hermes/hermes_plugin/golem_sticker_capabilities/. \
+  /root/.hermes/plugins/golem_sticker_capabilities/
+install -d /root/.hermes/skills/messaging/video-sending
+install -m 0644 \
+  /opt/software/wechat/golem/plugins/hermes/hermes_skills/video-sending/SKILL.md \
+  /root/.hermes/skills/messaging/video-sending/SKILL.md
+/root/.local/bin/hermes gateway restart
 ```
 
 然后由微信 owner 发送：

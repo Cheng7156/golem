@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 type asyncVideoCapability struct {
 	searchScope VideoScope
 	selectScope VideoScope
+	searchError error
 }
 
 func (f *asyncVideoCapability) Search(
@@ -21,9 +23,36 @@ func (f *asyncVideoCapability) Search(
 	_ VideoSearchInput,
 ) (VideoSearchResult, error) {
 	f.searchScope = scope
+	if f.searchError != nil {
+		return VideoSearchResult{}, f.searchError
+	}
 	return VideoSearchResult{Candidates: []VideoCandidate{{
 		ID: "video-candidate", ProviderID: "configured-provider", Title: "sample",
 	}}}, nil
+}
+
+func TestAsyncVideoSearchRejectsInvalidProviderAsClientError(t *testing.T) {
+	plainTicket := "adt_1234567890123456789012345678901234567890"
+	delivery := asyncStickerCapability(plainTicket)
+	videos := &asyncVideoCapability{searchError: fmt.Errorf(
+		"%w: video provider not found: xjj_stream", ErrInvalidVideoSearch,
+	)}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken: testCapabilityToken, AsyncDelivery: delivery, Videos: videos,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayGateway: %v", err)
+	}
+	server := newAsyncVideoServer(gateway)
+	defer server.Close()
+
+	status, body := postCapability(t, server.URL+asyncVideoSearchPath, asyncVideoSearchRequest{
+		asyncBoundRequest: asyncBoundForTicket(plainTicket, delivery.ticket),
+		Category:          "xjj", ProviderID: "xjj_stream", Limit: 1,
+	})
+	if status != http.StatusBadRequest || body["error"] == nil {
+		t.Fatalf("search status=%d body=%#v", status, body)
+	}
 }
 
 func (*asyncVideoCapability) ResolveURL(

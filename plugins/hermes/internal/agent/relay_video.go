@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"golem_plugin_hermes/internal/domain"
 )
+
+var ErrInvalidVideoSearch = errors.New("invalid video search request")
 
 const (
 	videoSearchPath  = "/capabilities/v1/videos/search"
@@ -106,10 +109,17 @@ func (g *RelayGateway) serveVideoSearch(w http.ResponseWriter, request *http.Req
 	})
 	if err != nil {
 		slog.Warn("[hermes] video search failed", "run_id", run.request.RunID, "err", err)
-		writeCapabilityError(w, http.StatusBadGateway, err.Error())
+		writeCapabilityError(w, videoSearchErrorStatus(err), err.Error())
 		return
 	}
 	writeCapabilityJSON(w, http.StatusOK, result)
+}
+
+func videoSearchErrorStatus(err error) int {
+	if errors.Is(err, ErrInvalidVideoSearch) {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
 }
 
 func (g *RelayGateway) serveVideoResolve(w http.ResponseWriter, request *http.Request) {
