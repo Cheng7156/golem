@@ -14,7 +14,7 @@ func classifySendError(err error, ambiguous bool) error {
 	if ambiguous {
 		return output.AmbiguousError{Err: err}
 	}
-	return err
+	return output.NotStartedError{Err: err}
 }
 
 func permanentSendCode(code codes.Code) bool {

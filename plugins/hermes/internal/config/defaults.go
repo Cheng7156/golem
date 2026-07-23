@@ -14,6 +14,7 @@ func Default() Config {
 			SampleRate:                  1,
 			DecisionTimeoutMilliseconds: 1800,
 			DecisionContextMessages:     10,
+			DecisionMinConfidence:       0.72,
 			DecisionAPIKeyEnv:           "GLM_API_KEY",
 			OrdinaryFreshnessSeconds:    8,
 			CoalesceWindowMilliseconds:  900,
@@ -23,6 +24,7 @@ func Default() Config {
 		},
 		Context: ContextConfig{
 			Mode: "legacy_shadow", Backfill: "from_now", RecentRawMessages: 10, MaxProjectionTokens: 4000,
+			BarrierWaitMilliseconds: 1500,
 		},
 		Scheduler: SchedulerConfig{
 			RouterWorkers:              2,

@@ -173,6 +173,21 @@ func TestRelayInvokeTrustedCommandRequiresOwner(t *testing.T) {
 	}
 }
 
+func TestRelayInvokeCarriesCurrentObservationOnlyForLagFallback(t *testing.T) {
+	observation := &domain.ConversationObservation{ObservationID: "o3", ConversationSeq: 3, PayloadHash: "hash"}
+	base := RunRequest{RunID: "run-lag", SessionID: "chatroom:room", Input: "hello",
+		InvocationID: "invoke-lag", ConversationID: "c1", CurrentObservationID: "o3",
+		CurrentPayloadHash: "hash", RequiredContextSeq: 3, CurrentObservation: observation}
+	if frame := relayInvokeObservation(base, "chat", nil); frame["allow_context_lag"] != nil || frame["current_observation"] != nil {
+		t.Fatalf("ordinary invocation leaked lag payload: %#v", frame)
+	}
+	base.ContextLagFallback = true
+	frame := relayInvokeObservation(base, "chat", nil)
+	if frame["allow_context_lag"] != true || frame["current_observation"] != observation {
+		t.Fatalf("lag invocation frame=%#v", frame)
+	}
+}
+
 func TestInboundRunTerminatedDoesNotCloseOrDowngradeConnection(t *testing.T) {
 	gateway, err := NewRelayGateway(RelayConfig{ObservationV2Enabled: true})
 	if err != nil {

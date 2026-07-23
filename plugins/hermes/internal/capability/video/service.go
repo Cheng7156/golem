@@ -37,6 +37,7 @@ type service struct {
 	maxResults      int
 	maxPerRun       int
 	prepareTimeout  time.Duration
+	allowHTTP       bool
 	prepareSlots    chan struct{}
 	pipeline        *PreparationPipeline
 	direct          Provider
@@ -60,8 +61,9 @@ func NewSearchService(
 		defaultCategory: config.DefaultCategory, ttl: config.CandidateTTL,
 		maxRecords: config.MaxRecords, maxResults: config.MaxResults,
 		maxPerRun: config.MaxVideosPerRun, prepareTimeout: config.PrepareTimeout,
+		allowHTTP:    config.AllowHTTP,
 		prepareSlots: make(chan struct{}, config.PrepareWorkers),
-		pipeline:     pipeline, direct: directURLProvider{}, now: time.Now,
+		pipeline:     pipeline, direct: directURLProvider{allowHTTP: config.AllowHTTP}, now: time.Now,
 		records:   make(map[string]*candidateRecord),
 		runCounts: make(map[string]int),
 	}

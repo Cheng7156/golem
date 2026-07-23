@@ -30,11 +30,15 @@ func (s *Store) LeaseNextObservationBatch(
 	var batch domain.ObservationBatch
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT `+contextOutboxColumns+`
-			FROM context_outbox c WHERE state NOT IN (?,?,?) AND NOT EXISTS (
+			FROM context_outbox c WHERE state NOT IN (?,?,?) AND EXISTS (
+				SELECT 1 FROM turns routed WHERE routed.event_id=c.event_id
+					AND routed.state NOT IN (?,?,?)
+			) AND NOT EXISTS (
 				SELECT 1 FROM context_outbox p WHERE p.conversation_id=c.conversation_id
 				AND p.conversation_seq<c.conversation_seq AND p.state<>?
 			) ORDER BY created_at,conversation_id LIMIT 128`, domain.ContextAcked,
-			domain.ContextConflict, domain.ContextDeadLetter, domain.ContextAcked)
+			domain.ContextConflict, domain.ContextDeadLetter, domain.TurnAccepted,
+			domain.TurnOrdered, domain.TurnRouted, domain.ContextAcked)
 		if err != nil {
 			return err
 		}
@@ -58,9 +62,13 @@ func (s *Store) LeaseNextObservationBatch(
 			return storeport.ErrNotFound
 		}
 		rows, err = tx.QueryContext(ctx, `SELECT `+contextOutboxColumns+`
-			FROM context_outbox WHERE conversation_id=? AND state NOT IN (?,?,?)
+			FROM context_outbox c WHERE conversation_id=? AND state NOT IN (?,?,?) AND EXISTS (
+				SELECT 1 FROM turns routed WHERE routed.event_id=c.event_id
+					AND routed.state NOT IN (?,?,?)
+			)
 			ORDER BY conversation_seq LIMIT ?`, head.ConversationID,
-			domain.ContextAcked, domain.ContextConflict, domain.ContextDeadLetter, limit)
+			domain.ContextAcked, domain.ContextConflict, domain.ContextDeadLetter,
+			domain.TurnAccepted, domain.TurnOrdered, domain.TurnRouted, limit)
 		if err != nil {
 			return err
 		}
@@ -161,7 +169,7 @@ func (s *Store) MarkObservationBatchAcked(ctx context.Context, batch domain.Obse
 		}
 		for index, item := range ack.Items {
 			if item.ObservationID != batch.Observations[index].ObservationID ||
-				(item.Status != "committed" && item.Status != "duplicate") {
+				(item.Status != "committed" && item.Status != "duplicate" && item.Status != "ignored") {
 				return storeport.ErrConflict
 			}
 		}

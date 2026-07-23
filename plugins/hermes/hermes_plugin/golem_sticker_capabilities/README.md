@@ -124,12 +124,34 @@ run-bound and their descriptions require an explicit user request for video.
 3. `golem_video_attach(candidate_id)` uses the same candidate in a background
    child, waits for Golem preparation, and returns only after a durable video
    Outbox has been queued.
+4. `golem_video_fetch(url, media_url?)` accepts a normal addressed/private turn
+   and immediately creates a durable background job; that path does not need a
+   child delegation. A background child may still use it for an existing
+   durable delivery ticket. Direct video, text-URL, and unambiguous JSON
+   responses are selected automatically; only ambiguous JSON returns a
+   redacted bounded document and ranked candidates for one exact `media_url`
+   selection.
 
-Golem performs download limits, ffprobe validation, optional ffmpeg conversion,
+Golem performs public-IP/redirect checks, download limits, ffprobe validation, optional ffmpeg conversion,
 thumbnail generation, immutable local storage, Transactional Outbox reference
 tracking, and `message.TypeVideo` delivery. See `VIDEO_CAPABILITY.md` in the
 Golem Hermes plugin source for Provider TOML examples and deployment checks.
-Provider URLs and media bytes never appear in tool arguments or tool results.
+Configured-provider URLs and media bytes never appear in the normal search tools.
+The URL fetch tool returns only the user-supplied source URL and the bounded
+JSON values needed for the child Agent to choose a media URL; credentials in
+JSON fields are redacted.
+
+### Trigger-scoped authority
+
+The model-visible toolset remains stable for prompt caching, but execution is
+authorized from the connector-bound trigger class. Private, explicitly
+addressed, quoted, and control turns retain normal sticker, video, and
+delegation capabilities. An unaddressed ambient `respond` turn may produce text
+and use read-only web tools, but `delegate_task` and every `golem_sticker_*` or
+`golem_video_*` call are blocked. Attachment syntax in its final text is also
+removed. The trigger class is task-local and has no environment-variable or
+model-argument fallback; Golem independently enforces the same ambient media
+denial against the active Run before provider access or durable job creation.
 
 ## Background delegation
 

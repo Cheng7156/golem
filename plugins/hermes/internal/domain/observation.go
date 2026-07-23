@@ -68,7 +68,12 @@ type ConversationObservation struct {
 	ReplyContext      ReplyContext       `json:"reply_context"`
 	Content           ObservationContent `json:"content"`
 	Media             []ObservationMedia `json:"media"`
-	PayloadHash       string             `json:"payload_hash,omitempty"`
+	// TranscriptDisposition is set before first delivery when a routing decision
+	// intentionally excludes this sequence from Hermes' projected transcript.
+	// The sequence is still durably acknowledged so later observations cannot be
+	// blocked by a gap.
+	TranscriptDisposition string `json:"transcript_disposition,omitempty"`
+	PayloadHash           string `json:"payload_hash,omitempty"`
 }
 
 type ContextOutboxState string

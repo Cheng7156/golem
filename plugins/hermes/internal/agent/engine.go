@@ -36,6 +36,8 @@ type RunRequest struct {
 	ConversationID       string
 	CurrentObservationID string
 	CurrentPayloadHash   string
+	CurrentObservation   *domain.ConversationObservation
+	ContextLagFallback   bool
 	RequiredContextSeq   int64
 	TriggerKind          domain.TriggerKind
 	InvocationID         string

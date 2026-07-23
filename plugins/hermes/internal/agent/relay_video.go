@@ -39,6 +39,21 @@ type VideoURLInput struct {
 	Title string
 }
 
+type VideoURLReference struct {
+	Path  string `json:"path"`
+	URL   string `json:"url"`
+	Label string `json:"label,omitempty"`
+	Score int    `json:"score"`
+}
+
+type VideoURLInspection struct {
+	Kind        string              `json:"kind"`
+	FinalURL    string              `json:"final_url,omitempty"`
+	ContentType string              `json:"content_type,omitempty"`
+	Document    any                 `json:"document,omitempty"`
+	Candidates  []VideoURLReference `json:"candidates,omitempty"`
+}
+
 type VideoCandidate struct {
 	ID              string `json:"id"`
 	ProviderID      string `json:"provider_id"`
@@ -60,6 +75,7 @@ type VideoSearchResult struct {
 
 type VideoCapability interface {
 	Search(context.Context, VideoScope, VideoSearchInput) (VideoSearchResult, error)
+	InspectURL(context.Context, VideoScope, string) (VideoURLInspection, error)
 	ResolveURL(context.Context, VideoScope, VideoURLInput) (VideoCandidate, error)
 	Select(context.Context, VideoScope, string) (domain.VideoOutput, error)
 	Release(VideoScope)
@@ -103,6 +119,9 @@ func (g *RelayGateway) serveVideoSearch(w http.ResponseWriter, request *http.Req
 		writeCapabilityError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
 	result, err := g.config.Videos.Search(request.Context(), videoScope(run), VideoSearchInput{
 		Query: strings.TrimSpace(input.Query), Category: strings.TrimSpace(input.Category),
 		ProviderID: strings.TrimSpace(input.ProviderID), Limit: input.Limit,
@@ -136,6 +155,9 @@ func (g *RelayGateway) serveVideoResolve(w http.ResponseWriter, request *http.Re
 		writeCapabilityError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
 	candidate, err := g.config.Videos.ResolveURL(request.Context(), videoScope(run), VideoURLInput{
 		URL: strings.TrimSpace(input.URL), Title: strings.TrimSpace(input.Title),
 	})
@@ -158,6 +180,9 @@ func (g *RelayGateway) serveVideoSelect(w http.ResponseWriter, request *http.Req
 	run, err := g.capabilityRun(input.Context)
 	if err != nil {
 		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
 		return
 	}
 	candidateID := strings.TrimSpace(input.CandidateID)

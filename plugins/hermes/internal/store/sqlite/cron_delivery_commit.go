@@ -66,15 +66,25 @@ func getCronCommit(
 ) (storedCronCommit, error) {
 	var value storedCronCommit
 	err := tx.QueryRowContext(ctx, `
-		SELECT content_hash,message_id,outbox_id FROM cron_delivery_commits
-		WHERE binding_id=? AND delivery_id=?
+		SELECT c.content_hash,c.message_id,c.outbox_id,o.state FROM cron_delivery_commits c
+		JOIN outbox o ON o.id=c.outbox_id WHERE c.binding_id=? AND c.delivery_id=?
 	`, bindingID, deliveryID).Scan(
-		&value.contentHash, &value.result.MessageID, &value.result.OutboxID,
+		&value.contentHash, &value.result.MessageID, &value.result.OutboxID, &value.result.DeliveryState,
 	)
 	if err != nil {
 		return storedCronCommit{}, mapScanError(err)
 	}
 	value.result.Disposition = "delivered"
+	switch value.result.DeliveryState {
+	case string(domain.OutboxSent):
+		value.result.DeliveryState = "delivered"
+	case string(domain.OutboxAmbiguous):
+		value.result.DeliveryState = "ambiguous"
+	case string(domain.OutboxDeadLetter):
+		value.result.DeliveryState = "dead_letter"
+	default:
+		value.result.DeliveryState = "queued"
+	}
 	return value, nil
 }
 
@@ -104,7 +114,7 @@ func insertCronCommit(
 		return err
 	}
 	*result = domain.CronDeliveryResult{
-		Disposition: "delivered", MessageID: ids.messageID, OutboxID: outboxID,
+		Disposition: "delivered", DeliveryState: "queued", MessageID: ids.messageID, OutboxID: outboxID,
 	}
 	return nil
 }

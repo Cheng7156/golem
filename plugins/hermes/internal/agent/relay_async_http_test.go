@@ -54,7 +54,18 @@ func (f *recordingAsyncCapability) RegisterAsyncDelivery(
 	value domain.AsyncDeliveryRegistration,
 ) (domain.AsyncDeliveryTicket, error) {
 	f.registered = value
-	return domain.AsyncDeliveryTicket{State: domain.AsyncDeliveryPending}, nil
+	if f.ticket.TicketHash != "" {
+		return f.ticket, nil
+	}
+	f.ticket = domain.AsyncDeliveryTicket{
+		ID: "ticket-recorded", TicketHash: value.TicketHash, Profile: value.Profile,
+		ProducerEpoch: value.ProducerEpoch, DelegationID: value.DelegationID,
+		HermesSessionID: value.HermesSessionID, RelaySessionKey: value.RelaySessionKey,
+		ChatID: value.ChatID, SessionID: "chatroom:room", ReceiverID: "room",
+		ParentRunID: value.ParentRunID, State: domain.AsyncDeliveryPending,
+		Binding: domain.ChannelBinding{Principal: domain.Principal{ID: "wxid-owner"}},
+	}
+	return f.ticket, nil
 }
 
 func (f *recordingAsyncCapability) GetAsyncDelivery(

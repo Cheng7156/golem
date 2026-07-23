@@ -13,7 +13,7 @@ func (s *service) RegisterURL(ctx context.Context, request URLRequest) (Candidat
 	if err := ctx.Err(); err != nil {
 		return Candidate{}, err
 	}
-	value, err := newDirectURLCandidate(request.URL, request.Title, false)
+	value, err := newDirectURLCandidate(request.URL, request.Title, s.allowHTTP)
 	if err != nil {
 		return Candidate{}, err
 	}

@@ -14,10 +14,11 @@ type Config struct {
 }
 
 type ContextConfig struct {
-	Mode                string `toml:"mode" comment:"legacy_shadow、full 或 none"`
-	Backfill            string `toml:"backfill" comment:"当前仅支持 from_now"`
-	RecentRawMessages   int    `toml:"recent_raw_messages"`
-	MaxProjectionTokens int    `toml:"max_projection_tokens"`
+	Mode                    string `toml:"mode" comment:"legacy_shadow、full 或 none"`
+	Backfill                string `toml:"backfill" comment:"当前仅支持 from_now"`
+	RecentRawMessages       int    `toml:"recent_raw_messages"`
+	MaxProjectionTokens     int    `toml:"max_projection_tokens"`
+	BarrierWaitMilliseconds int    `toml:"barrier_wait_milliseconds" comment:"交互回合等待 durable 群观察的最大毫秒数"`
 }
 
 type CapabilityConfig struct {
@@ -77,6 +78,7 @@ type RoutingConfig struct {
 	SampleRate                  float64  `toml:"sample_rate"`
 	DecisionTimeoutMilliseconds int      `toml:"decision_timeout_milliseconds"`
 	DecisionContextMessages     int      `toml:"decision_context_messages"`
+	DecisionMinConfidence       float64  `toml:"decision_min_confidence"`
 	DecisionBaseURL             string   `toml:"decision_base_url,omitempty"`
 	DecisionModel               string   `toml:"decision_model,omitempty"`
 	DecisionAPIKeyEnv           string   `toml:"decision_api_key_env,omitempty"`

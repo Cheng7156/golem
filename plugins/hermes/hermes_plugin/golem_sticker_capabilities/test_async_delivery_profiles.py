@@ -24,24 +24,26 @@ class AsyncDeliveryProfileTests(unittest.TestCase):
         context = dict(shared.CONTEXT, profile="")
         response = {"state": "pending"}
         with mock.patch.dict(sys.modules, {"hermes_cli.profiles": profiles}):
-            with mock.patch.object(api, "_post_idempotent", return_value=response) as post:
-                result = api.register_delivery(api.RegistrationInput(
-                    delegation_id="deleg_profile1",
-                    hermes_session_id="session-profile",
-                    context=context,
-                ))
+            with mock.patch.object(api, "_producer_epoch", return_value="ade_" + "1" * 32):
+                with mock.patch.object(api, "_post_idempotent", return_value=response) as post:
+                    result = api.register_delivery(api.RegistrationInput(
+                        delegation_id="deleg_profile1",
+                        hermes_session_id="session-profile",
+                        context=context,
+                    ))
         self.assertEqual(result.profile, "wechat-prod")
         self.assertEqual(post.call_args.args[1]["context"]["profile"], "wechat-prod")
 
     def test_explicit_multiplex_profile_is_preserved(self):
         context = dict(shared.CONTEXT, profile="secondary")
         with mock.patch.object(api, "active_profile") as active:
-            with mock.patch.object(api, "_post_idempotent", return_value={"state": "pending"}):
-                result = api.register_delivery(api.RegistrationInput(
-                    delegation_id="deleg_profile2",
-                    hermes_session_id="session-profile",
-                    context=context,
-                ))
+            with mock.patch.object(api, "_producer_epoch", return_value="ade_" + "2" * 32):
+                with mock.patch.object(api, "_post_idempotent", return_value={"state": "pending"}):
+                    result = api.register_delivery(api.RegistrationInput(
+                        delegation_id="deleg_profile2",
+                        hermes_session_id="session-profile",
+                        context=context,
+                    ))
         active.assert_not_called()
         self.assertEqual(result.profile, "secondary")
 
@@ -60,6 +62,32 @@ class AsyncDeliveryProfileTests(unittest.TestCase):
             self.assertEqual(
                 api.delivery_profiles(), ("default", "secondary")
             )
+
+    def test_only_root_gateway_startup_reconciles(self):
+        gateway = type("Gateway", (), {})()
+        with mock.patch.object(
+            runtime, "activate_gateway_producer", return_value="ade_" + "3" * 32
+        ) as activate:
+            with mock.patch.object(
+                runtime, "delivery_profiles", return_value=("default", "secondary")
+            ):
+                with mock.patch.object(runtime, "reconcile", return_value=0) as reconcile:
+                    runtime.gateway_startup(gateway=gateway)
+        activate.assert_called_once_with()
+        self.assertEqual(
+            [call.args[0] for call in reconcile.call_args_list],
+            ["default", "secondary"],
+        )
+
+    def test_repeated_root_hook_keeps_same_producer_identity(self):
+        gateway = type("Gateway", (), {})()
+        with mock.patch.object(
+            runtime, "activate_gateway_producer", return_value="ade_" + "4" * 32
+        ) as activate:
+            with mock.patch.object(runtime, "delivery_profiles", return_value=()):
+                runtime.gateway_startup(gateway=gateway)
+                runtime.gateway_startup(gateway=gateway)
+        activate.assert_called_once_with()
 
     def test_synthetic_source_restores_ticket_profile(self):
         @dataclass

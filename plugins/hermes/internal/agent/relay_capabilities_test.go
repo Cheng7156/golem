@@ -127,6 +127,62 @@ func TestStickerCapabilityRequiresAuthenticationAndExactRunContext(t *testing.T)
 	}
 }
 
+func TestAmbientRunRejectsStickerCapabilitiesBeforeProvider(t *testing.T) {
+	capability := &fakeStickerCapability{}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken: testCapabilityToken, Stickers: capability,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayGateway: %v", err)
+	}
+	request := RunRequest{
+		RunID: "run-ambient-sticker", SessionID: "chatroom:room-ambient",
+		Lane: domain.LaneInteractive, TriggerKind: domain.TriggerAmbient,
+		Principal: domain.Principal{ID: "wxid-owner"}, Input: "group chatter",
+		ChatType: "group", MessageID: "event-ambient-sticker",
+	}
+	run := &relayRun{
+		engine: gateway, request: request, chatID: relayChatID(request),
+		events: make(chan Event, 8),
+	}
+	gateway.pending[run.chatID] = run
+	mux := http.NewServeMux()
+	mux.HandleFunc(stickerSearchPath, gateway.serveStickerSearch)
+	mux.HandleFunc(stickerMaterializePath, gateway.serveStickerMaterialize)
+	mux.HandleFunc(stickerSelectPath, gateway.serveStickerSelect)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	for _, test := range []struct {
+		name string
+		path string
+		body any
+	}{
+		{name: "search", path: stickerSearchPath, body: stickerSearchRequest{
+			Query: "开心", Limit: 1, Context: capabilityContext(request),
+		}},
+		{name: "materialize", path: stickerMaterializePath, body: stickerSelectRequest{
+			CandidateID: "candidate-1", Context: capabilityContext(request),
+		}},
+		{name: "select", path: stickerSelectPath, body: stickerSelectRequest{
+			CandidateID: "candidate-1", Context: capabilityContext(request),
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, response := postCapability(t, server.URL+test.path, test.body)
+			if status != http.StatusForbidden || response["error"] != ambientMediaDenied {
+				t.Fatalf("status=%d response=%#v", status, response)
+			}
+		})
+	}
+	capability.mu.Lock()
+	defer capability.mu.Unlock()
+	if capability.query != "" || capability.selectedID != "" ||
+		capability.materializeScope.RunID != "" {
+		t.Fatalf("ambient request reached sticker provider: %#v", capability)
+	}
+}
+
 func TestStickerCapabilityRejectsRelayPathCollision(t *testing.T) {
 	for _, path := range []string{stickerSearchPath, stickerMaterializePath, stickerSelectPath} {
 		if _, err := NewRelayGateway(RelayConfig{

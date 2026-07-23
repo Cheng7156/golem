@@ -70,8 +70,10 @@ type OutboxState string
 const (
 	OutboxPending    OutboxState = "pending"
 	OutboxLeased     OutboxState = "leased"
+	OutboxSending    OutboxState = "sending"
 	OutboxRetryWait  OutboxState = "retry_wait"
 	OutboxSent       OutboxState = "sent"
+	OutboxAmbiguous  OutboxState = "ambiguous"
 	OutboxDeadLetter OutboxState = "dead_letter"
 )
 

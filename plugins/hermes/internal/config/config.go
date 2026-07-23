@@ -71,6 +71,12 @@ func normalizeContext(value *ContextConfig, defaults ContextConfig) error {
 	if value.MaxProjectionTokens > 65536 {
 		return errors.New("context.max_projection_tokens 不能大于 65536")
 	}
+	if value.BarrierWaitMilliseconds <= 0 {
+		value.BarrierWaitMilliseconds = defaults.BarrierWaitMilliseconds
+	}
+	if value.BarrierWaitMilliseconds > 10000 {
+		return errors.New("context.barrier_wait_milliseconds 不能大于 10000")
+	}
 	return nil
 }
 
@@ -114,6 +120,12 @@ func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 	}
 	if value.DecisionContextMessages > 30 {
 		return errors.New("routing.decision_context_messages 不能大于 30")
+	}
+	if value.DecisionMinConfidence <= 0 {
+		value.DecisionMinConfidence = defaults.DecisionMinConfidence
+	}
+	if value.DecisionMinConfidence <= 0 || value.DecisionMinConfidence > 1 {
+		return errors.New("routing.decision_min_confidence 必须大于 0 且不超过 1")
 	}
 	value.DecisionBaseURL = strings.TrimRight(strings.TrimSpace(value.DecisionBaseURL), "/")
 	if value.DecisionBaseURL != "" {

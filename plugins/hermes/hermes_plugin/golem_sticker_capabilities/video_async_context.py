@@ -50,16 +50,40 @@ def video_search(
     )
 
 
+def video_inspect(binding: Any, url: str) -> dict[str, Any]:
+    if isinstance(binding, CronDeliveryBinding):
+        raise CapabilityError("URL video fetch is available only in a background child")
+    return _async_api.video_inspect(binding, url)
+
+
 def video_send(binding: Any, candidate_id: str, invocation: str) -> dict[str, Any]:
     if isinstance(binding, CronDeliveryBinding):
         return _cron_api.video_send(binding, candidate_id, invocation)
     return _async_api.video_send(binding, candidate_id, invocation)
 
 
+def video_send_url(
+    binding: Any, url: str, title: str, invocation: str
+) -> dict[str, Any]:
+    if isinstance(binding, CronDeliveryBinding):
+        raise CapabilityError("URL video fetch is available only in a background child")
+    return _async_api.video_send_url(binding, url, title, invocation)
+
+
 def video_status(binding: Any, job_id: str) -> dict[str, Any]:
     if isinstance(binding, CronDeliveryBinding):
         return _cron_api.video_status(binding, job_id)
     return _async_api.video_status(binding, job_id)
+
+
+def inline_video_fetch(url: str, title: str, invocation: str) -> dict[str, Any]:
+    context = _client.current_context()
+    hermes_session_id = str(context.get("session_id") or "").strip()
+    if not hermes_session_id:
+        raise CapabilityError("Hermes session id is unavailable")
+    return _async_api.inline_video_fetch(
+        url, title, invocation, hermes_session_id, context
+    )
 
 
 def invocation_id() -> str:

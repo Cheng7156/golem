@@ -90,13 +90,13 @@ class AsyncDeliverySecurityTests(unittest.TestCase):
         runtime._patch_injection(Runner)
         with mock.patch.object(runtime, "wait_registration", return_value=None), \
                 mock.patch.object(runtime, "_requeue_completion") as requeue, \
-                mock.patch.object(runtime, "_acknowledge_terminal_completion") as acknowledge:
+                mock.patch.object(runtime, "_discard_terminal_completion") as discard:
                 accepted = asyncio.run(Runner()._inject_watch_notification(
                     "done",
                     {"type": "async_delegation", "delegation_id": "deleg_orphan1"},
                 ))
         requeue.assert_not_called()
-        acknowledge.assert_called_once_with("deleg_orphan1")
+        discard.assert_called_once_with("deleg_orphan1", "orphan completion")
         self.assertIs(accepted, True)
 
     def test_reset_during_registration_revokes_late_ticket(self):

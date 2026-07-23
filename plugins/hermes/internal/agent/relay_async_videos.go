@@ -16,9 +16,21 @@ type asyncVideoSearchRequest struct {
 	Limit      int    `json:"limit"`
 }
 
+type asyncVideoInspectRequest struct {
+	asyncBoundRequest
+	URL string `json:"url"`
+}
+
 type asyncVideoSendRequest struct {
 	asyncBoundRequest
 	CandidateID  string `json:"candidate_id"`
+	InvocationID string `json:"invocation_id"`
+}
+
+type asyncVideoSendURLRequest struct {
+	asyncBoundRequest
+	URL          string `json:"url"`
+	Title        string `json:"title,omitempty"`
 	InvocationID string `json:"invocation_id"`
 }
 
@@ -57,6 +69,40 @@ func (g *RelayGateway) serveAsyncVideoSearch(w http.ResponseWriter, request *htt
 	writeCapabilityJSON(w, http.StatusOK, result)
 }
 
+func (g *RelayGateway) serveAsyncVideoInspect(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input asyncVideoInspectRequest
+	if decodeCapabilityRequest(w, request, &input) != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid async video inspection request")
+		return
+	}
+	ticket, ok := g.asyncVideoTicket(w, request, input.asyncBoundRequest)
+	if !ok {
+		return
+	}
+	rawURL := strings.TrimSpace(input.URL)
+	if rawURL == "" || len(rawURL) > 4096 {
+		writeCapabilityError(w, http.StatusBadRequest, "video URL is empty or too long")
+		return
+	}
+	result, err := g.config.Videos.InspectURL(request.Context(), asyncVideoScope(ticket), rawURL)
+	if err != nil {
+		slog.Warn("[hermes] async video URL inspection failed",
+			"delegation_id", ticket.DelegationID, "err", err)
+		writeCapabilityError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := g.rememberAsyncVideoURLs(request.Context(), ticket.TicketHash, result); err != nil {
+		slog.Warn("[hermes] could not persist async video URL inspection",
+			"delegation_id", ticket.DelegationID, "err", err)
+		writeCapabilityError(w, http.StatusInternalServerError, "could not persist video URL inspection")
+		return
+	}
+	writeCapabilityJSON(w, http.StatusOK, result)
+}
+
 func (g *RelayGateway) serveAsyncVideoSend(w http.ResponseWriter, request *http.Request) {
 	if !g.prepareCapabilityRequest(w, request) {
 		return
@@ -71,6 +117,27 @@ func (g *RelayGateway) serveAsyncVideoSend(w http.ResponseWriter, request *http.
 		return
 	}
 	job, err := g.startAsyncVideoJob(ticket, input)
+	if err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeCapabilityJSON(w, http.StatusAccepted, asyncVideoJobResponse(job))
+}
+
+func (g *RelayGateway) serveAsyncVideoSendURL(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input asyncVideoSendURLRequest
+	if decodeCapabilityRequest(w, request, &input) != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid async video URL send request")
+		return
+	}
+	ticket, ok := g.asyncVideoTicket(w, request, input.asyncBoundRequest)
+	if !ok {
+		return
+	}
+	job, err := g.startAsyncVideoURLJob(ticket, input)
 	if err != nil {
 		writeCapabilityError(w, http.StatusBadRequest, err.Error())
 		return

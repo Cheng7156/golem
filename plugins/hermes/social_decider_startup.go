@@ -38,5 +38,6 @@ func buildSocialDecider(
 		APIKey:          apiKey,
 		Model:           cfg.Routing.DecisionModel,
 		ContextMessages: cfg.Routing.DecisionContextMessages,
+		MinConfidence:   cfg.Routing.DecisionMinConfidence,
 	}, store, nil)
 }

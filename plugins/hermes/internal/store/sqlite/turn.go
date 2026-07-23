@@ -186,6 +186,17 @@ func (s *Store) RouteTurn(
 	lane domain.Lane,
 	deadline time.Time,
 ) (domain.Turn, *domain.Run, error) {
+	return s.RouteTurnWithContextDisposition(ctx, turnID, route, lane, deadline, false)
+}
+
+func (s *Store) RouteTurnWithContextDisposition(
+	ctx context.Context,
+	turnID string,
+	route domain.Route,
+	lane domain.Lane,
+	deadline time.Time,
+	suppressObservation bool,
+) (domain.Turn, *domain.Run, error) {
 	var turn domain.Turn
 	var run *domain.Run
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
@@ -198,6 +209,14 @@ func (s *Store) RouteTurn(
 		}
 		if value.State != domain.TurnOrdered {
 			return storeport.ErrConflict
+		}
+		if suppressObservation && route != domain.RouteObserve {
+			return storeport.ErrInvalid
+		}
+		if suppressObservation {
+			if err := suppressContextObservation(tx, value.EventID, time.Now()); err != nil {
+				return err
+			}
 		}
 		if err := domain.ValidateTurnTransition(value.State, domain.TurnRouted); err != nil {
 			return errors.Join(storeport.ErrConflict, err)
@@ -346,6 +365,54 @@ func (s *Store) RouteTurn(
 		return nil
 	})
 	return turn, run, err
+}
+
+func suppressContextObservation(tx *sql.Tx, eventID string, now time.Time) error {
+	var state domain.ContextOutboxState
+	var raw []byte
+	if err := tx.QueryRow(`SELECT state,observation_json FROM context_outbox WHERE event_id=?`, eventID).
+		Scan(&state, &raw); err != nil {
+		return mapScanError(err)
+	}
+	if state == domain.ContextAcked {
+		// An observation acknowledged by an older dispatcher cannot be retracted.
+		// Complete routing so an upgrade does not strand the Turn.
+		return nil
+	}
+	if state == domain.ContextLeased {
+		return storeport.ErrConflict
+	}
+	if state != domain.ContextPending && state != domain.ContextRetryWait {
+		return nil
+	}
+	var observation domain.ConversationObservation
+	if err := json.Unmarshal(raw, &observation); err != nil {
+		return err
+	}
+	if observation.TranscriptDisposition == "ignore" {
+		return nil
+	}
+	observation.TranscriptDisposition = "ignore"
+	if err := domain.FinalizeObservationHash(&observation); err != nil {
+		return err
+	}
+	updated, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE context_outbox SET payload_hash=?,observation_json=?,updated_at=?
+		WHERE event_id=? AND state=?`, observation.PayloadHash, updated, unixMillis(now), eventID, state)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return storeport.ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) TransitionTurn(ctx context.Context, id string, to domain.TurnState, route domain.Route) error {

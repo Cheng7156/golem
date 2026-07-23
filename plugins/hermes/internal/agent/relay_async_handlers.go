@@ -12,7 +12,9 @@ func (g *RelayGateway) registerAsyncDeliveryHandlers(mux *http.ServeMux) {
 	mux.HandleFunc(asyncStickerSendPath, g.serveAsyncStickerSend)
 	if g.config.Videos != nil {
 		mux.HandleFunc(asyncVideoSearchPath, g.serveAsyncVideoSearch)
+		mux.HandleFunc(asyncVideoInspectPath, g.serveAsyncVideoInspect)
 		mux.HandleFunc(asyncVideoSendPath, g.serveAsyncVideoSend)
+		mux.HandleFunc(asyncVideoSendURLPath, g.serveAsyncVideoSendURL)
 		mux.HandleFunc(asyncVideoStatusPath, g.serveAsyncVideoStatus)
 	}
 	mux.HandleFunc(asyncDeliveryRevokePath, g.serveAsyncDeliveryRevoke)

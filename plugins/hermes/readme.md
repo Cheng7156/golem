@@ -119,6 +119,7 @@ mode = "full"
 backfill = "from_now"
 recent_raw_messages = 10
 max_projection_tokens = 4000
+barrier_wait_milliseconds = 1500
 ```
 
 只改 `social_mode` 不会自动开启 V2；只改 `context.mode=full` 也不会让每条消息都触发模型。
@@ -223,7 +224,7 @@ gateway:
       enabled: true
       extra:
         relay_url: http://127.0.0.1:8789
-        group_sessions_per_user: false
+        group_sessions_per_user: true
 ```
 
 `observation_mode`：

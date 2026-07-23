@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenMigratesSchemaV1ToV8(t *testing.T) {
+func TestOpenMigratesSchemaV1ToV10(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hermes.db")
 	db, err := sql.Open("sqlite", path)
@@ -37,8 +37,8 @@ func TestOpenMigratesSchemaV1ToV8(t *testing.T) {
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("schema version=%d, want 8", version)
+	if version != 10 {
+		t.Fatalf("schema version=%d, want 10", version)
 	}
 	var table string
 	if err := store.db.QueryRowContext(ctx,
@@ -70,5 +70,15 @@ func TestOpenMigratesSchemaV1ToV8(t *testing.T) {
 		`SELECT name FROM sqlite_master WHERE type='table' AND name='ambient_reply_budget'`,
 	).Scan(&table); err != nil {
 		t.Fatalf("ambient reply budget table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='async_video_jobs'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("async video jobs table missing: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='async_video_urls'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("async video URLs table missing: %v", err)
 	}
 }

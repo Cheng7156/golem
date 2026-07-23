@@ -59,7 +59,7 @@ RELAY_HOME_CHANNEL=disabled
 Hermes Agent 的 `config.yaml` 应关闭 relay 侧 MCP。`relay` 没有官方核心 toolset，`no_mcp` 同时阻止全局 MCP 自动注入：
 
 ```yaml
-group_sessions_per_user: false
+group_sessions_per_user: true
 
 agent:
   gateway_timeout: 1800
@@ -86,7 +86,20 @@ display:
 
 相同开关也启用 Hermes `0.18.2` cron 主动投递。cron 创建时必须处于真实 Golem Relay Turn，插件把 `job_id` 绑定到当前微信会话；触发结果经 Bearer 鉴权的 capability HTTP 直接进入 Transactional Outbox，不要求 active Run，也不放宽普通 Relay orphan send。升级前创建的 cron 没有该绑定，必须删除后从目标微信会话重新创建。
 
-推荐使用插件侧 `routing.social_mode = "hybrid"`。`group_sessions_per_user: false` 让同一微信群共享 Hermes 上下文；普通消息先经过快速规则和独立 SocialDecider，观察消息会进入影子上下文，值得参与时才运行 Hermes。`agent` 保留全部普通消息直接交给 Hermes 的完全自主模式，`mentions` 则只处理私聊、@机器人或引用机器人。
+推荐使用插件侧 `routing.social_mode = "hybrid"`，并将 Hermes 的
+`group_sessions_per_user` 设为 `true`。群 observation stream 仍按微信群共享，只有
+interactive transcript 按发送者隔离；因此 Hermes 能理解群里刚才的讨论，但不会把甲的
+工具结果和长期对话串到乙的会话里。普通消息先经过快速规则和独立 SocialDecider：
+`ignore` 只推进有序游标而不进入 transcript，`observe` 写共享观察，只有高置信
+`respond` 才启动 Hermes。`agent` 保留全部普通消息直接交给 Hermes 的完全自主模式，
+`mentions` 则只处理私聊、@机器人或引用机器人。
+
+Hybrid 中未被点名但 SocialDecider 判定为 `respond` 的 ambient 回合保持固定工具
+schema，但执行权限会收紧：允许文本与只读 web，拒绝 `delegate_task`、全部
+`golem_sticker_*` / `golem_video_*` 工具及最终回复中的附件语法。权限来自认证 Relay
+invocation 的 task-local trigger binding，不读取模型参数或环境变量。私聊、@Hermes、
+引用 Hermes 和 control 回合不受此限制。Golem Capability Broker 还会基于 active Run
+再次拒绝 ambient 媒体请求，确保即使绕过 Hermes hook 也不会调用 Provider 或创建 job。
 
 插件 `0.4.2` 起，Relay 模式忽略 Golem `agent.timeout_seconds`，不再用墙钟 Deadline 提前放弃仍在运行的 Hermes Turn。任务活性由 Hermes `agent.gateway_timeout`（无活动超时，`0` 表示无限）管理；Relay 断线会保留 Run 并退避重试。插件内部失败只写 SQLite 和日志，不再生成 `The request failed temporarily. Please try again later.` 之类的微信聊天回复。
 
@@ -102,7 +115,7 @@ POST /capabilities/v1/stickers/materialize
 POST /capabilities/v1/stickers/select
 ```
 
-Hermes 用户插件从 task-local `gateway.session_context` 注入当前 Relay 上下文，模型参数中没有 wxId、chat ID、URL 或路径。Search 只返回随机候选 ID；Materialize 再次验证当前活动 Run 并返回 Golem 安全下载的候选字节，由 Hermes `auxiliary.vision` 识别；Select 复用完全相同的缓存字节并暂存 Emoji effect。最终 Relay send 到达后，文字和 effect 才一起提交到 Transactional Outbox。Agent 选择观察 ambient 消息时，暂存 effect 会被丢弃。
+Hermes 用户插件从 task-local `gateway.session_context` 注入当前 Relay 上下文，模型参数中没有 wxId、chat ID、URL 或路径。Search 只返回随机候选 ID；Materialize 再次验证当前活动 Run 并返回 Golem 安全下载的候选字节，由 Hermes `auxiliary.vision` 识别；Select 复用完全相同的缓存字节并暂存 Emoji effect。最终 Relay send 到达后，文字和 effect 才一起提交到 Transactional Outbox。ambient 回合在 Search/Materialize/Select 之前即被拒绝，不会产生需要事后丢弃的 effect。
 
 Provider 是可配置的 HTTP/JSON 驱动，支持 GET query、POST form、`${env:NAME}` 凭据模板、GJSON 响应路径和有限的纯数据转换。Capability Bearer token 和 Provider 模板变量都从 `capabilities.environment_file` 读取，并随 `/pm load hermes` 生效，不要求修改、停止或重启 Golem Host。Host 环境变量读取仅为旧部署兼容。下载阶段强制 HTTPS、媒体域名白名单、Public IP、重定向复验、大小上限和图片 magic 校验。完整 APiHz `type=2` 配置、Hermes 用户插件安装和环境变量见 [readme.md](./readme.md)。
 
@@ -166,4 +179,5 @@ relay Gateway 必须与 Golem 共享该本地媒体目录的文件系统视图�
 - 表情候选 ID 与 Run/chat 绑定且短时失效；Agent 看不到 Provider URL，也不能改变接收者。
 - 网络图片只允许无凭据 HTTPS URL和配置允许的 CDN 域名，拒绝 loopback、私网、link-local、multicast、越权重定向、超限内容和非图片 magic。
 - 出站图片和表情只通过 SDK `message.Send` 的 `Media.Data` 把原始字节交给 Host，由 Host 内部执行 `SendImage`/`SendEmoji` 和 CDN 上传。Hermes 不注入、不调用 `cdn.Ability`，也不预上传后传 `file_id/key`。
-- 发送语义是 at-least-once；结果不确定时可能重复，绝不静默丢弃。
+- 调用 Host 前失败使用 at-least-once 安全重试；一旦进入 Host 调用而 receipt 不确定，
+  Outbox 标记为 `ambiguous` 且不自动重发，避免群里出现重复视频。

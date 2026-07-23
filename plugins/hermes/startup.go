@@ -147,6 +147,7 @@ func buildRelayGateway(
 		Videos:               capabilities.videos,
 		VideoLinkFallback:    cfg.Capabilities.Video.LinkFallbackEnabled,
 		AsyncDelivery:        asyncDeliveryCapability(cfg, store),
+		AsyncVideoJobs:       store,
 		CronDelivery:         cronDeliveryCapability(cfg, store),
 		AsyncDeliveryWake:    func() { signalWake(outputWake) },
 		MediaDirectory:       filepath.Join(cfg.DataDir, "media"),

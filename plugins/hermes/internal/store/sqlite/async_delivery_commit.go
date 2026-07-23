@@ -56,6 +56,7 @@ func terminalAsyncResult(
 	ticket domain.AsyncDeliveryTicket,
 ) (domain.AsyncDeliveryResult, error) {
 	disposition := "discarded"
+	deliveryState := "discarded"
 	outboxIDs := []string(nil)
 	if ticket.State == domain.AsyncDeliveryConsumed {
 		disposition = "delivered"
@@ -66,10 +67,16 @@ func terminalAsyncResult(
 		}
 		if len(outboxIDs) == 0 {
 			disposition = "silent"
+			deliveryState = "silent"
+		} else {
+			deliveryState, err = asyncOutboxDeliveryState(ctx, tx, ticket)
+			if err != nil {
+				return domain.AsyncDeliveryResult{}, err
+			}
 		}
 	}
 	return domain.AsyncDeliveryResult{
-		State: ticket.State, Disposition: disposition,
+		State: ticket.State, Disposition: disposition, DeliveryState: deliveryState,
 		MessageID: ticket.ResultMessageID, OutboxID: ticket.OutboxID,
 		OutboxIDs: outboxIDs,
 	}, nil
@@ -233,12 +240,41 @@ func consumeAsyncTicket(
 	}
 	*result = domain.AsyncDeliveryResult{
 		State: domain.AsyncDeliveryConsumed, Disposition: "delivered",
-		MessageID: messageID, OutboxID: outboxID, OutboxIDs: outboxIDs,
+		DeliveryState: "queued",
+		MessageID:     messageID, OutboxID: outboxID, OutboxIDs: outboxIDs,
 	}
 	if outboxID == "" {
 		result.Disposition = "silent"
+		result.DeliveryState = "silent"
 	}
 	return nil
+}
+
+func asyncOutboxDeliveryState(ctx context.Context, tx *sql.Tx, ticket domain.AsyncDeliveryTicket) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT state FROM outbox WHERE run_id=?`, "run_"+ticket.ID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	result := "delivered"
+	for rows.Next() {
+		var state domain.OutboxState
+		if err := rows.Scan(&state); err != nil {
+			return "", err
+		}
+		switch state {
+		case domain.OutboxAmbiguous:
+			return "ambiguous", nil
+		case domain.OutboxDeadLetter:
+			result = "dead_letter"
+		case domain.OutboxSent:
+		default:
+			if result == "delivered" {
+				result = "queued"
+			}
+		}
+	}
+	return result, rows.Err()
 }
 
 func listAsyncOutboxIDs(

@@ -15,8 +15,11 @@ import (
 )
 
 type fakeVideoCapability struct {
-	selectError error
-	released    bool
+	selectError  error
+	released     bool
+	searchCalls  int
+	resolveCalls int
+	selectCalls  int
 }
 
 func (f *fakeVideoCapability) Search(
@@ -24,9 +27,18 @@ func (f *fakeVideoCapability) Search(
 	VideoScope,
 	VideoSearchInput,
 ) (VideoSearchResult, error) {
+	f.searchCalls++
 	return VideoSearchResult{Candidates: []VideoCandidate{{
 		ID: "video-candidate", ProviderID: "test", Title: "sample",
 	}}}, nil
+}
+
+func (*fakeVideoCapability) InspectURL(
+	context.Context,
+	VideoScope,
+	string,
+) (VideoURLInspection, error) {
+	return VideoURLInspection{Kind: "video", FinalURL: "https://example.com/video.mp4"}, nil
 }
 
 func (f *fakeVideoCapability) ResolveURL(
@@ -34,6 +46,7 @@ func (f *fakeVideoCapability) ResolveURL(
 	_ VideoScope,
 	input VideoURLInput,
 ) (VideoCandidate, error) {
+	f.resolveCalls++
 	return VideoCandidate{ID: "url-candidate", ProviderID: "direct_url", PageURL: input.URL}, nil
 }
 
@@ -42,6 +55,7 @@ func (f *fakeVideoCapability) Select(
 	_ VideoScope,
 	candidateID string,
 ) (domain.VideoOutput, error) {
+	f.selectCalls++
 	if f.selectError != nil {
 		return domain.VideoOutput{}, f.selectError
 	}
@@ -119,6 +133,58 @@ func TestRelayVideoDescriptorRequiresExplicitUserRequest(t *testing.T) {
 	if !strings.Contains(hint, "only when the user explicitly asks") ||
 		!strings.Contains(hint, "Never proactively send video") {
 		t.Fatalf("platform_hint=%q", hint)
+	}
+}
+
+func TestAmbientRunRejectsVideoCapabilitiesBeforeProviderOrJob(t *testing.T) {
+	capability := &fakeVideoCapability{}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken: testCapabilityToken, Videos: capability,
+	})
+	if err != nil {
+		t.Fatalf("NewRelayGateway: %v", err)
+	}
+	request := RunRequest{
+		RunID: "run-ambient-video", SessionID: "chatroom:room-ambient-video",
+		Lane: domain.LaneInteractive, TriggerKind: domain.TriggerAmbient,
+		Principal: domain.Principal{ID: "wxid-owner"}, Input: "https://example.invalid/video",
+		ChatType: "group", MessageID: "event-ambient-video",
+	}
+	chatID := relayChatID(request)
+	gateway.pending[chatID] = &relayRun{
+		engine: gateway, request: request, chatID: chatID, events: make(chan Event, 8),
+	}
+	server := newVideoRelayServer(gateway)
+	defer server.Close()
+	for _, test := range []struct {
+		name string
+		path string
+		body any
+	}{
+		{name: "search", path: videoSearchPath, body: videoSearchRequest{
+			Query: "sample", Limit: 1, Context: capabilityContext(request),
+		}},
+		{name: "resolve", path: videoResolvePath, body: videoResolveRequest{
+			URL: "https://example.invalid/video", Context: capabilityContext(request),
+		}},
+		{name: "select", path: videoSelectPath, body: videoSelectRequest{
+			CandidateID: "video-candidate", Context: capabilityContext(request),
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, response := postCapability(t, server.URL+test.path, test.body)
+			if status != http.StatusForbidden || response["error"] != ambientMediaDenied {
+				t.Fatalf("status=%d response=%#v", status, response)
+			}
+		})
+	}
+	if capability.searchCalls != 0 || capability.resolveCalls != 0 || capability.selectCalls != 0 {
+		t.Fatalf("ambient request reached video provider: %#v", capability)
+	}
+	gateway.videoMu.Lock()
+	defer gateway.videoMu.Unlock()
+	if len(gateway.videoJobs) != 0 {
+		t.Fatalf("ambient request created video jobs: %#v", gateway.videoJobs)
 	}
 }
 

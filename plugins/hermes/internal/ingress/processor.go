@@ -160,12 +160,13 @@ func (p *Processor) routeOrdered(ctx context.Context) (bool, error) {
 		if err != nil {
 			return worked, err
 		}
-		routed, run, err := p.store.RouteTurn(
+		routed, run, err := p.store.RouteTurnWithContextDisposition(
 			ctx,
 			turn.ID,
 			decision.Route,
 			decision.Lane,
 			decision.Deadline,
+			decision.Disposition == routing.DispositionIgnore,
 		)
 		if err != nil {
 			if errors.Is(err, storeport.ErrConflict) {

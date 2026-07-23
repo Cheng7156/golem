@@ -14,6 +14,7 @@ from . import async_delivery_text as _async_text
 from . import capability_client as _client
 from . import cron_delivery as _cron_delivery
 from . import video_async_tools as _video_async_tools
+from . import video_fetch_tools as _video_fetch_tools
 from . import video_tools as _video_tools
 from . import vision_inspect as _vision
 from .errors import CapabilityError
@@ -229,10 +230,13 @@ def register(ctx) -> None:
         _async_runtime.install()
         _cron_delivery.install()
         ctx.register_middleware("tool_execution", _async_runtime.tool_execution)
-        ctx.register_hook("pre_tool_call", _async_runtime.pre_tool_call)
+        ctx.register_hook("on_gateway_startup", _async_runtime.gateway_startup)
         ctx.register_hook("pre_gateway_dispatch", _async_runtime.pre_gateway_dispatch)
         ctx.register_hook("on_session_reset", _async_runtime.session_reset)
-        ctx.register_hook("transform_llm_output", _async_text.normalize_text)
+    # Ambient authorization is required even when detached async delivery is
+    # disabled, so keep these hooks independent of that feature.
+    ctx.register_hook("pre_tool_call", _async_runtime.pre_tool_call)
+    ctx.register_hook("transform_llm_output", _async_text.normalize_text)
     common = {
         "toolset": TOOLSET,
         "check_fn": _check_available,
@@ -270,3 +274,4 @@ def register(ctx) -> None:
     )
     _video_tools.register(ctx, common)
     _video_async_tools.register(ctx, common)
+    _video_fetch_tools.register(ctx, common)

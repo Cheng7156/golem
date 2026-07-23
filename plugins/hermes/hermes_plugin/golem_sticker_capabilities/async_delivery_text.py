@@ -42,9 +42,18 @@ _LOCAL_MEDIA = re.compile(
 def normalize_text(response_text: str, **_: object) -> str | None:
     from .async_delivery_state import current_delivery
 
-    if current_delivery.get() is None:
+    if current_delivery.get() is None and _session_trigger_kind() != "ambient":
         return None
     return sanitize_text(response_text)
+
+
+def _session_trigger_kind() -> str:
+    try:
+        from gateway.session_context import get_session_trigger_kind
+
+        return get_session_trigger_kind()
+    except (ImportError, AttributeError):
+        return ""
 
 
 def sanitize_text(response_text: str) -> str:

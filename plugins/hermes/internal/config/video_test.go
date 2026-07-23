@@ -17,6 +17,9 @@ func TestNormalizeVideoDefaults(t *testing.T) {
 	if video.MediaDirectory != filepath.Clean("data/hermes/media/video") || !video.LinkFallbackEnabled {
 		t.Fatalf("video storage defaults=%#v", video)
 	}
+	if !video.URLFetchAllowHTTP || video.URLInspectTimeoutSeconds != 20 || video.URLInspectMaxBytes != 256<<10 {
+		t.Fatalf("video URL fetch defaults=%#v", video)
+	}
 }
 
 func TestVideoProviderCloneIsImmutable(t *testing.T) {
@@ -72,6 +75,14 @@ func TestNormalizeVideoRejectsWeChatOutputOverflow(t *testing.T) {
 	value.Capabilities.Video.MaxVideoBytes = 26 << 20
 	if _, err := Normalize(value); err == nil {
 		t.Fatal("Normalize accepted video larger than the WeChat output limit")
+	}
+}
+
+func TestNormalizeVideoRejectsOversizedURLInspection(t *testing.T) {
+	value := Default()
+	value.Capabilities.Video.URLInspectMaxBytes = 256<<10 + 1
+	if _, err := Normalize(value); err == nil {
+		t.Fatal("Normalize accepted an oversized URL inspection response")
 	}
 }
 

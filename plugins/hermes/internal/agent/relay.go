@@ -51,6 +51,7 @@ type RelayConfig struct {
 	Videos               VideoCapability
 	VideoLinkFallback    bool
 	AsyncDelivery        AsyncDeliveryCapability
+	AsyncVideoJobs       AsyncVideoJobStore
 	CronDelivery         CronDeliveryCapability
 	AsyncDeliveryWake    func()
 	MaxFrameBytes        int64
@@ -136,6 +137,7 @@ type RelayGateway struct {
 	videoMu         sync.Mutex
 	videoJobs       map[string]videoJob
 	asyncVideoJobs  map[string]asyncVideoJob
+	asyncVideoURLs  map[string]map[string]struct{}
 	cronVideoJobs   map[string]cronVideoJob
 	observationAcks map[string]pendingObservationAck
 	invocationAcks  map[string]pendingInvocationAck
@@ -183,6 +185,7 @@ func NewRelayGateway(config RelayConfig) (*RelayGateway, error) {
 		pending:         make(map[string]*relayRun),
 		videoJobs:       make(map[string]videoJob),
 		asyncVideoJobs:  make(map[string]asyncVideoJob),
+		asyncVideoURLs:  make(map[string]map[string]struct{}),
 		cronVideoJobs:   make(map[string]cronVideoJob),
 		observationAcks: make(map[string]pendingObservationAck),
 		invocationAcks:  make(map[string]pendingInvocationAck),
@@ -202,6 +205,9 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 		mux.HandleFunc(videoResolvePath, g.serveVideoResolve)
 		mux.HandleFunc(videoSelectPath, g.serveVideoSelect)
 		mux.HandleFunc(videoStatusPath, g.serveVideoStatus)
+		if g.config.AsyncDelivery != nil && g.config.AsyncVideoJobs != nil {
+			mux.HandleFunc(inlineVideoFetchPath, g.serveInlineVideoFetch)
+		}
 	}
 	if g.config.AsyncDelivery != nil {
 		g.registerAsyncDeliveryHandlers(mux)
@@ -217,6 +223,9 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 	g.listener = listener
 	g.runtimeCtx = ctx
 	g.mu.Unlock()
+	if g.config.AsyncVideoJobs != nil && g.config.AsyncDelivery != nil && g.config.Videos != nil {
+		go g.runAsyncVideoRecovery(ctx)
+	}
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -383,6 +392,10 @@ func relayInvokeObservation(request RunRequest, chatID string, mediaURLs []strin
 		"addressing":     request.Addressing,
 		"media":          relayInvokeMedia(request.Media),
 		"media_urls":     mediaURLs,
+	}
+	if request.ContextLagFallback && request.CurrentObservation != nil {
+		frame["allow_context_lag"] = true
+		frame["current_observation"] = request.CurrentObservation
 	}
 	if command := strings.TrimSpace(request.Input); request.Principal.IsOwner && strings.HasPrefix(command, "/") {
 		frame["trusted_command"] = command

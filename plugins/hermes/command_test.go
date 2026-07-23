@@ -54,8 +54,16 @@ func TestOwnerCanRepairCurrentObservationConversationLocally(t *testing.T) {
 		Binding: domain.ChannelBinding{Channel: "wechat", SessionID: "private:" + commandTestOwner,
 			ReceiverID: commandTestOwner, Principal: domain.Principal{ID: commandTestOwner, IsOwner: true}},
 		Payload: json.RawMessage(`{"text":"hello"}`)}
-	if _, inserted, err := store.AcceptInbox(ctx, event); err != nil || !inserted {
+	stored, inserted, err := store.AcceptInbox(ctx, event)
+	if err != nil || !inserted {
 		t.Fatalf("AcceptInbox inserted=%v err=%v", inserted, err)
+	}
+	turn, err := store.MaterializeTurn(ctx, stored.ID, 10)
+	if err != nil {
+		t.Fatalf("MaterializeTurn: %v", err)
+	}
+	if _, _, err := store.RouteTurn(ctx, turn.ID, domain.RouteObserve, "", time.Time{}); err != nil {
+		t.Fatalf("RouteTurn: %v", err)
 	}
 	batch, err := store.LeaseNextObservationBatch(ctx, now.Add(time.Second), time.Minute, 8)
 	if err != nil {
@@ -77,7 +85,7 @@ func TestOwnerCanRepairCurrentObservationConversationLocally(t *testing.T) {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 	events := acceptedCommandEvents(t, store)
-	if len(events) != 1 || events[0].ID != event.ID {
+	if len(events) != 0 {
 		t.Fatalf("local maintenance unexpectedly forwarded an Inbox command: %#v", events)
 	}
 }

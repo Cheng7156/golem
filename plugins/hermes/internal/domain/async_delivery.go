@@ -116,11 +116,12 @@ func (o AsyncOutput) Validate() error {
 }
 
 type AsyncDeliveryResult struct {
-	State       AsyncDeliveryState `json:"state"`
-	Disposition string             `json:"disposition"`
-	MessageID   string             `json:"message_id"`
-	OutboxID    string             `json:"outbox_id"`
-	OutboxIDs   []string           `json:"outbox_ids,omitempty"`
+	State         AsyncDeliveryState `json:"state"`
+	Disposition   string             `json:"disposition"`
+	DeliveryState string             `json:"delivery_state"`
+	MessageID     string             `json:"message_id"`
+	OutboxID      string             `json:"outbox_id"`
+	OutboxIDs     []string           `json:"outbox_ids,omitempty"`
 }
 
 type AsyncDirectOutputCommit struct {

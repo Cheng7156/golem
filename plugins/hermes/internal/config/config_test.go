@@ -309,6 +309,7 @@ func TestNormalizeRejectsProjectionLimitsAboveRelayContract(t *testing.T) {
 	}{
 		{name: "raw messages", mutate: func(value *config.Config) { value.Context.RecentRawMessages = 201 }},
 		{name: "token budget", mutate: func(value *config.Config) { value.Context.MaxProjectionTokens = 65537 }},
+		{name: "barrier wait", mutate: func(value *config.Config) { value.Context.BarrierWaitMilliseconds = 10001 }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			value := config.Default()

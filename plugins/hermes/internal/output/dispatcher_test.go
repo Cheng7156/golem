@@ -70,11 +70,18 @@ func TestThrottlerReservesPerReceiverInterval(t *testing.T) {
 
 type recordingStore struct {
 	storeport.Store
-	retryCalled bool
-	deadCalled  bool
-	outcome     string
-	message     string
-	contextErr  error
+	retryCalled     bool
+	deadCalled      bool
+	ambiguousCalled bool
+	sendingCalled   bool
+	outcome         string
+	message         string
+	contextErr      error
+}
+
+func (s *recordingStore) MarkOutboxSending(context.Context, string, string) error {
+	s.sendingCalled = true
+	return nil
 }
 
 func (s *recordingStore) MarkOutboxRetry(
@@ -86,6 +93,18 @@ func (s *recordingStore) MarkOutboxRetry(
 	_ time.Time,
 ) error {
 	s.retryCalled = true
+	s.contextErr = ctx.Err()
+	return nil
+}
+
+func (s *recordingStore) MarkOutboxAmbiguous(
+	ctx context.Context,
+	_ string,
+	_ string,
+	message string,
+) error {
+	s.ambiguousCalled = true
+	s.message = message
 	s.contextErr = ctx.Err()
 	return nil
 }
@@ -110,22 +129,34 @@ func (s failingSender) Send(context.Context, domain.OutboxItem) (Receipt, error)
 	return Receipt{}, s.err
 }
 
-func TestVideoDeliveryFailuresAreNeverRetried(t *testing.T) {
+func TestVideoDeliveryRetriesOnlyWhenSendDidNotStart(t *testing.T) {
 	tests := []struct {
-		name    string
-		err     error
-		outcome string
+		name string
+		err  error
+		want string
 	}{
-		{name: "ambiguous", err: AmbiguousError{Err: context.DeadlineExceeded}, outcome: "ambiguous"},
-		{name: "definite", err: errors.New("host rejected video"), outcome: "failed"},
+		{name: "not started", err: NotStartedError{Err: context.DeadlineExceeded}, want: "retry"},
+		{name: "ambiguous", err: AmbiguousError{Err: context.DeadlineExceeded}, want: "ambiguous"},
+		{name: "permanent", err: PermanentError{Err: errors.New("host rejected video")}, want: "dead"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			store := new(recordingStore)
 			dispatcher := testDispatcher(store, test.err)
 			dispatcher.deliver(context.Background(), videoOutbox(), dispatcher.config())
-			if !store.deadCalled || store.retryCalled || store.outcome != test.outcome {
-				t.Fatalf("dead=%v retry=%v outcome=%q", store.deadCalled, store.retryCalled, store.outcome)
+			switch test.want {
+			case "retry":
+				if !store.retryCalled || store.deadCalled || store.ambiguousCalled {
+					t.Fatalf("store=%#v", store)
+				}
+			case "ambiguous":
+				if !store.ambiguousCalled || store.retryCalled || store.deadCalled {
+					t.Fatalf("store=%#v", store)
+				}
+			case "dead":
+				if !store.deadCalled || store.retryCalled || store.ambiguousCalled {
+					t.Fatalf("store=%#v", store)
+				}
 			}
 		})
 	}
@@ -155,6 +186,17 @@ func TestOtherDeliveryFailuresKeepExistingRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestVideoNotStartedRetriesAreBounded(t *testing.T) {
+	store := new(recordingStore)
+	dispatcher := testDispatcher(store, NotStartedError{Err: context.DeadlineExceeded})
+	item := videoOutbox()
+	item.Attempt = dispatcher.config().Output.MaxAttempts
+	dispatcher.deliver(context.Background(), item, dispatcher.config())
+	if !store.deadCalled || store.retryCalled || store.ambiguousCalled || store.outcome != "not_started" {
+		t.Fatalf("store=%#v", store)
+	}
+}
+
 func TestDeliveryLeaseCoversConfiguredSendTimeout(t *testing.T) {
 	dispatcher := testDispatcher(new(recordingStore), nil)
 	dispatcher.leaseDuration = defaultOutboxLeaseDuration
@@ -166,14 +208,14 @@ func TestDeliveryLeaseCoversConfiguredSendTimeout(t *testing.T) {
 	}
 }
 
-func TestCancelledDeliveryStillPersistsVideoDeadLetter(t *testing.T) {
+func TestCancelledDeliveryStillPersistsVideoAmbiguousState(t *testing.T) {
 	store := new(recordingStore)
 	dispatcher := testDispatcher(store, context.Canceled)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dispatcher.deliver(ctx, videoOutbox(), dispatcher.config())
-	if !store.deadCalled || store.contextErr != nil {
-		t.Fatalf("dead=%v context_error=%v", store.deadCalled, store.contextErr)
+	if !store.ambiguousCalled || store.contextErr != nil {
+		t.Fatalf("ambiguous=%v context_error=%v", store.ambiguousCalled, store.contextErr)
 	}
 }
 

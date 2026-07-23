@@ -30,6 +30,10 @@ type AmbiguousError struct {
 	Err error
 }
 
+type NotStartedError struct {
+	Err error
+}
+
 type PermanentError struct {
 	Err error
 }
@@ -44,6 +48,15 @@ func (e AmbiguousError) Error() string {
 func (e AmbiguousError) Unwrap() error {
 	return e.Err
 }
+
+func (e NotStartedError) Error() string {
+	if e.Err == nil {
+		return "send not started"
+	}
+	return e.Err.Error()
+}
+
+func (e NotStartedError) Unwrap() error { return e.Err }
 
 func (e PermanentError) Error() string {
 	if e.Err == nil {
@@ -146,11 +159,19 @@ func (d *Dispatcher) deliver(
 	if err := d.waitSendInterval(parent, item.ReceiverID, cfg.Output.SendIntervalMilliseconds); err != nil {
 		return
 	}
+	stateCtx, stateCancel := outboxStateContext(parent)
+	if err := d.store.MarkOutboxSending(stateCtx, item.ID, item.LeaseToken); err != nil {
+		stateCancel()
+		slog.Error("[hermes] persist sending outbox failed; send suppressed", "outbox_id", item.ID, "err", err)
+		return
+	}
+	stateCancel()
+	item.State = domain.OutboxSending
 	ctx, cancel := context.WithTimeout(parent, time.Duration(cfg.Output.SendTimeoutSeconds)*time.Second)
 	receipt, err := d.sender.Send(ctx, item)
 	cancel()
 	err = validateReceipt(receipt, err)
-	stateCtx, stateCancel := outboxStateContext(parent)
+	stateCtx, stateCancel = outboxStateContext(parent)
 	defer stateCancel()
 	if err == nil {
 		d.recordSent(stateCtx, item, receipt)
@@ -162,10 +183,22 @@ func (d *Dispatcher) deliver(
 func (d *Dispatcher) handleFailure(parent context.Context, failure deliveryFailure) {
 	outcome, maxAttempts, permanent := failurePolicy(failure.err, failure.config)
 	if failure.item.Kind == "video" {
-		d.recordDeadLetter(
-			parent, failure.item, outcome,
-			"video delivery failed; automatic retry suppressed: "+failure.err.Error(),
-		)
+		var notStarted NotStartedError
+		if errors.As(failure.err, &notStarted) {
+			if !permanent && failure.item.Attempt < maxAttempts {
+				delay := retryDelay(failure.config, failure.item.Attempt)
+				d.recordRetry(parent, failure.item, "not_started", failure.err.Error(), d.now().Add(delay))
+			} else {
+				d.recordDeadLetter(parent, failure.item, "not_started", failure.err.Error())
+			}
+			return
+		}
+		var ambiguous AmbiguousError
+		if errors.As(failure.err, &ambiguous) || !permanent {
+			d.recordAmbiguous(parent, failure.item, "video send receipt is unknown: "+failure.err.Error())
+			return
+		}
+		d.recordDeadLetter(parent, failure.item, outcome, failure.err.Error())
 		return
 	}
 	if permanent || failure.item.Attempt >= maxAttempts {
@@ -174,6 +207,12 @@ func (d *Dispatcher) handleFailure(parent context.Context, failure deliveryFailu
 	}
 	delay := retryDelay(failure.config, failure.item.Attempt)
 	d.recordRetry(parent, failure.item, outcome, failure.err.Error(), d.now().Add(delay))
+}
+
+func (d *Dispatcher) recordAmbiguous(ctx context.Context, item domain.OutboxItem, message string) {
+	if err := d.store.MarkOutboxAmbiguous(ctx, item.ID, item.LeaseToken, message); err != nil {
+		slog.Error("[hermes] persist ambiguous outbox failed", "outbox_id", item.ID, "err", err)
+	}
 }
 
 func outboxStateContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -217,6 +256,10 @@ func failurePolicy(err error, cfg config.OutputConfig) (string, int, bool) {
 	var ambiguous AmbiguousError
 	if errors.As(err, &ambiguous) {
 		return "ambiguous", cfg.AmbiguousMaxAttempts, false
+	}
+	var notStarted NotStartedError
+	if errors.As(err, &notStarted) {
+		return "not_started", cfg.MaxAttempts, false
 	}
 	return "failed", cfg.MaxAttempts, false
 }

@@ -125,6 +125,19 @@ func (e *completingEngine) Health(context.Context) agent.Health {
 
 func (e *completingEngine) Close(context.Context) error { return nil }
 
+type observationCompletingEngine struct {
+	*completingEngine
+}
+
+func (e *observationCompletingEngine) SupportsObservationV2() bool { return true }
+
+func (e *observationCompletingEngine) ObserveBatch(
+	context.Context,
+	domain.ObservationBatch,
+) (domain.ObservationAck, error) {
+	return domain.ObservationAck{}, errors.New("unexpected observation dispatch from worker test")
+}
+
 type failingEngine struct {
 	err error
 }
@@ -288,6 +301,54 @@ func TestRelayWorkerIgnoresLegacyAbsoluteDeadline(t *testing.T) {
 		t.Fatalf("outbox payload=%s", item.Payload)
 	}
 
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Worker.Run: %v", err)
+	}
+}
+
+func TestWorkerBoundsObservationBarrierAndCarriesCurrentFallback(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Default()
+	cfg.Context.Mode = "full"
+	cfg.Context.BarrierWaitMilliseconds = 40
+	manager, err := config.NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseEngine := &completingEngine{requests: make(chan agent.RunRequest, 1)}
+	engine := &observationCompletingEngine{completingEngine: baseEngine}
+	broker, _ := tool.NewBroker(1, 1024, nil)
+	runWake := make(chan struct{}, 1)
+	worker, err := execution.NewWorker(1, store, engine, broker, nil, domain.LaneInteractive,
+		manager.Current, runWake, make(chan struct{}, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := createRun(t, store, time.Now().Add(time.Minute))
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(workerCtx) }()
+	runWake <- struct{}{}
+
+	select {
+	case request := <-baseEngine.requests:
+		if !request.ContextLagFallback || request.CurrentObservation == nil {
+			t.Fatalf("request did not use lag fallback: %#v", request)
+		}
+		if request.CurrentObservation.ObservationID != run.CurrentObservationID ||
+			request.CurrentObservation.PayloadHash != run.CurrentPayloadHash {
+			t.Fatalf("fallback observation=%#v run=%#v", request.CurrentObservation, run)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker remained blocked behind observation barrier")
+	}
+	waitRunState(t, store, run.ID, domain.RunSucceeded)
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Worker.Run: %v", err)

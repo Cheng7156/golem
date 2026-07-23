@@ -18,8 +18,9 @@ import (
 const maximumVideoCandidateRecords = 4096
 
 type videoCapabilityBridge struct {
-	service video.SearchService
-	expires time.Duration
+	service   video.SearchService
+	inspector *video.URLInspector
+	expires   time.Duration
 }
 
 func newVideoCapability(
@@ -42,18 +43,21 @@ func newVideoCapability(
 		MaxVideosPerRun: value.MaxVideosPerRun,
 		PrepareTimeout:  time.Duration(value.PrepareTimeoutSeconds) * time.Second,
 		PrepareWorkers:  value.PrepareWorkers,
+		AllowHTTP:       value.URLFetchAllowHTTP,
 	}, providers, infrastructure.pipeline)
 	if err != nil {
 		return nil, nil, err
 	}
 	return &videoCapabilityBridge{
-		service: service, expires: time.Duration(value.CandidateTTLSeconds) * time.Second,
+		service: service, inspector: infrastructure.inspector,
+		expires: time.Duration(value.CandidateTTLSeconds) * time.Second,
 	}, infrastructure.objects, nil
 }
 
 type videoInfrastructure struct {
-	objects  *mediaobject.Store
-	pipeline *video.PreparationPipeline
+	objects   *mediaobject.Store
+	pipeline  *video.PreparationPipeline
+	inspector *video.URLInspector
 }
 
 func buildVideoInfrastructure(
@@ -70,7 +74,8 @@ func buildVideoInfrastructure(
 	workDirectory := filepath.Join(value.MediaDirectory, ".work")
 	downloader, err := video.NewDownloader(video.DownloadConfig{
 		Directory: filepath.Join(workDirectory, "downloads"), MaxBytes: value.MaxSourceBytes,
-		Timeout: time.Duration(value.DownloadTimeoutSeconds) * time.Second,
+		Timeout:   time.Duration(value.DownloadTimeoutSeconds) * time.Second,
+		AllowHTTP: value.URLFetchAllowHTTP,
 	})
 	if err != nil {
 		return videoInfrastructure{}, fmt.Errorf("create video downloader: %w", err)
@@ -90,7 +95,15 @@ func buildVideoInfrastructure(
 	if err != nil {
 		return videoInfrastructure{}, err
 	}
-	return videoInfrastructure{objects: objects, pipeline: pipeline}, nil
+	inspector, err := video.NewURLInspector(video.URLInspectConfig{
+		Timeout:  time.Duration(value.URLInspectTimeoutSeconds) * time.Second,
+		MaxBytes: value.URLInspectMaxBytes, AllowHTTP: value.URLFetchAllowHTTP,
+		Workers: value.PrepareWorkers,
+	})
+	if err != nil {
+		return videoInfrastructure{}, fmt.Errorf("create URL inspector: %w", err)
+	}
+	return videoInfrastructure{objects: objects, pipeline: pipeline, inspector: inspector}, nil
 }
 
 func buildVideoProviders(
@@ -176,6 +189,33 @@ func (b *videoCapabilityBridge) ResolveURL(
 		return agent.VideoCandidate{}, err
 	}
 	return bridgeVideoCandidate(candidate), nil
+}
+
+func (b *videoCapabilityBridge) InspectURL(
+	ctx context.Context,
+	scope agent.VideoScope,
+	rawURL string,
+) (agent.VideoURLInspection, error) {
+	if scope.RunID == "" || scope.ChatID == "" {
+		return agent.VideoURLInspection{}, errors.New("video scope is missing")
+	}
+	if b.inspector == nil {
+		return agent.VideoURLInspection{}, errors.New("video URL inspection is unavailable")
+	}
+	inspection, err := b.inspector.Inspect(ctx, rawURL)
+	if err != nil {
+		return agent.VideoURLInspection{}, err
+	}
+	result := agent.VideoURLInspection{
+		Kind: inspection.Kind, FinalURL: inspection.FinalURL,
+		ContentType: inspection.ContentType, Document: inspection.Document,
+	}
+	for _, candidate := range inspection.Candidates {
+		result.Candidates = append(result.Candidates, agent.VideoURLReference{
+			Path: candidate.Path, URL: candidate.URL, Label: candidate.Label, Score: candidate.Score,
+		})
+	}
+	return result, nil
 }
 
 func (b *videoCapabilityBridge) Select(

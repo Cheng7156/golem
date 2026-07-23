@@ -46,7 +46,7 @@ func newGolemSender(
 
 func (s *golemSender) Send(ctx context.Context, item domain.OutboxItem) (output.Receipt, error) {
 	if s.ability == nil {
-		return output.Receipt{}, errors.New("message ability is not registered")
+		return output.Receipt{}, output.NotStartedError{Err: errors.New("message ability is not registered")}
 	}
 	msg, err := s.outboxMessage(ctx, item)
 	if err != nil {
@@ -55,7 +55,7 @@ func (s *golemSender) Send(ctx context.Context, item domain.OutboxItem) (output.
 	if client, ok := s.ability.(message.Client); ok {
 		stream, err := client.Client.Send(ctx)
 		if err != nil {
-			return output.Receipt{}, err
+			return output.Receipt{}, classifySendError(err, false)
 		}
 		if err := stream.Send(&message.Send_Request{Message: msg}); err != nil {
 			return output.Receipt{}, classifySendError(err, true)
@@ -70,7 +70,7 @@ func (s *golemSender) Send(ctx context.Context, item domain.OutboxItem) (output.
 	select {
 	case s.fallbackSlots <- struct{}{}:
 	case <-ctx.Done():
-		return output.Receipt{}, ctx.Err()
+		return output.Receipt{}, output.NotStartedError{Err: ctx.Err()}
 	}
 	type result struct {
 		response *message.Send_Response

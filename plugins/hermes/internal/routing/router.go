@@ -15,11 +15,27 @@ import (
 )
 
 type Decision struct {
-	Route    domain.Route
-	Lane     domain.Lane
-	Priority int
-	Deadline time.Time
-	Reason   string
+	Route       domain.Route
+	Disposition SocialDisposition
+	Lane        domain.Lane
+	Priority    int
+	Deadline    time.Time
+	Reason      string
+}
+
+type SocialDisposition string
+
+const (
+	DispositionIgnore  SocialDisposition = "ignore"
+	DispositionObserve SocialDisposition = "observe"
+	DispositionRespond SocialDisposition = "respond"
+)
+
+type SocialDecision struct {
+	Disposition SocialDisposition
+	Route       domain.Route
+	Reason      string
+	Confidence  float64
 }
 
 type Router interface {
@@ -27,7 +43,7 @@ type Router interface {
 }
 
 type SocialDecider interface {
-	Decide(context.Context, domain.InboxEvent, domain.InboundMessage) (domain.Route, string, error)
+	Decide(context.Context, domain.InboxEvent, domain.InboundMessage) (SocialDecision, error)
 }
 
 type AmbientContextReader interface {
@@ -88,72 +104,76 @@ func (r *RulesRouter) Route(
 			}, nil
 		}
 		return Decision{
-			Route:    domain.RouteChat,
-			Lane:     domain.LaneInteractive,
-			Priority: 100,
-			Deadline: agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
-			Reason:   "私聊、@ 或引用",
+			Route:       domain.RouteChat,
+			Disposition: DispositionRespond,
+			Lane:        domain.LaneInteractive,
+			Priority:    100,
+			Deadline:    agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
+			Reason:      "私聊、@ 或引用",
 		}, nil
 	}
 	if cfg.Routing.SocialMode == "agent" || cfg.Routing.SocialMode == "hybrid" {
 		if reason, observe := r.coalesceAmbient(ctx, event, message, cfg, now); observe {
-			return Decision{Route: domain.RouteObserve, Reason: reason}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: reason}, nil
 		}
 	}
 
 	switch cfg.Routing.SocialMode {
 	case "observe", "rules":
-		return Decision{Route: domain.RouteObserve, Reason: "普通群聊由本地模式保持观察"}, nil
+		return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "普通群聊由本地模式保持观察"}, nil
 	case "mentions":
-		return Decision{Route: domain.RouteObserve, Reason: "mentions 模式仅将私聊、@机器人或引用机器人交给 Hermes"}, nil
+		return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "mentions 模式仅将私聊、@机器人或引用机器人交给 Hermes"}, nil
 	case "agent":
 		if !sampled(event.ID, cfg.Routing.SampleRate) {
-			return Decision{Route: domain.RouteObserve, Reason: "普通群聊未命中 Hermes 采样"}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "普通群聊未命中 Hermes 采样"}, nil
 		}
 		return Decision{
-			Route:    domain.RouteChat,
-			Lane:     domain.LaneInteractive,
-			Priority: 50,
-			Deadline: agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
-			Reason:   "普通群聊交给 Hermes 结合共享上下文自主决定是否参与",
+			Route:       domain.RouteChat,
+			Disposition: DispositionRespond,
+			Lane:        domain.LaneInteractive,
+			Priority:    50,
+			Deadline:    agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
+			Reason:      "普通群聊交给 Hermes 结合共享上下文自主决定是否参与",
 		}, nil
 	case "hybrid":
 		if reason, observe := r.fastObserve(ctx, event, message, cfg, now); observe {
-			return Decision{Route: domain.RouteObserve, Reason: reason}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: reason}, nil
 		}
 		if event.Binding.Principal.IsOwner {
 			return Decision{
-				Route:    domain.RouteChat,
-				Lane:     domain.LaneInteractive,
-				Priority: 75,
-				Deadline: agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
-				Reason:   "主人普通群聊在基础安全过滤后直接交给 Hermes，以保持连续对话",
+				Route:       domain.RouteChat,
+				Disposition: DispositionRespond,
+				Lane:        domain.LaneInteractive,
+				Priority:    75,
+				Deadline:    agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
+				Reason:      "主人普通群聊在基础安全过滤后直接交给 Hermes，以保持连续对话",
 			}, nil
 		}
 		if r.social == nil || !sampled(event.ID, cfg.Routing.SampleRate) {
-			return Decision{Route: domain.RouteObserve, Reason: "Social Router 未调用或未命中采样"}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "Social Router 未调用或未命中采样"}, nil
 		}
 		timeout := time.Duration(cfg.Routing.DecisionTimeoutMilliseconds) * time.Millisecond
 		decisionCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		route, reason, err := r.social.Decide(decisionCtx, event, message)
+		social, err := r.social.Decide(decisionCtx, event, message)
 		if err != nil {
-			return Decision{Route: domain.RouteObserve, Reason: "Social Router 失败，降级观察"}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "Social Router 失败，降级观察"}, nil
 		}
-		switch route {
+		switch social.Route {
 		case domain.RouteChat, domain.RouteJob:
 			return Decision{
-				Route:    domain.RouteChat,
-				Lane:     domain.LaneInteractive,
-				Priority: 50,
-				Deadline: agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
-				Reason:   reason,
+				Route:       domain.RouteChat,
+				Disposition: DispositionRespond,
+				Lane:        domain.LaneInteractive,
+				Priority:    50,
+				Deadline:    agentDeadline(cfg, now, time.Duration(cfg.Agent.TimeoutSeconds)*time.Second),
+				Reason:      social.Reason,
 			}, nil
 		default:
-			return Decision{Route: domain.RouteObserve, Reason: reason}, nil
+			return Decision{Route: domain.RouteObserve, Disposition: social.Disposition, Reason: social.Reason}, nil
 		}
 	default:
-		return Decision{Route: domain.RouteObserve, Reason: "未知路由模式"}, nil
+		return Decision{Route: domain.RouteObserve, Disposition: DispositionObserve, Reason: "未知路由模式"}, nil
 	}
 }
 

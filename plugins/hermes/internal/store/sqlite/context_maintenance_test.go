@@ -107,6 +107,8 @@ func TestObservationMaintenanceStatusReportsTerminalRows(t *testing.T) {
 
 func acceptObservationConversation(t *testing.T, value interface {
 	AcceptInbox(context.Context, domain.InboxEvent) (domain.InboxEvent, bool, error)
+	MaterializeTurn(context.Context, string, int) (domain.Turn, error)
+	RouteTurn(context.Context, string, domain.Route, domain.Lane, time.Time) (domain.Turn, *domain.Run, error)
 }, suffix string, count int) string {
 	t.Helper()
 	var conversationID string
@@ -117,6 +119,13 @@ func acceptObservationConversation(t *testing.T, value interface {
 			t.Fatalf("AcceptInbox %d inserted=%v err=%v", index, inserted, err)
 		}
 		conversationID = domain.StableConversationID(stored.Binding)
+		turn, err := value.MaterializeTurn(context.Background(), stored.ID, 10)
+		if err != nil {
+			t.Fatalf("MaterializeTurn %d: %v", index, err)
+		}
+		if _, _, err := value.RouteTurn(context.Background(), turn.ID, domain.RouteObserve, "", time.Time{}); err != nil {
+			t.Fatalf("RouteTurn %d: %v", index, err)
+		}
 	}
 	return conversationID
 }

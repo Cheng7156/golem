@@ -37,7 +37,9 @@ def handle_attach(args: Dict[str, Any], **_: Any) -> str:
         return _video.handle_select(args)
     started = _context.video_send(binding, candidate_id, _context.invocation_id())
     job_id = _video._text(started.get("job_id"), 256)
-    if not job_id or started.get("state") not in {"pending", "completed"}:
+    if not job_id or started.get("state") not in {
+        "pending", "completed", "waiting_delivery", "delivered"
+    }:
         raise CapabilityError("Golem did not start an async video job")
     return _wait_for_delivery(binding, job_id)
 
@@ -61,11 +63,11 @@ def _wait_for_delivery(binding: Any, job_id: str) -> str:
             time.sleep(0.5)
             continue
         state = _video._text(result.get("state"), 32)
-        if state == "completed":
+        if state in {"completed", "waiting_delivery", "delivered"}:
             return _queued_result(result)
-        if state == "failed":
+        if state in {"failed", "ambiguous", "dead_letter"}:
             reason = _video._text(result.get("error"), 1000)
-            raise CapabilityError(reason or "Golem video preparation failed")
+            raise CapabilityError(reason or f"Golem video delivery ended as {state}")
         if state != "pending":
             raise CapabilityError("Golem returned an invalid async video job state")
         time.sleep(0.5)

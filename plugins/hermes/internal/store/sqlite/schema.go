@@ -268,3 +268,54 @@ CREATE TABLE IF NOT EXISTS ambient_reply_budget (
 CREATE INDEX IF NOT EXISTS idx_ambient_reply_budget_session
   ON ambient_reply_budget(session_id, state, consumed_at, reserved_at);
 `
+
+const schemaV9 = `
+CREATE TABLE IF NOT EXISTS async_video_jobs (
+  id TEXT PRIMARY KEY,
+  ticket_hash TEXT NOT NULL,
+  candidate_id TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  media_url TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  invocation_id TEXT NOT NULL,
+  auto_close INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'queued',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT NOT NULL DEFAULT '',
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  queued INTEGER NOT NULL DEFAULT 0,
+  outbox_id TEXT NOT NULL DEFAULT '',
+  outbox_sequence INTEGER NOT NULL DEFAULT 0,
+  direct_output_count INTEGER NOT NULL DEFAULT 0,
+  failure TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(ticket_hash, invocation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_async_video_jobs_sched
+  ON async_video_jobs(state, next_attempt_at, lease_until, created_at);
+CREATE INDEX IF NOT EXISTS idx_async_video_jobs_ticket
+  ON async_video_jobs(ticket_hash, created_at);
+
+CREATE TABLE IF NOT EXISTS async_video_urls (
+  ticket_hash TEXT NOT NULL,
+  normalized_url TEXT NOT NULL,
+  allowed_until INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(ticket_hash, normalized_url)
+);
+CREATE INDEX IF NOT EXISTS idx_async_video_urls_expiry
+  ON async_video_urls(allowed_until);
+`
+
+const schemaV10 = `
+DROP TRIGGER IF EXISTS trg_outbox_video_media_release;
+CREATE TRIGGER trg_outbox_video_media_release
+AFTER UPDATE OF state ON outbox
+WHEN NEW.state IN ('sent', 'ambiguous', 'dead_letter')
+BEGIN
+  DELETE FROM outbox_media_refs WHERE outbox_id = NEW.id;
+END;
+`

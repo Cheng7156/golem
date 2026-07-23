@@ -125,7 +125,8 @@ func socialDeciderStaticConfigChanged(current, next config.RoutingConfig) bool {
 		current.DecisionModel != next.DecisionModel ||
 		current.DecisionAPIKeyEnv != next.DecisionAPIKeyEnv ||
 		current.DecisionEnvironmentFile != next.DecisionEnvironmentFile ||
-		current.DecisionContextMessages != next.DecisionContextMessages
+		current.DecisionContextMessages != next.DecisionContextMessages ||
+		current.DecisionMinConfidence != next.DecisionMinConfidence
 }
 
 func (p *HermesPlugin) start() error {

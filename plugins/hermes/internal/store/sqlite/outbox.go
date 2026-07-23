@@ -11,6 +11,22 @@ import (
 	storeport "golem_plugin_hermes/internal/store"
 )
 
+func (s *Store) MarkOutboxSending(ctx context.Context, id, leaseToken string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE outbox SET state=?,updated_at=?
+			WHERE id=? AND state=? AND lease_token=?`, domain.OutboxSending,
+			unixMillis(time.Now()), id, domain.OutboxLeased, leaseToken)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil || rows != 1 {
+			return errors.Join(err, storeport.ErrConflict)
+		}
+		return nil
+	})
+}
+
 func (s *Store) MarkOutboxSent(
 	ctx context.Context,
 	id string,
@@ -24,7 +40,7 @@ func (s *Store) MarkOutboxSent(
 	if receiptTime.IsZero() {
 		receiptTime = time.Now()
 	}
-	return s.finishOutboxAttempt(ctx, id, leaseToken, "sent", "", receiptID, receiptTime, time.Time{}, false)
+	return s.finishOutboxAttempt(ctx, id, leaseToken, "sent", "", receiptID, receiptTime, time.Time{}, "")
 }
 
 func (s *Store) MarkOutboxRetry(
@@ -36,13 +52,23 @@ func (s *Store) MarkOutboxRetry(
 	nextAttempt time.Time,
 ) error {
 	outcome = strings.TrimSpace(outcome)
-	if outcome != "failed" && outcome != "ambiguous" {
-		return errors.New("Outbox retry outcome 必须为 failed 或 ambiguous")
+	if outcome != "failed" && outcome != "ambiguous" && outcome != "not_started" {
+		return errors.New("Outbox retry outcome 必须为 failed、ambiguous 或 not_started")
 	}
 	if nextAttempt.IsZero() {
 		return errors.New("Outbox retry 必须提供 nextAttempt")
 	}
-	return s.finishOutboxAttempt(ctx, id, leaseToken, outcome, message, 0, time.Time{}, nextAttempt, false)
+	return s.finishOutboxAttempt(ctx, id, leaseToken, outcome, message, 0, time.Time{}, nextAttempt, "")
+}
+
+func (s *Store) MarkOutboxAmbiguous(
+	ctx context.Context,
+	id string,
+	leaseToken string,
+	message string,
+) error {
+	return s.finishOutboxAttempt(ctx, id, leaseToken, "ambiguous", message, 0, time.Time{},
+		time.Time{}, domain.OutboxAmbiguous)
 }
 
 func (s *Store) MarkOutboxDeadLetter(
@@ -53,10 +79,10 @@ func (s *Store) MarkOutboxDeadLetter(
 	message string,
 ) error {
 	outcome = strings.TrimSpace(outcome)
-	if outcome != "failed" && outcome != "ambiguous" {
-		return errors.New("outbox dead-letter outcome must be failed or ambiguous")
+	if outcome != "failed" && outcome != "ambiguous" && outcome != "not_started" {
+		return errors.New("outbox dead-letter outcome must be failed, ambiguous, or not_started")
 	}
-	return s.finishOutboxAttempt(ctx, id, leaseToken, outcome, message, 0, time.Time{}, time.Time{}, true)
+	return s.finishOutboxAttempt(ctx, id, leaseToken, outcome, message, 0, time.Time{}, time.Time{}, domain.OutboxDeadLetter)
 }
 
 func (s *Store) finishOutboxAttempt(
@@ -68,7 +94,7 @@ func (s *Store) finishOutboxAttempt(
 	receiptID uint64,
 	receiptTime time.Time,
 	nextAttempt time.Time,
-	deadLetter bool,
+	terminal domain.OutboxState,
 ) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		item, err := scanOutbox(tx.QueryRowContext(ctx,
@@ -78,7 +104,8 @@ func (s *Store) finishOutboxAttempt(
 		if err != nil {
 			return err
 		}
-		if item.State != domain.OutboxLeased || item.LeaseToken == "" || item.LeaseToken != leaseToken {
+		if (item.State != domain.OutboxLeased && item.State != domain.OutboxSending) ||
+			item.LeaseToken == "" || item.LeaseToken != leaseToken {
 			return storeport.ErrConflict
 		}
 		now := time.Now()
@@ -100,8 +127,8 @@ func (s *Store) finishOutboxAttempt(
 		target := domain.OutboxRetryWait
 		if outcome == "sent" {
 			target = domain.OutboxSent
-		} else if deadLetter {
-			target = domain.OutboxDeadLetter
+		} else if terminal != "" {
+			target = terminal
 		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE outbox
@@ -116,7 +143,7 @@ func (s *Store) finishOutboxAttempt(
 			message,
 			unixMillis(now),
 			item.ID,
-			domain.OutboxLeased,
+			item.State,
 			leaseToken,
 		)
 		if err != nil {
@@ -129,8 +156,38 @@ func (s *Store) finishOutboxAttempt(
 		if rows != 1 {
 			return storeport.ErrConflict
 		}
+		if item.Kind == "video" {
+			if err := updateAsyncVideoDeliveryState(ctx, tx, item.ID, target, message, now); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+}
+
+func updateAsyncVideoDeliveryState(
+	ctx context.Context,
+	tx *sql.Tx,
+	outboxID string,
+	outboxState domain.OutboxState,
+	message string,
+	now time.Time,
+) error {
+	var state domain.AsyncVideoJobState
+	switch outboxState {
+	case domain.OutboxSent:
+		state = domain.AsyncVideoJobDelivered
+	case domain.OutboxAmbiguous:
+		state = domain.AsyncVideoJobAmbiguous
+	case domain.OutboxDeadLetter:
+		state = domain.AsyncVideoJobDeadLetter
+	default:
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE async_video_jobs SET state=?,stage=?,failure=?,updated_at=?
+		WHERE outbox_id=? AND state IN (?,?)`, state, state, message, unixMillis(now), outboxID,
+		domain.AsyncVideoJobWaitingDelivery, domain.AsyncVideoJobCompleted)
+	return err
 }
 
 func (s *Store) GetOutbox(ctx context.Context, id string) (domain.OutboxItem, error) {

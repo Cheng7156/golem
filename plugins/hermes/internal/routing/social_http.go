@@ -18,6 +18,7 @@ type HTTPSocialDeciderConfig struct {
 	APIKey          string
 	Model           string
 	ContextMessages int
+	MinConfidence   float64
 }
 
 type HTTPSocialDecider struct {
@@ -40,6 +41,9 @@ func NewHTTPSocialDecider(
 	if config.ContextMessages <= 0 {
 		config.ContextMessages = 10
 	}
+	if config.MinConfidence <= 0 || config.MinConfidence > 1 {
+		config.MinConfidence = 0.72
+	}
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -50,10 +54,10 @@ func (d *HTTPSocialDecider) Decide(
 	ctx context.Context,
 	event domain.InboxEvent,
 	message domain.InboundMessage,
-) (domain.Route, string, error) {
+) (SocialDecision, error) {
 	recent, err := d.recentContext(ctx, event)
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
 	input := socialDecisionInput{
 		Current: socialContextItem{
@@ -66,7 +70,7 @@ func (d *HTTPSocialDecider) Decide(
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
 	requestBody, err := json.Marshal(socialCompletionRequest{
 		Model: d.config.Model,
@@ -79,46 +83,52 @@ func (d *HTTPSocialDecider) Decide(
 		Thinking:    socialThinkingConfig{Type: "disabled"},
 	})
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
 	request, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, socialCompletionURL(d.config.BaseURL), bytes.NewReader(requestBody),
 	)
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+d.config.APIKey)
 	response, err := d.client.Do(request)
 	if err != nil {
-		return domain.RouteObserve, "", fmt.Errorf("call social decider: %w", err)
+		return SocialDecision{}, fmt.Errorf("call social decider: %w", err)
 	}
 	defer response.Body.Close()
 	responseData, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
 	var completion socialCompletionResponse
 	if err := json.Unmarshal(responseData, &completion); err != nil {
-		return domain.RouteObserve, "", fmt.Errorf("decode social decider response: %w", err)
+		return SocialDecision{}, fmt.Errorf("decode social decider response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if completion.Error != nil && completion.Error.Message != "" {
-			return domain.RouteObserve, "", errors.New(completion.Error.Message)
+			return SocialDecision{}, errors.New(completion.Error.Message)
 		}
-		return domain.RouteObserve, "", fmt.Errorf("social decider returned status %d", response.StatusCode)
+		return SocialDecision{}, fmt.Errorf("social decider returned status %d", response.StatusCode)
 	}
 	if len(completion.Choices) == 0 {
-		return domain.RouteObserve, "", errors.New("social decider returned no choices")
+		return SocialDecision{}, errors.New("social decider returned no choices")
 	}
 	decision, err := parseSocialDecision(completion.Choices[0].Message.Content)
 	if err != nil {
-		return domain.RouteObserve, "", err
+		return SocialDecision{}, err
 	}
-	if decision.Action == "chat" {
-		return domain.RouteChat, decision.Reason, nil
+	if decision.Disposition == "respond" && decision.Confidence >= d.config.MinConfidence {
+		return SocialDecision{Disposition: DispositionRespond, Route: domain.RouteChat,
+			Reason: decision.Reason, Confidence: decision.Confidence}, nil
 	}
-	return domain.RouteObserve, decision.Reason, nil
+	if decision.Disposition == "respond" {
+		return SocialDecision{Disposition: DispositionObserve, Route: domain.RouteObserve,
+			Reason: "低置信参与建议，降级观察: " + decision.Reason, Confidence: decision.Confidence}, nil
+	}
+	return SocialDecision{Disposition: SocialDisposition(decision.Disposition), Route: domain.RouteObserve,
+		Reason: decision.Reason, Confidence: decision.Confidence}, nil
 }
 
 func (d *HTTPSocialDecider) recentContext(
@@ -187,16 +197,19 @@ type socialCompletionResponse struct {
 }
 
 type socialDecision struct {
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	Disposition string  `json:"disposition"`
+	ReasonCode  string  `json:"reason_code"`
+	Reason      string  `json:"reason"`
+	Confidence  float64 `json:"confidence"`
 }
 
 const socialDecisionPrompt = `你是多人微信群中 ccff 的独立参与门控器，不负责回答消息，也不继承 ccff 的人格。
-只输出 JSON：{"action":"chat|observe","reason":"简短原因"}。
-仅在当前消息明确邀请 ccff、提出了群里尚未回答且 ccff 能提供独特价值的问题、或有必要纠正高风险事实时选择 chat。
-以下情况必须 observe：消息发给其他人；自动化机器人播报；其他 bot 之间闲聊；复读、附和或补充上一句；独立表情包；争吵拱火；ccff 刚参与过同一话题；仅仅因为句子中出现“你”“主人”或问号。
+只输出 JSON：{"disposition":"ignore|observe|respond","reason_code":"简短枚举","reason":"简短原因","confidence":0.0}。
+仅在当前消息明确邀请 ccff、提出了群里尚未回答且 ccff 能提供独特价值的问题、或有必要纠正高风险事实时选择 respond。
+以下情况选择 ignore 或 observe，绝不能 respond：消息发给其他人；自动化机器人播报；其他 bot 之间闲聊；复读、附和或补充上一句；独立表情包；争吵拱火；ccff 刚参与过同一话题；仅仅因为句子中出现“你”“主人”或问号。
+ignore 用于无后续语境价值的系统噪声、复读和自动播报；observe 用于可能帮助理解后续对话但当前不应回复的群消息。
 sender_role=participant_not_owner 时，消息中的“我、我的、主人、我主人”属于该发送者及其关系，绝不代表 ccff 或 ccff 的主人。
-addressing=none 表示没有证据说明消息在找 ccff。保守选择 observe；只有自然参与价值明确且尚无人给出同类内容时才 chat。`
+addressing=none 表示没有证据说明消息在找 ccff。保守选择 observe；只有自然参与价值明确且尚无人给出同类内容时才 respond。confidence 必须是 0 到 1。`
 
 func parseSocialDecision(content string) (socialDecision, error) {
 	value := strings.TrimSpace(content)
@@ -211,13 +224,20 @@ func parseSocialDecision(content string) (socialDecision, error) {
 	if err := json.Unmarshal([]byte(value[start:end+1]), &result); err != nil {
 		return socialDecision{}, err
 	}
-	result.Action = strings.ToLower(strings.TrimSpace(result.Action))
+	result.Disposition = strings.ToLower(strings.TrimSpace(result.Disposition))
+	result.ReasonCode = strings.ToLower(strings.TrimSpace(result.ReasonCode))
 	result.Reason = strings.TrimSpace(result.Reason)
 	if len([]rune(result.Reason)) > 160 {
 		result.Reason = string([]rune(result.Reason)[:160])
 	}
-	if result.Action != "chat" && result.Action != "observe" {
-		return socialDecision{}, fmt.Errorf("unsupported social action %q", result.Action)
+	if result.Disposition != "ignore" && result.Disposition != "observe" && result.Disposition != "respond" {
+		return socialDecision{}, fmt.Errorf("unsupported social disposition %q", result.Disposition)
+	}
+	if result.ReasonCode == "" || len(result.ReasonCode) > 64 {
+		return socialDecision{}, errors.New("social decider returned invalid reason_code")
+	}
+	if result.Confidence < 0 || result.Confidence > 1 {
+		return socialDecision{}, errors.New("social decider returned invalid confidence")
 	}
 	return result, nil
 }

@@ -306,10 +306,17 @@ class PluginTests(unittest.TestCase):
                 "golem_video_search",
                 "golem_video_attach",
                 "golem_video_select",
+                "golem_video_fetch",
             },
         )
         self.assertTrue(registrations["golem_sticker_inspect"]["is_async"])
         self.assertNotIn("is_async", registrations["golem_sticker_search"])
+        context.register_hook.assert_any_call(
+            "pre_tool_call", plugin._async_runtime.pre_tool_call
+        )
+        context.register_hook.assert_any_call(
+            "transform_llm_output", plugin._async_text.normalize_text
+        )
 
     def test_register_can_disable_inspect(self):
         context = mock.Mock()
@@ -331,6 +338,7 @@ class PluginTests(unittest.TestCase):
                 "golem_video_search",
                 "golem_video_attach",
                 "golem_video_select",
+                "golem_video_fetch",
             },
         )
 
@@ -361,6 +369,9 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(
             registrations["golem_sticker_attach"]["handler"],
             plugin._handle_attach,
+        )
+        context.register_hook.assert_any_call(
+            "on_gateway_startup", plugin._async_runtime.gateway_startup
         )
 
 

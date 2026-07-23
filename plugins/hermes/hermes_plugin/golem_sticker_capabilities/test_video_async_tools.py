@@ -33,7 +33,7 @@ class VideoAsyncToolsTest(unittest.TestCase):
                 {"job_id": "avjob_1", "state": "pending"},
                 {
                     "job_id": "avjob_1",
-                    "state": "completed",
+                    "state": "waiting_delivery",
                     "queued": True,
                     "outbox_id": "outbox-1",
                     "sequence": 9,

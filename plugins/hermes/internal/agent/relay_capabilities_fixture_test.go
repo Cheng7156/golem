@@ -71,6 +71,7 @@ func stickerRunRequest(input string) RunRequest {
 		RunID: "run-sticker", SessionID: "chatroom:room-1", Lane: domain.LaneInteractive,
 		Principal: domain.Principal{ID: "wxid-owner", Name: "Owner"},
 		Input:     input, ChatType: "group", MessageID: "event-sticker",
+		TriggerKind: domain.TriggerExplicit,
 	}
 	if strings.HasPrefix(input, "[direct]") {
 		request.SessionID = "private:wxid-owner"

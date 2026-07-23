@@ -191,8 +191,17 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	}
 	runCtx, cancel, deadline := executionContext(parent, cfg, run, w.now())
 	defer cancel()
-	if err := w.waitContextBarrier(runCtx, run); err != nil {
+	contextLagFallback, err := w.waitContextBarrier(runCtx, run)
+	if err != nil {
 		return w.finishFailure(parent, run, fmt.Errorf("wait observation context barrier: %w", err))
+	}
+	var currentObservation *domain.ConversationObservation
+	if contextLagFallback {
+		item, itemErr := w.store.GetContextOutboxByEvent(runCtx, turn.EventID)
+		if itemErr != nil {
+			return w.finishFailure(parent, run, fmt.Errorf("load current observation for lag fallback: %w", itemErr))
+		}
+		currentObservation = &item.Observation
 	}
 	media := append([]domain.InboundMedia(nil), incoming.Media...)
 	if w.media != nil {
@@ -223,6 +232,8 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		ConversationID:       run.ConversationID,
 		CurrentObservationID: run.CurrentObservationID,
 		CurrentPayloadHash:   run.CurrentPayloadHash,
+		CurrentObservation:   currentObservation,
+		ContextLagFallback:   contextLagFallback,
 		RequiredContextSeq:   run.RequiredContextSeq,
 		TriggerKind:          run.TriggerKind,
 		InvocationID:         run.InvocationID,
@@ -377,26 +388,38 @@ type observationBarrierStore interface {
 	ObservationContextReady(context.Context, string, int64) (bool, error)
 }
 
-func (w *Worker) waitContextBarrier(ctx context.Context, run domain.Run) error {
+func (w *Worker) waitContextBarrier(ctx context.Context, run domain.Run) (bool, error) {
 	observer, ok := w.engine.(agent.ObservationGateway)
 	cfg := w.config()
 	if cfg == nil || cfg.Context.Mode != "full" || !ok || !observer.SupportsObservationV2() || run.RequiredContextSeq <= 0 {
-		return nil
+		return false, nil
 	}
 	store, ok := w.store.(observationBarrierStore)
 	if !ok {
-		return errors.New("store does not support observation context barrier")
+		return false, errors.New("store does not support observation context barrier")
 	}
+	barrierTimer := time.NewTimer(time.Duration(cfg.Context.BarrierWaitMilliseconds) * time.Millisecond)
+	defer barrierTimer.Stop()
 	for {
 		ready, err := store.ObservationContextReady(ctx, run.ConversationID, run.RequiredContextSeq)
-		if err != nil || ready {
-			return err
+		if err != nil {
+			return false, err
+		}
+		if ready {
+			return false, nil
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return false, ctx.Err()
+		case <-barrierTimer.C:
+			timer.Stop()
+			slog.Warn("[hermes] observation barrier timed out; using bounded lag fallback",
+				"run_id", run.ID, "conversation_id", run.ConversationID,
+				"required_context_seq", run.RequiredContextSeq,
+				"wait_ms", cfg.Context.BarrierWaitMilliseconds)
+			return true, nil
 		case <-timer.C:
 		}
 	}

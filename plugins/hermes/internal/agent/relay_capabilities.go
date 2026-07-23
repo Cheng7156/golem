@@ -18,6 +18,7 @@ const (
 	stickerMaterializePath = "/capabilities/v1/stickers/materialize"
 	stickerSelectPath      = "/capabilities/v1/stickers/select"
 	maxCapabilityBody      = 32 << 10
+	ambientMediaDenied     = "media capability is unavailable for unaddressed ambient runs"
 )
 
 var (
@@ -88,6 +89,9 @@ func (g *RelayGateway) serveStickerSearch(w http.ResponseWriter, request *http.R
 		writeCapabilityError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
 		writeCapabilityError(w, http.StatusBadRequest, "sticker query is empty")
@@ -114,6 +118,9 @@ func (g *RelayGateway) serveStickerSelect(w http.ResponseWriter, request *http.R
 	run, err := g.capabilityRun(input.Context)
 	if err != nil {
 		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
 		return
 	}
 	candidateID := strings.TrimSpace(input.CandidateID)
@@ -188,6 +195,18 @@ func (g *RelayGateway) capabilityRun(value capabilitySessionContext) (*relayRun,
 		return nil, errors.New("message context does not match the active run")
 	}
 	return run, nil
+}
+
+// authorizeInteractiveMedia keeps the model-visible toolset stable while
+// enforcing side-effect authority from the connector-authenticated Run.  The
+// request body is deliberately not consulted: chat IDs, roles, and trigger
+// claims supplied by a tool call are not an authorization source.
+func authorizeInteractiveMedia(w http.ResponseWriter, run *relayRun) bool {
+	if run != nil && run.request.TriggerKind == domain.TriggerAmbient {
+		writeCapabilityError(w, http.StatusForbidden, ambientMediaDenied)
+		return false
+	}
+	return true
 }
 
 func stickerScope(run *relayRun) StickerScope {

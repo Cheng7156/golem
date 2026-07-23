@@ -21,7 +21,9 @@ const (
 	asyncStickerSelectPath     = "/capabilities/v1/async-delivery/stickers/select"
 	asyncStickerSendPath       = "/capabilities/v1/async-delivery/stickers/send"
 	asyncVideoSearchPath       = "/capabilities/v1/async-delivery/videos/search"
+	asyncVideoInspectPath      = "/capabilities/v1/async-delivery/videos/inspect"
 	asyncVideoSendPath         = "/capabilities/v1/async-delivery/videos/send"
+	asyncVideoSendURLPath      = "/capabilities/v1/async-delivery/videos/send-url"
 	asyncVideoStatusPath       = "/capabilities/v1/async-delivery/videos/status"
 	asyncDeliveryRevokePath    = "/capabilities/v1/async-delivery/revoke"
 	asyncDeliveryReconcilePath = "/capabilities/v1/async-delivery/reconcile"
@@ -94,10 +96,12 @@ func capabilityPath(path string) bool {
 	switch path {
 	case stickerSearchPath, stickerMaterializePath, stickerSelectPath,
 		videoSearchPath, videoResolvePath, videoSelectPath, videoStatusPath,
+		inlineVideoFetchPath,
 		asyncDeliveryRegisterPath, asyncDeliveryStatusPath,
 		asyncDeliveryDeliverPath, asyncDeliveryDeliverV2Path,
 		asyncStickerSearchPath, asyncStickerSelectPath, asyncStickerSendPath,
-		asyncVideoSearchPath, asyncVideoSendPath, asyncVideoStatusPath,
+		asyncVideoSearchPath, asyncVideoInspectPath, asyncVideoSendPath,
+		asyncVideoSendURLPath, asyncVideoStatusPath,
 		asyncDeliveryRevokePath, asyncDeliveryReconcilePath,
 		cronDeliveryRegisterPath, cronDeliveryDeliverPath, cronDirectStatusPath,
 		cronVideoSearchPath, cronVideoSendPath, cronVideoStatusPath:

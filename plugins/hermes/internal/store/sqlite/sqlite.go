@@ -90,6 +90,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, schemaV8); err != nil {
 			return fmt.Errorf("execute Hermes Ambient Reply Budget Schema: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, schemaV9); err != nil {
+			return fmt.Errorf("execute Hermes Async Video Job Schema: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, schemaV10); err != nil {
+			return fmt.Errorf("execute Hermes Outbox Delivery State Schema: %w", err)
+		}
+		if err := ensureTableColumn(
+			ctx, tx, "async_video_jobs", "stage", "TEXT NOT NULL DEFAULT 'queued'",
+		); err != nil {
+			return err
+		}
+		if err := ensureTableColumn(
+			ctx, tx, "async_video_jobs", "source_url", "TEXT NOT NULL DEFAULT ''",
+		); err != nil {
+			return err
+		}
+		if err := ensureTableColumn(
+			ctx, tx, "async_video_jobs", "auto_close", "INTEGER NOT NULL DEFAULT 0",
+		); err != nil {
+			return err
+		}
 		for _, column := range []struct{ name, ddl string }{
 			{"conversation_id", "TEXT NOT NULL DEFAULT ''"},
 			{"current_observation_id", "TEXT NOT NULL DEFAULT ''"},
@@ -152,8 +173,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?)`,
+			unixMillis(time.Now()),
+		); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(9,?)`,
+			unixMillis(time.Now()),
+		); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(10,?)`,
 			unixMillis(time.Now()),
 		)
 		return err

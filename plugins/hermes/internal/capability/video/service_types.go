@@ -77,6 +77,7 @@ type ServiceConfig struct {
 	MaxVideosPerRun int
 	PrepareTimeout  time.Duration
 	PrepareWorkers  int
+	AllowHTTP       bool
 }
 
 type PreparationError struct {

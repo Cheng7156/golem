@@ -10,17 +10,26 @@ import (
 )
 
 type fixedSocialDecider struct {
-	route domain.Route
-	calls int
+	route       domain.Route
+	disposition SocialDisposition
+	calls       int
 }
 
 func (d *fixedSocialDecider) Decide(
 	context.Context,
 	domain.InboxEvent,
 	domain.InboundMessage,
-) (domain.Route, string, error) {
+) (SocialDecision, error) {
 	d.calls++
-	return d.route, "test social decision", nil
+	disposition := d.disposition
+	if disposition == "" {
+		if d.route == domain.RouteChat || d.route == domain.RouteJob {
+			disposition = DispositionRespond
+		} else {
+			disposition = DispositionObserve
+		}
+	}
+	return SocialDecision{Route: d.route, Disposition: disposition, Reason: "test social decision"}, nil
 }
 
 type fixedContextReader struct {
@@ -312,6 +321,24 @@ func TestHybridWithoutDeciderFailsClosedToObserve(t *testing.T) {
 	}
 	if decision.Route != domain.RouteObserve {
 		t.Fatalf("hybrid fail-closed decision=%#v", decision)
+	}
+}
+
+func TestHybridPreservesSocialIgnoreDisposition(t *testing.T) {
+	manager, err := config.NewManager(validHybridConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decider := &fixedSocialDecider{route: domain.RouteObserve, disposition: DispositionIgnore}
+	router, _ := NewRulesRouter(manager.Current, decider)
+	decision, err := router.Route(context.Background(), domain.InboxEvent{
+		ID: "ignored", SessionID: "chatroom:test",
+	}, domain.InboundMessage{Text: "automated noise", SpeakerID: "member", IsChatroom: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Route != domain.RouteObserve || decision.Disposition != DispositionIgnore {
+		t.Fatalf("decision=%#v", decision)
 	}
 }
 

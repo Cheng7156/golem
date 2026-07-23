@@ -35,6 +35,7 @@ type Store interface {
 	GetTurn(context.Context, string) (domain.Turn, error)
 	ListTurns(context.Context, domain.TurnState, int) ([]domain.Turn, error)
 	RouteTurn(context.Context, string, domain.Route, domain.Lane, time.Time) (domain.Turn, *domain.Run, error)
+	RouteTurnWithContextDisposition(context.Context, string, domain.Route, domain.Lane, time.Time, bool) (domain.Turn, *domain.Run, error)
 	TransitionTurn(context.Context, string, domain.TurnState, domain.Route) error
 
 	CreateRun(context.Context, domain.Run) (domain.Run, error)
@@ -77,8 +78,10 @@ type Store interface {
 	CountCronDirectOutputs(context.Context, domain.CronDirectOutputScope) (int64, error)
 
 	LeaseNextOutbox(context.Context, time.Time, time.Duration) (domain.OutboxItem, error)
+	MarkOutboxSending(context.Context, string, string) error
 	MarkOutboxSent(context.Context, string, string, uint64, time.Time) error
 	MarkOutboxRetry(context.Context, string, string, string, string, time.Time) error
+	MarkOutboxAmbiguous(context.Context, string, string, string) error
 	MarkOutboxDeadLetter(context.Context, string, string, string, string) error
 	GetOutbox(context.Context, string) (domain.OutboxItem, error)
 	ListDeliveryAttempts(context.Context, string) ([]domain.DeliveryAttempt, error)

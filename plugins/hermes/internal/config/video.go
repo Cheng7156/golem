@@ -13,6 +13,7 @@ const (
 	maximumProviderTimeout   = 120
 	maximumRequestsPerMinute = 600
 	maximumMetadataBytes     = 8 << 20
+	maximumURLInspectBytes   = 256 << 10
 )
 
 type videoProviderContext struct {
@@ -52,6 +53,8 @@ func applyVideoDefaults(video *VideoCapabilityConfig, defaults VideoCapabilityCo
 	defaultPositiveInt(&video.PrepareWorkers, defaults.PrepareWorkers)
 	defaultPositiveInt64(&video.StorageMaxBytes, defaults.StorageMaxBytes)
 	defaultPositiveInt(&video.CacheTTLHours, defaults.CacheTTLHours)
+	defaultPositiveInt(&video.URLInspectTimeoutSeconds, defaults.URLInspectTimeoutSeconds)
+	defaultPositiveInt64(&video.URLInspectMaxBytes, defaults.URLInspectMaxBytes)
 	video.FFmpegPath = defaultVideoPath(video.FFmpegPath, defaults.FFmpegPath)
 	video.FFprobePath = defaultVideoPath(video.FFprobePath, defaults.FFprobePath)
 	video.MediaDirectory = defaultVideoPath(video.MediaDirectory, defaults.MediaDirectory)
@@ -78,6 +81,9 @@ func validateVideoLimits(video *VideoCapabilityConfig) error {
 	}
 	if video.PrepareTimeoutSeconds < video.DownloadTimeoutSeconds {
 		return errors.New("capabilities.video.prepare_timeout_seconds 不能小于 download_timeout_seconds")
+	}
+	if video.URLInspectMaxBytes > maximumURLInspectBytes {
+		return errors.New("capabilities.video.url_inspect_max_bytes 不能大于 256 KiB")
 	}
 	return nil
 }

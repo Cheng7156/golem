@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"golem_plugin_hermes/internal/domain"
 	storeport "golem_plugin_hermes/internal/store"
@@ -60,6 +61,9 @@ func TestCronDeliveryCommitIsDurableAndIdempotent(t *testing.T) {
 	if first.OutboxID == "" || first != again {
 		t.Fatalf("first=%#v again=%#v", first, again)
 	}
+	if first.DeliveryState != "queued" {
+		t.Fatalf("initial delivery state=%q", first.DeliveryState)
+	}
 	outbox, err := value.GetOutbox(context.Background(), first.OutboxID)
 	if err != nil || outbox.State != domain.OutboxPending || outbox.ReceiverID != fixture.event.Binding.ReceiverID {
 		t.Fatalf("outbox=%#v err=%v", outbox, err)
@@ -67,6 +71,20 @@ func TestCronDeliveryCommitIsDurableAndIdempotent(t *testing.T) {
 	var payload domain.TextOutput
 	if err := json.Unmarshal(outbox.Payload, &payload); err != nil || payload.Content != commit.Content {
 		t.Fatalf("payload=%#v err=%v", payload, err)
+	}
+	leased, err := value.LeaseNextOutbox(context.Background(), time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.MarkOutboxSending(context.Background(), leased.ID, leased.LeaseToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := value.MarkOutboxSent(context.Background(), leased.ID, leased.LeaseToken, 7001, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := value.CommitCronDelivery(context.Background(), commit)
+	if err != nil || delivered.DeliveryState != "delivered" {
+		t.Fatalf("delivered=%#v err=%v", delivered, err)
 	}
 }
 

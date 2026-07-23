@@ -111,7 +111,8 @@ func assertAsyncRaceOutcome(
 		t.Fatalf("GetAsyncDelivery: %v", err)
 	}
 	if stored.State == domain.AsyncDeliveryConsumed {
-		if outcome.revoked != 0 || outcome.committed.Disposition != "delivered" || outcome.committed.OutboxID == "" {
+		if outcome.revoked != 0 || outcome.committed.Disposition != "delivered" ||
+			outcome.committed.DeliveryState != "queued" || outcome.committed.OutboxID == "" {
 			t.Fatalf("consumed race result=%#v revoked=%d", outcome.committed, outcome.revoked)
 		}
 		return

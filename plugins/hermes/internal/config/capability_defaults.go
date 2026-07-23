@@ -20,5 +20,6 @@ func defaultVideoCapability() VideoCapabilityConfig {
 		StorageMaxBytes: 2 << 30, CacheTTLHours: 24,
 		FFmpegPath: "/usr/bin/ffmpeg", FFprobePath: "/usr/bin/ffprobe",
 		MediaDirectory: "data/hermes/media/video", LinkFallbackEnabled: true,
+		URLFetchAllowHTTP: true, URLInspectTimeoutSeconds: 20, URLInspectMaxBytes: 256 << 10,
 	}
 }

@@ -14,7 +14,7 @@ from .async_delivery_state import DeliveryBinding
 from .errors import CapabilityError, RetryableCapabilityError
 
 
-PRODUCER_EPOCH = "ade_" + secrets.token_hex(16)
+_PRODUCER_EPOCH_ENV = "_HERMES_GOLEM_ASYNC_PRODUCER_EPOCH"
 IDEMPOTENT_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
 MIN_DIRECT_OUTPUT_COUNT = 1
@@ -27,14 +27,36 @@ class RegistrationInput:
     context: Dict[str, str]
 
 
+def activate_gateway_producer() -> str:
+    """Create this root Gateway boot's producer identity.
+
+    The value is placed in the process environment only as an internal
+    inheritance channel for Hermes worker/subagent processes. It is not user
+    configuration. A new root Gateway startup always replaces it.
+    """
+    value = "ade_" + secrets.token_hex(16)
+    os.environ[_PRODUCER_EPOCH_ENV] = value
+    return value
+
+
+def _producer_epoch() -> str:
+    value = os.getenv(_PRODUCER_EPOCH_ENV, "").strip()
+    if not value.startswith("ade_") or len(value) != 36:
+        raise CapabilityError(
+            "Golem async producer is unavailable before root Gateway startup"
+        )
+    return value
+
+
 def register_delivery(value: RegistrationInput) -> DeliveryBinding:
+    producer_epoch = _producer_epoch()
     ticket = "adt_" + secrets.token_urlsafe(32)
     context = dict(value.context)
     context["profile"] = _context_profile(context)
     payload: Dict[str, Any] = {
         "ticket": ticket,
         "delegation_id": value.delegation_id,
-        "producer_epoch": PRODUCER_EPOCH,
+        "producer_epoch": producer_epoch,
         "hermes_session_id": value.hermes_session_id,
         "context": context,
     }
@@ -44,7 +66,7 @@ def register_delivery(value: RegistrationInput) -> DeliveryBinding:
     return DeliveryBinding(
         ticket=ticket,
         delegation_id=value.delegation_id,
-        producer_epoch=PRODUCER_EPOCH,
+        producer_epoch=producer_epoch,
         hermes_session_id=value.hermes_session_id,
         relay_session_key=context["session_key"],
         chat_id=context["chat_id"],
@@ -151,6 +173,12 @@ def video_search(
     return _post_idempotent(client.ASYNC_VIDEO_SEARCH_PATH, payload)
 
 
+def video_inspect(binding: DeliveryBinding, url: str) -> Dict[str, Any]:
+    payload: Dict[str, Any] = binding.request_fields()
+    payload["url"] = url
+    return _post_idempotent(client.ASYNC_VIDEO_INSPECT_PATH, payload)
+
+
 def video_send(
     binding: DeliveryBinding, candidate_id: str, invocation_id: str
 ) -> Dict[str, Any]:
@@ -160,17 +188,52 @@ def video_send(
     return _post_idempotent(client.ASYNC_VIDEO_SEND_PATH, payload)
 
 
+def video_send_url(
+    binding: DeliveryBinding, url: str, title: str, invocation_id: str
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = binding.request_fields()
+    payload.update({"url": url, "title": title, "invocation_id": invocation_id})
+    return _post_idempotent(client.ASYNC_VIDEO_SEND_URL_PATH, payload)
+
+
 def video_status(binding: DeliveryBinding, job_id: str) -> Dict[str, Any]:
     payload: Dict[str, Any] = binding.request_fields()
     payload["job_id"] = job_id
     return _post_idempotent(client.ASYNC_VIDEO_STATUS_PATH, payload)
 
 
+def inline_video_fetch(
+    url: str,
+    title: str,
+    invocation_id: str,
+    hermes_session_id: str,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    payload = {
+        "url": url,
+        "title": title,
+        "invocation_id": invocation_id,
+        "producer_epoch": _producer_epoch(),
+        "hermes_session_id": hermes_session_id,
+        "context": dict(context),
+    }
+    result = _post_idempotent(client.VIDEO_FETCH_PATH, payload)
+    if result.get("accepted") is not True:
+        raise CapabilityError("Golem did not accept the durable video job")
+    job_id = result.get("job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise CapabilityError("Golem returned an invalid durable video job")
+    if result.get("state") not in {"pending", "completed"}:
+        raise CapabilityError("Golem returned an invalid durable video job state")
+    return result
+
+
 def revoke_session(hermes_session_id: str, profile: str) -> int:
+    producer_epoch = _producer_epoch()
     result = _post_idempotent(
         client.ASYNC_REVOKE_PATH,
         {
-            "producer_epoch": PRODUCER_EPOCH,
+            "producer_epoch": producer_epoch,
             "hermes_session_id": hermes_session_id,
             "profile": profile,
         },
@@ -182,9 +245,10 @@ def revoke_session(hermes_session_id: str, profile: str) -> int:
 
 
 def reconcile(profile: str) -> int:
+    producer_epoch = _producer_epoch()
     result = _post_idempotent(
         client.ASYNC_RECONCILE_PATH,
-        {"producer_epoch": PRODUCER_EPOCH, "profile": profile},
+        {"producer_epoch": producer_epoch, "profile": profile},
     )
     abandoned = result.get("abandoned")
     if not isinstance(abandoned, int) or isinstance(abandoned, bool) or abandoned < 0:

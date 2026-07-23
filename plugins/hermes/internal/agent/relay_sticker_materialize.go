@@ -24,6 +24,9 @@ func (g *RelayGateway) serveStickerMaterialize(w http.ResponseWriter, request *h
 		writeCapabilityError(w, http.StatusConflict, err.Error())
 		return
 	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
 	candidateID := strings.TrimSpace(input.CandidateID)
 	if candidateID == "" {
 		writeCapabilityError(w, http.StatusBadRequest, "candidate_id is empty")

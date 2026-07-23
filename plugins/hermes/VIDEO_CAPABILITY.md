@@ -89,7 +89,12 @@ link_fallback_enabled = true
 send_timeout_seconds = 180
 ```
 
-不要在同一 TOML 文件中重复声明 `[hermes.config.output]`；应修改现有字段。插件 `0.7.1` 起，视频 Outbox 的 lease 会覆盖完整发送超时；任何发送失败、插件重启或 lease 过期都会使该视频直接进入 `dead_letter`，不会再次调用 Host。这个取舍优先避免用户收到重复视频，普通文本和表情仍沿用既有至少一次重试策略。
+不要在同一 TOML 文件中重复声明 `[hermes.config.output]`；应修改现有字段。视频
+Outbox 的 lease 会覆盖完整发送超时，并持久区分 `leased`（尚未调用 Host）和
+`sending`（已经开始调用 Host）：前者在临时错误、插件重启或 lease 过期后可以安全
+重试；后者若没有可靠 receipt 则进入 `ambiguous`，不会自动重发。只有微信返回非零
+receipt 后，关联视频 job 才从 `waiting_delivery` 进入 `delivered`。这既减少无谓失败，
+又避免用户收到重复视频。
 
 ## 5. Provider 配置
 
@@ -255,6 +260,26 @@ BEAUTY_VIDEO_API_KEY=replace-with-provider-key
 敏感 Header、Query、Form 或 JSON 字段必须使用 `${env:NAME}`，不能直接写在 TOML 或 endpoint URL 中。
 
 ## 7. Hermes 插件配置
+
+### 7.1 用户 URL 视频抓取
+
+在 `[hermes.config.capabilities.video]` 中启用公共 HTTP 入口（HTTPS 始终支持）：
+
+```toml
+url_fetch_allow_http = true
+url_inspect_timeout_seconds = 20
+url_inspect_max_bytes = 262144
+```
+
+`url_fetch_allow_http` 只放宽 URL scheme；Go 数据面仍拒绝 loopback、私网、链路本地和多播 IP，限制重定向、响应大小和超时。入口响应按 Content-Type 和魔数识别为视频流、文本 URL 或 JSON。JSON 只向子代理返回有深度/长度上限的脱敏文档和候选 URL 路径，最终媒体 URL 会再次经过同一公共 IP 校验和视频处理流水线。
+
+Hermes 用户插件新增 `golem_video_fetch`。它只能在 `delegate_task(background=true)` 的子代理中执行：
+
+1. `golem_video_fetch(url=<用户原始 URL>)` 探测入口；直出视频或文本 URL 会直接创建异步视频任务。
+2. JSON 响应返回 `status=needs_selection`、`document` 和 `candidates`。子代理根据真实字段选择视频地址。
+3. 子代理用同一个原始 `url` 和精确的 `media_url` 再次调用工具；工具创建独立异步任务，完成下载、ffprobe/ffmpeg、缩略图和 Direct Output Outbox。
+
+父代理只负责派发子代理并立即确认，不等待探测、下载或微信发送。工具不接受本地路径、凭据 URL、shell 命令或微信目标参数。详见 `URL_VIDEO_FETCH_DESIGN.md`。
 
 部署完整插件目录，而不是只替换 `__init__.py`：
 

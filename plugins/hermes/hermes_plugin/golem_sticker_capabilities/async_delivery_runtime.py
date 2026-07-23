@@ -17,6 +17,7 @@ from . import async_delivery_output
 from . import cron_async_delegation
 from .async_delivery_api import (
     RegistrationInput,
+    activate_gateway_producer,
     delivery_profiles,
     delivery_status,
     parse_delegate_result,
@@ -45,7 +46,9 @@ _BLOCKED_ASYNC_TOOLS = {
     "delegate_task",
     "golem_sticker_inspect",
     "golem_sticker_select",
+    "golem_video_fetch",
 }
+_AMBIENT_MEDIA_PREFIXES = ("golem_sticker_", "golem_video_")
 logger = logging.getLogger(__name__)
 _REQUEUE_DELAY_SECONDS = 2.0
 
@@ -75,8 +78,28 @@ def install() -> None:
     _patch_process_event_source(GatewayRunner)
     async_delivery_child_context.install()
     async_delivery_output.install(GatewayRunner, RelayAdapter)
+
+
+def gateway_startup(gateway: Any = None, **_: Any) -> None:
+    """Establish producer ownership only at the root Gateway boundary."""
+    marker = "_golem_async_delivery_producer_epoch"
+    producer_epoch = getattr(gateway, marker, "") if gateway is not None else ""
+    if not producer_epoch:
+        producer_epoch = activate_gateway_producer()
+        if gateway is not None:
+            setattr(gateway, marker, producer_epoch)
+    else:
+        # A repeated hook for the same Gateway instance must keep the same
+        # identity, including for subsequently spawned child processes.
+        import os
+        os.environ["_HERMES_GOLEM_ASYNC_PRODUCER_EPOCH"] = producer_epoch
     for profile in delivery_profiles():
-        reconcile(profile)
+        abandoned = reconcile(profile)
+        logger.info(
+            "reconciled Golem async producer profile=%s abandoned=%s",
+            profile,
+            abandoned,
+        )
 
 
 def tool_execution(**kwargs: Any) -> Any:
@@ -123,12 +146,30 @@ _DELEGATION_CALLBACKS = cron_async_delegation.DelegationCallbacks(parse_delegate
 
 
 def pre_tool_call(tool_name: str = "", **_: Any) -> Dict[str, str] | None:
-    if current_delivery.get() is None or tool_name not in _BLOCKED_ASYNC_TOOLS:
-        return None
-    return {
-        "action": "block",
-        "message": f"Tool {tool_name} is unavailable in an async completion turn",
-    }
+    if current_delivery.get() is not None and tool_name in _BLOCKED_ASYNC_TOOLS:
+        return {
+            "action": "block",
+            "message": f"Tool {tool_name} is unavailable in an async completion turn",
+        }
+    if _session_trigger_kind() == "ambient" and (
+        tool_name == "delegate_task" or tool_name.startswith(_AMBIENT_MEDIA_PREFIXES)
+    ):
+        return {
+            "action": "block",
+            "message": f"Tool {tool_name} is unavailable in an unaddressed ambient turn",
+        }
+    return None
+
+
+def _session_trigger_kind() -> str:
+    """Read only Hermes' task-local, transport-bound trigger authority."""
+    try:
+        from gateway.session_context import get_session_trigger_kind
+
+        return get_session_trigger_kind()
+    except (ImportError, AttributeError):
+        # Older/non-gateway Hermes surfaces have no trusted trigger binding.
+        return ""
 
 
 def session_reset(old_session_id: str = "", **kwargs: Any) -> None:
@@ -195,18 +236,20 @@ def _patch_injection(runner_class: Any) -> None:
         )
         if state is None:
             logger.error("dropping orphan async completion %s", delegation_id)
-            _acknowledge_terminal_completion(delegation_id)
+            _discard_terminal_completion(delegation_id, "orphan completion")
             return True
         if state.status == "registering":
             await _requeue_completion(evt)
             logger.error("async completion registration timed out for %s", delegation_id)
             return
         if cron_async_delegation.consume_internal_completion(state, delegation_id):
-            _acknowledge_terminal_completion(delegation_id)
+            _discard_terminal_completion(
+                delegation_id, "internal completion handled outside transcript"
+            )
             return True
         if state.status != "ready" or state.binding is None:
             logger.error("dropping unregistered async completion %s", delegation_id)
-            _acknowledge_terminal_completion(delegation_id)
+            _discard_terminal_completion(delegation_id, "unregistered completion")
             return True
         try:
             ticket_state = await asyncio.to_thread(delivery_status, state.binding)
@@ -217,11 +260,15 @@ def _patch_injection(runner_class: Any) -> None:
         except CapabilityError as exc:
             mark_failed(delegation_id, str(exc))
             logger.exception("dropping invalid async delivery %s", delegation_id)
-            _acknowledge_terminal_completion(delegation_id)
+            _discard_terminal_completion(
+                delegation_id, f"invalid async delivery: {exc}"
+            )
             return True
         if ticket_state != "pending":
             logger.info("dropping inactive async completion %s", delegation_id)
-            _acknowledge_terminal_completion(delegation_id)
+            _discard_terminal_completion(
+                delegation_id, f"inactive async delivery ticket: {ticket_state}"
+            )
             return True
         delivery_token = current_delivery.set(state.binding)
         event_token = current_completion_event.set(dict(evt))
@@ -235,14 +282,14 @@ def _patch_injection(runner_class: Any) -> None:
     runner_class._inject_watch_notification = wrapped
 
 
-def _acknowledge_terminal_completion(delegation_id: str) -> None:
+def _discard_terminal_completion(delegation_id: str, reason: str) -> None:
     try:
-        from tools.async_delegation import mark_completion_delivered
+        from tools.async_delegation import mark_completion_discarded
 
-        mark_completion_delivered(delegation_id)
+        mark_completion_discarded(delegation_id, reason)
     except Exception:
         logger.exception(
-            "could not acknowledge terminal async completion %s", delegation_id
+            "could not discard terminal async completion %s", delegation_id
         )
 
 

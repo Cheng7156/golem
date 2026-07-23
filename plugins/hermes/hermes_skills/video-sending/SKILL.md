@@ -1,15 +1,19 @@
 ---
 name: video-sending
-description: Send a requested video into the current WeChat conversation through Golem. Use when a user asks Hermes to find, send, or post a beauty, black-stockings, or white-stockings video. Do not use for creating scheduled video jobs; route those requests to the dedicated Golem video cron skill.
+description: Send a requested video into the current WeChat conversation through Golem. Use when a user supplies a public HTTP(S) URL or asks Hermes to find, send, or post a configured beauty, black-stockings, or white-stockings video. Do not use for creating scheduled video jobs; route those requests to the dedicated Golem video cron skill.
 ---
 
 # Send A WeChat Video
 
-Use a background subagent because video discovery, download, preparation, and Outbox delivery may take time.
+Use a background subagent because URL inspection, JSON selection, download, preparation, and Outbox delivery may take time.
 
 ## Acknowledge The Delegation
 
 Once `delegate_task` accepts the task, end the current turn immediately with one short natural-language acknowledgement such as `活已经派下去了，我找到后直接发到这里。` Do not wait for the background result before acknowledging it, and do not call `send_message` just to acknowledge.
+
+## User-Supplied URL
+
+When the user gives an `http://` or `https://` URL and asks Hermes to send its video, delegate the whole operation. The child must call `golem_video_fetch(url=<exact user URL>)`. If the result is `status="needs_selection"`, choose only an exact `candidates[].url` or an exact URL visible in the redacted `document`, then call `golem_video_fetch` again with the original `url` and that `media_url`. Never use shell/curl, invent a URL, pass a local path, or send a URL directly through another tool. This URL route is complete by itself; do not also run the configured-provider flow below.
 
 ## Select The Provider
 

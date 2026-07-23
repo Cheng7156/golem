@@ -1,24 +1,27 @@
 package config
 
 type VideoCapabilityConfig struct {
-	Enabled                bool                  `toml:"enabled" comment:"是否向 Hermes 暴露视频能力"`
-	DefaultCategory        string                `toml:"default_category" comment:"未指定分类时使用的默认分类"`
-	MaxCandidates          int                   `toml:"max_candidates" comment:"单次发现最多返回的候选数"`
-	CandidateTTLSeconds    int                   `toml:"candidate_ttl_seconds" comment:"候选 ID 有效期秒数"`
-	MaxSourceBytes         int64                 `toml:"max_source_bytes" comment:"下载源视频最大字节数"`
-	MaxVideoBytes          int64                 `toml:"max_video_bytes" comment:"发送成品视频最大字节数"`
-	MaxDurationSeconds     int                   `toml:"max_duration_seconds" comment:"单个视频最大时长秒数"`
-	MaxVideosPerRun        int                   `toml:"max_videos_per_run" comment:"单个 Run 最多暂存的视频数"`
-	PrepareTimeoutSeconds  int                   `toml:"prepare_timeout_seconds" comment:"下载与处理总超时秒数"`
-	DownloadTimeoutSeconds int                   `toml:"download_timeout_seconds" comment:"单次远程下载超时秒数"`
-	PrepareWorkers         int                   `toml:"prepare_workers" comment:"视频准备任务并发数"`
-	StorageMaxBytes        int64                 `toml:"storage_max_bytes" comment:"视频媒体对象总磁盘预算"`
-	CacheTTLHours          int                   `toml:"cache_ttl_hours" comment:"无引用媒体对象保留小时数"`
-	FFmpegPath             string                `toml:"ffmpeg_path" comment:"ffmpeg 可执行文件路径"`
-	FFprobePath            string                `toml:"ffprobe_path" comment:"ffprobe 可执行文件路径"`
-	MediaDirectory         string                `toml:"media_directory" comment:"视频媒体对象目录"`
-	LinkFallbackEnabled    bool                  `toml:"link_fallback_enabled" comment:"准备失败后是否发送原因和网页链接"`
-	Providers              []VideoProviderConfig `toml:"providers" comment:"可配置视频 API Provider"`
+	Enabled                  bool                  `toml:"enabled" comment:"是否向 Hermes 暴露视频能力"`
+	DefaultCategory          string                `toml:"default_category" comment:"未指定分类时使用的默认分类"`
+	MaxCandidates            int                   `toml:"max_candidates" comment:"单次发现最多返回的候选数"`
+	CandidateTTLSeconds      int                   `toml:"candidate_ttl_seconds" comment:"候选 ID 有效期秒数"`
+	MaxSourceBytes           int64                 `toml:"max_source_bytes" comment:"下载源视频最大字节数"`
+	MaxVideoBytes            int64                 `toml:"max_video_bytes" comment:"发送成品视频最大字节数"`
+	MaxDurationSeconds       int                   `toml:"max_duration_seconds" comment:"单个视频最大时长秒数"`
+	MaxVideosPerRun          int                   `toml:"max_videos_per_run" comment:"单个 Run 最多暂存的视频数"`
+	PrepareTimeoutSeconds    int                   `toml:"prepare_timeout_seconds" comment:"下载与处理总超时秒数"`
+	DownloadTimeoutSeconds   int                   `toml:"download_timeout_seconds" comment:"单次远程下载超时秒数"`
+	PrepareWorkers           int                   `toml:"prepare_workers" comment:"视频准备任务并发数"`
+	StorageMaxBytes          int64                 `toml:"storage_max_bytes" comment:"视频媒体对象总磁盘预算"`
+	CacheTTLHours            int                   `toml:"cache_ttl_hours" comment:"无引用媒体对象保留小时数"`
+	FFmpegPath               string                `toml:"ffmpeg_path" comment:"ffmpeg 可执行文件路径"`
+	FFprobePath              string                `toml:"ffprobe_path" comment:"ffprobe 可执行文件路径"`
+	MediaDirectory           string                `toml:"media_directory" comment:"视频媒体对象目录"`
+	LinkFallbackEnabled      bool                  `toml:"link_fallback_enabled" comment:"准备失败后是否发送原因和网页链接"`
+	URLFetchAllowHTTP        bool                  `toml:"url_fetch_allow_http" comment:"任意 URL 抓取是否允许公共 HTTP 地址"`
+	URLInspectTimeoutSeconds int                   `toml:"url_inspect_timeout_seconds" comment:"任意 URL 探测超时秒数"`
+	URLInspectMaxBytes       int64                 `toml:"url_inspect_max_bytes" comment:"任意 URL JSON/文本探测最大字节数"`
+	Providers                []VideoProviderConfig `toml:"providers" comment:"可配置视频 API Provider"`
 }
 
 type VideoProviderConfig struct {

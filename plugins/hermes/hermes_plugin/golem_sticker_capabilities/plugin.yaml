@@ -1,6 +1,6 @@
 name: golem-sticker-capabilities
-version: 1.7.0
-description: "Golem-managed WeChat sticker and video tools plus durable background and cron delivery."
+version: 1.9.0
+description: "Golem-managed WeChat sticker and video tools plus safe background URL video delivery."
 author: Golem
 kind: standalone
 requires_env:
@@ -33,4 +33,4 @@ provides_tools:
   - golem_video_search
   - golem_video_attach
   - golem_video_select
-
+  - golem_video_fetch

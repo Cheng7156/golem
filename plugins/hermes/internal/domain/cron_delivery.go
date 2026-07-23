@@ -60,9 +60,10 @@ func (c CronDeliveryCommit) Validate() error {
 }
 
 type CronDeliveryResult struct {
-	Disposition string `json:"disposition"`
-	MessageID   string `json:"message_id"`
-	OutboxID    string `json:"outbox_id"`
+	Disposition   string `json:"disposition"`
+	DeliveryState string `json:"delivery_state"`
+	MessageID     string `json:"message_id"`
+	OutboxID      string `json:"outbox_id"`
 }
 
 type CronDirectOutputCommit struct {
