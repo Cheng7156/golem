@@ -1,6 +1,6 @@
 # Hermes 群聊可靠性 V3 设计
 
-状态：实施中；核心可靠性路径已完成，生产二进制、配置与 Hermes Gateway 已部署，等待 Owner 执行一次 `/pm reload hermes` 使新插件代码接管
+状态：实施中；核心可靠性路径、生产部署与插件 reload 已完成，进入线上观察期
 
 创建分支：`feat/group-chat-reliability-v3-20260723-125523`
 
@@ -10,15 +10,16 @@ SQLite durable video job、前台视频持久化 enqueue、确定性 JSON 候选
 `queued -> sending -> sent/ambiguous/dead_letter` 的诚实微信投递状态，以及按可信
 trigger task-local binding 执行的 ambient 工具限权。生产二进制已原子替换并保留回滚副本，
 用户插件与视频 skill 已同步，配置已切换到 hybrid/per-user session，Gateway 已重启；Golem
-Host 仍保持原 PID 运行。由于 `/pm reload hermes` 只能由可信微信 Owner 命令触发，最终插件
-reload 需在微信发送一次该命令后验收。
+Host 仍保持原 PID 运行。16:53:55 UTC 收到可信微信 Owner 的 `/pm reload hermes`，旧插件
+PID `765880` 正常退出，新插件 PID `797000` 从当前二进制启动；Golem 返回“插件已重载：hermes”。
 
 部署记录（2026-07-23 16:52 UTC）：SQLite 在线备份位于
 `/opt/software/wechat/deploy-backups/20260723_165106/` 与
 `/root/.hermes/deploy-backups/20260723_165106/`；新 Golem 二进制 SHA256 为
 `57abb5b558940504b7904522341dd70ee06ec1743fce5094f3b7c5ee236458db`，旧文件保留为
 `golem_plugin_hermes.pre-group-context-compression.bak`；Host PID `727041` 未变化，Gateway
-PID 为 `796845`。
+PID 为 `796845`（后续 reload 不影响 Gateway PID）。SQLite 两端 `PRAGMA integrity_check` 均为
+`ok`，Relay 已重连，未发现本次启动错误。
 
 ## 1. 目标
 
