@@ -46,6 +46,9 @@ func TestRecentInboundContextAndNewerSpeakerLookup(t *testing.T) {
 	if len(values) != 3 || values[0].Message.Text != "第一段" || values[2].Message.Text != "插话" {
 		t.Fatalf("unexpected context=%#v", values)
 	}
+	if values[0].EventID != first.ID || values[0].PlatformMessageID != "" {
+		t.Fatalf("first identity=%#v", values[0])
+	}
 	firstStored, err := store.GetInbox(ctx, first.ID)
 	if err != nil {
 		t.Fatalf("GetInbox first: %v", err)

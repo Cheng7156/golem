@@ -13,6 +13,23 @@ import (
 	storeport "golem_plugin_hermes/internal/store"
 )
 
+func runAdmissionKey(
+	sessionID string,
+	lane domain.Lane,
+	principal domain.Principal,
+	message domain.InboundMessage,
+) string {
+	if lane != domain.LaneInteractive {
+		return ""
+	}
+	if !message.IsChatroom && !strings.HasPrefix(strings.TrimSpace(sessionID), "chatroom:") {
+		return ""
+	}
+	// Missing identity falls back to the empty legacy key, deliberately
+	// serializing the whole session instead of guessing a participant.
+	return strings.TrimSpace(principal.ID)
+}
+
 func (s *Store) CreateTurn(ctx context.Context, value domain.Turn) (domain.Turn, error) {
 	if strings.TrimSpace(value.EventID) == "" || strings.TrimSpace(value.SessionID) == "" {
 		return domain.Turn{}, errors.New("Turn 缺少 event_id 或 session_id")
@@ -288,6 +305,7 @@ func (s *Store) RouteTurnWithContextDisposition(
 			if err := json.Unmarshal(payloadJSON, &message); err != nil {
 				return err
 			}
+			admissionKey := runAdmissionKey(value.SessionID, lane, binding.Principal, message)
 			if err := tx.QueryRowContext(ctx,
 				`SELECT id,payload_hash,conversation_id,conversation_seq FROM context_outbox WHERE event_id=?`,
 				value.EventID,
@@ -307,9 +325,9 @@ func (s *Store) RouteTurnWithContextDisposition(
 					INSERT INTO runs(
 						id,turn_id,session_id,lane,state,revision,attempt,lease_token,
 						lease_until,deadline,next_attempt_at,checkpoint_json,last_error,
-						created_at,updated_at,conversation_id,current_observation_id,
+						admission_key,created_at,updated_at,conversation_id,current_observation_id,
 						current_payload_hash,required_context_seq,trigger_kind,invocation_id
-					) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+					) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`,
 				created.ID,
 				created.TurnID,
@@ -324,6 +342,7 @@ func (s *Store) RouteTurnWithContextDisposition(
 				0,
 				nil,
 				"",
+				admissionKey,
 				unixMillis(created.CreatedAt),
 				unixMillis(created.UpdatedAt),
 				created.ConversationID,

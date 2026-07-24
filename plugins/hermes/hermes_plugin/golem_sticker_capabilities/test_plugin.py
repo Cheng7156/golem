@@ -102,6 +102,89 @@ class PluginTests(unittest.TestCase):
         self.assertNotIn("chat_id", body.keys() - {"context"})
         self.assertTrue(request.full_url.endswith("/capabilities/v1/stickers/search"))
 
+    def test_image_search_is_metadata_only_and_supports_sender_filters(self):
+        response = _Response(
+            {
+                "candidates": [
+                    {
+                        "id": "img_opaque",
+                        "event_id": "event-7",
+                        "message_id": "wx-7",
+                        "speaker_id": "wxid-member",
+                        "speaker_name": "成员",
+                        "kind": "image",
+                        "mime_type": "image/png",
+                        "occurred_at": "2026-07-24T12:00:00Z",
+                        "readable": True,
+                        "is_current_sender": True,
+                        "is_current_message": False,
+                        "url": "https://must-not-reach-model.invalid/x.png",
+                    }
+                ],
+                "expires_in": 120,
+            }
+        )
+        with mock.patch.object(plugin._opener, "open", return_value=response) as opened:
+            result = json.loads(
+                plugin._image_tools._handle_search(
+                    {
+                        "speaker_id": "wxid-member",
+                        "speaker_name": "成员",
+                        "message_id": "wx-7",
+                        "limit": 4,
+                    }
+                )
+            )
+        self.assertEqual(result["candidates"][0]["id"], "img_opaque")
+        self.assertNotIn("url", result["candidates"][0])
+        self.assertTrue(result["candidates"][0]["is_current_sender"])
+        self.assertFalse(result["candidates"][0]["is_current_message"])
+        body = json.loads(opened.call_args.args[0].data.decode())
+        self.assertEqual(body["speaker_id"], "wxid-member")
+        self.assertEqual(body["speaker_name"], "成员")
+        self.assertEqual(body["message_id"], "wx-7")
+        self.assertTrue(opened.call_args.args[0].full_url.endswith("/capabilities/v1/images/search"))
+
+    def test_image_read_keeps_native_multimodal_result(self):
+        envelope = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "Image loaded"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,UE5H"}},
+            ],
+            "text_summary": "attached",
+        }
+        with mock.patch.object(
+            plugin._client, "read_current_image", return_value=(b"\x89PNG\r\n\x1a\n", "image/png")
+        ) as read:
+            with mock.patch.object(plugin._image_tools, "_vision", new=mock.AsyncMock(return_value=envelope)):
+                result = __import__("asyncio").run(
+                    plugin._image_tools._handle_read(
+                        {"candidate_id": "img_opaque", "question": "这是什么？"},
+                        task_id="task-image",
+                    )
+                )
+        self.assertIs(result, envelope)
+        read.assert_called_once()
+        self.assertEqual(read.call_args.kwargs["question"], "这是什么？")
+
+    def test_image_read_auxiliary_result_does_not_leak_data_url(self):
+        with mock.patch.object(
+            plugin._client, "read_current_image", return_value=(b"\x89PNG\r\n\x1a\n", "image/png")
+        ):
+            with mock.patch.object(
+                plugin._image_tools,
+                "_vision",
+                new=mock.AsyncMock(
+                    return_value=json.dumps({"success": True, "analysis": "一只猫"})
+                ),
+            ):
+                result = __import__("asyncio").run(
+                    plugin._image_tools._handle_read({"candidate_id": "img_opaque"})
+                )
+        self.assertEqual(json.loads(result), {"candidate_id": "img_opaque", "analysis": "一只猫"})
+        self.assertNotIn("data:", result)
+
     def test_select_uses_only_candidate_and_current_context(self):
         response = _Response(
             {
@@ -303,6 +386,8 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_attach",
                 "golem_sticker_inspect",
                 "golem_sticker_select",
+                "golem_image_search_current_session",
+                "golem_image_read_current_session",
                 "golem_video_search",
                 "golem_video_attach",
                 "golem_video_select",
@@ -310,7 +395,9 @@ class PluginTests(unittest.TestCase):
             },
         )
         self.assertTrue(registrations["golem_sticker_inspect"]["is_async"])
+        self.assertTrue(registrations["golem_image_read_current_session"]["is_async"])
         self.assertNotIn("is_async", registrations["golem_sticker_search"])
+        self.assertNotIn("is_async", registrations["golem_image_search_current_session"])
         context.register_hook.assert_any_call(
             "pre_tool_call", plugin._async_runtime.pre_tool_call
         )
@@ -335,6 +422,8 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_search",
                 "golem_sticker_attach",
                 "golem_sticker_select",
+                "golem_image_search_current_session",
+                "golem_image_read_current_session",
                 "golem_video_search",
                 "golem_video_attach",
                 "golem_video_select",

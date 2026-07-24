@@ -143,9 +143,7 @@ func TestRelayRunWaitingForGatewayCanBeCancelled(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for {
-		gateway.mu.Lock()
-		pending := gateway.pending[relayChatID(request)]
-		gateway.mu.Unlock()
+		pending, _ := gateway.pendingRunForChat(relayChatID(request), "")
 		if pending != nil {
 			break
 		}
@@ -165,10 +163,7 @@ func TestRelayRunWaitingForGatewayCanBeCancelled(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("waiting Relay Run did not stop after cancellation")
 	}
-	gateway.mu.Lock()
-	_, exists := gateway.pending[relayChatID(request)]
-	gateway.mu.Unlock()
-	if exists {
+	if pending, _ := gateway.pendingRunForChat(relayChatID(request), ""); pending != nil {
 		t.Fatal("cancelled waiting Run remained pending")
 	}
 }
@@ -523,6 +518,26 @@ func TestRelayGroupSessionKeyIsSharedAcrossParticipants(t *testing.T) {
 	secondKey := relaySessionKey(second, relayChatID(second))
 	if firstKey != secondKey {
 		t.Fatalf("group session keys are not shared: %q != %q", firstKey, secondKey)
+	}
+}
+
+func TestRelayPendingKeyUsesChatroomNamespaceWhenChatTypeIsMissing(t *testing.T) {
+	first := RunRequest{
+		SessionID: "chatroom:room-1", Lane: domain.LaneInteractive,
+		Principal: domain.Principal{ID: "user-1"},
+	}
+	second := first
+	second.Principal.ID = "user-2"
+	if got, want := relayPendingKey(first, relayChatID(first)), relayPendingKey(second, relayChatID(second)); got == want {
+		t.Fatalf("chatroom namespace did not isolate verified speakers: %q", got)
+	}
+
+	dmFirst := RunRequest{SessionID: "private:user", Lane: domain.LaneInteractive,
+		Principal: domain.Principal{ID: "user-1"}}
+	dmSecond := dmFirst
+	dmSecond.Principal.ID = "user-2"
+	if got, want := relayPendingKey(dmFirst, relayChatID(dmFirst)), relayPendingKey(dmSecond, relayChatID(dmSecond)); got != want {
+		t.Fatalf("private chat unexpectedly split admission slots: %q != %q", got, want)
 	}
 }
 

@@ -163,7 +163,8 @@ Golem -> Gateway：
 - descriptor 声明不支持 draft/edit/thread，减少中间消息和修订语义。
 - platform hint 要求私聊和 `group addressed` 给出可见最终回复；若 Hermes 对任意群消息最终仍返回 Connector 专用观察 token，Connector 都以无 Outbox 的成功 Run 完成，避免模型偏差阻塞 Session。部分 Provider 会把该决定渲染成完整括号式说明（例如 `[... — staying silent]` 或 `[silence]`），Connector 仅在整条群聊最终回复明确为这类静默说明时作同样处理。其他 Provider 特有文本通过 `silence_rules_file` 管理。私聊不接受观察 token，正文中提及 silent/no reply 也不会被吞。
 - Gateway 输出图片/表情的标准 relay action 尚未发布。0.5.0 的受控 Hermes 工具只能暂存结构化 Emoji effect，最终仍由 Relay send 完成 Run，并由 Go Outbox 发送。
-- 输入图片若只有微信加密引用，Adapter 只把可恢复下载凭据写入 Inbox。worker 获得 Run lease 后才调用 `message.Ability.Download`，Gateway 收到的是 `data/hermes/media` 下按 SHA-256 命名的本地文件路径。
+- 输入图片优先使用 Host 原始事件中的缩略图字节；没有内嵌字节时，Adapter 把可恢复下载凭据写入 Inbox，worker 获得 Run lease 后通过入站 `cdn.Ability.DownloadImage` 下载，并保留 `message.Ability.Download` 作为 web 模式兼容回退。若 Host CDN 暂时不可用，只有经过 allowlist 校验的微信官方 `cdnurl` 才可作为最后回退，并继续执行大小与图片 magic 校验。GIF 会在交给视觉模型前转换为第一帧 PNG，以兼容只接受 JPG/PNG 的模型。Gateway 最终收到 `data/hermes/media` 下按 SHA-256 命名的本地文件路径或经过域名校验的微信媒体 URL。
+- 独立图片/表情到达时只写入 Inbox 和观察上下文，不启动 Hermes Run，也不调用视觉模型。Worker 启动普通 Run 时不会根据文本关键词自动取图；Relay 暴露 `golem_image_search_current_session`（仅元数据）和 `golem_image_read_current_session`（按候选 ID 延迟物化）。Hermes Agent 自己先按发送者、消息 ID、时间筛选，再显式读取；读取时才完成 CDN/官方 URL 校验、GIF 首帧规范化并进入 Hermes 视觉通道。`image_input_mode=text` 只影响这次显式读取的视觉结果。
 
 relay Gateway 必须与 Golem 共享该本地媒体目录的文件系统视图。当前默认部署为同机进程；跨主机部署需要把 `data/hermes/media` 挂载到两端相同路径，官方 contract v1 尚未提供 connector 到 Gateway 的媒体上传帧。
 
@@ -178,6 +179,6 @@ relay Gateway 必须与 Golem 共享该本地媒体目录的文件系统视图�
 - Agent 输出不能直接执行微信副作用，只能形成 proposal。
 - 表情候选 ID 与 Run/chat 绑定且短时失效；Agent 看不到 Provider URL，也不能改变接收者。
 - 网络图片只允许无凭据 HTTPS URL和配置允许的 CDN 域名，拒绝 loopback、私网、link-local、multicast、越权重定向、超限内容和非图片 magic。
-- 出站图片和表情只通过 SDK `message.Send` 的 `Media.Data` 把原始字节交给 Host，由 Host 内部执行 `SendImage`/`SendEmoji` 和 CDN 上传。Hermes 不注入、不调用 `cdn.Ability`，也不预上传后传 `file_id/key`。
+- 出站图片和表情只通过 SDK `message.Send` 的 `Media.Data` 把原始字节交给 Host，由 Host 内部执行 `SendImage`/`SendEmoji` 和 CDN 上传；Hermes 不为出站媒体预上传。`cdn.Ability` 仅用于恢复入站微信图片/表情字节。
 - 调用 Host 前失败使用 at-least-once 安全重试；一旦进入 Host 调用而 receipt 不确定，
   Outbox 标记为 `ambiguous` 且不自动重发，避免群里出现重复视频。

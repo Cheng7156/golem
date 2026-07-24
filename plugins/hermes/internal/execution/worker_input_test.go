@@ -202,6 +202,27 @@ func TestFormatAgentInputEscapesEnvelopeInjection(t *testing.T) {
 	}
 }
 
+func TestCloneInboundMessageKeepsLazyMediaScopeIndependent(t *testing.T) {
+	messageID := "quoted-message"
+	message := domain.InboundMessage{
+		Text:             "任意文本都不应决定是否取图",
+		MentionTargetIDs: []string{"member"},
+		ReplyContext:     domain.ReplyContext{MessageID: &messageID},
+		Media: []domain.InboundMedia{{
+			Kind: "image", Data: []byte("image"), DownloadSource: []byte("source"),
+		}},
+	}
+	clone := cloneInboundMessage(message)
+	clone.MentionTargetIDs[0] = "changed"
+	clone.Media[0].Data[0] = 'X'
+	clone.Media[0].DownloadSource[0] = 'Y'
+	*clone.ReplyContext.MessageID = "changed"
+	if message.MentionTargetIDs[0] != "member" || string(message.Media[0].Data) != "image" ||
+		string(message.Media[0].DownloadSource) != "source" || *message.ReplyContext.MessageID != messageID {
+		t.Fatalf("clone mutated source message: %#v", message)
+	}
+}
+
 func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 	textDraft := func(content string) domain.OutboxDraft {
 		payload, err := json.Marshal(domain.TextOutput{Content: content})
@@ -232,6 +253,22 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 			principal: domain.Principal{Name: "ovo"},
 			cfg:       config.RoutingConfig{AutomatedSpeakerNames: []string{"ovo"}},
 			draft:     textDraft("收到"),
+		},
+		{
+			name: "standalone image",
+			message: domain.InboundMessage{
+				Text: "[image]", IsChatroom: true, VisualMediaOnly: true,
+				Media: []domain.InboundMedia{{Kind: "image"}},
+			},
+			draft: textDraft("我看到了"),
+		},
+		{
+			name: "standalone described sticker",
+			message: domain.InboundMessage{
+				Text: "[sticker: wave]", IsChatroom: true, VisualMediaOnly: true,
+				Media: []domain.InboundMedia{{Kind: "emoji"}},
+			},
+			draft: textDraft("这个表情很可爱"),
 		},
 		{
 			name: "non-owner owner-relationship adoption",
@@ -279,5 +316,18 @@ func TestGuardAmbientDraftsAllowsOwnerAndExplicitMessages(t *testing.T) {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 			}
 		})
+	}
+}
+
+func TestGuardAmbientDraftsDoesNotParsePlaceholderText(t *testing.T) {
+	payload, _ := json.Marshal(domain.TextOutput{Content: "正常回复"})
+	drafts := []domain.OutboxDraft{{Kind: "text", Payload: payload}}
+	message := domain.InboundMessage{
+		Text: "[image]", IsChatroom: true,
+		Media: []domain.InboundMedia{{Kind: "image"}},
+	}
+	guarded, reason := guardAmbientDrafts(drafts, message, domain.Principal{ID: "member"}, config.RoutingConfig{})
+	if len(guarded) != 1 || reason != "" {
+		t.Fatalf("placeholder text unexpectedly triggered media guard: guarded=%#v reason=%q", guarded, reason)
 	}
 }

@@ -32,16 +32,16 @@ func (s *Store) ReconcileRunAdmission(
 		return result, storeport.ErrInvalid
 	}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var sessionID string
+		var sessionID, admissionKey string
 		var trigger domain.TriggerKind
 		var acceptSeq int64
 		if err := tx.QueryRowContext(ctx, `
-			SELECT r.session_id,r.trigger_kind,event.accept_seq
+			SELECT r.session_id,r.admission_key,r.trigger_kind,event.accept_seq
 			FROM runs r
 			JOIN turns t ON t.id=r.turn_id
 			JOIN inbox_events event ON event.id=t.event_id
 			WHERE r.id=?
-		`, runID).Scan(&sessionID, &trigger, &acceptSeq); err != nil {
+		`, runID).Scan(&sessionID, &admissionKey, &trigger, &acceptSeq); err != nil {
 			return mapScanError(err)
 		}
 
@@ -54,11 +54,11 @@ func (s *Store) ReconcileRunAdmission(
 				FROM runs r
 				JOIN turns t ON t.id=r.turn_id
 				JOIN inbox_events event ON event.id=t.event_id
-				WHERE r.session_id=? AND r.id<>? AND r.trigger_kind=?
+				WHERE r.session_id=? AND r.admission_key=? AND r.id<>? AND r.trigger_kind=?
 				  AND event.accept_seq<?
 				  AND r.state IN (?,?,?,?,?)
 				ORDER BY event.accept_seq,r.created_at,r.id
-			`, sessionID, runID, domain.TriggerAmbient, acceptSeq,
+			`, sessionID, admissionKey, runID, domain.TriggerAmbient, acceptSeq,
 				domain.RunQueued, domain.RunLeased, domain.RunRunning,
 				domain.RunRetryWait, domain.RunCancelRequested)
 		case domain.TriggerAmbient:
@@ -68,9 +68,9 @@ func (s *Store) ReconcileRunAdmission(
 				FROM runs newer
 				JOIN turns t ON t.id=newer.turn_id
 				JOIN inbox_events event ON event.id=t.event_id
-				WHERE newer.session_id=? AND newer.id<>?
+				WHERE newer.session_id=? AND newer.admission_key=? AND newer.id<>?
 				  AND newer.trigger_kind IN (?,?) AND event.accept_seq>?
-			`, sessionID, runID, domain.TriggerExplicit, domain.TriggerControl, acceptSeq).
+			`, sessionID, admissionKey, runID, domain.TriggerExplicit, domain.TriggerControl, acceptSeq).
 				Scan(&newerForeground); err != nil {
 				return err
 			}
@@ -85,10 +85,10 @@ func (s *Store) ReconcileRunAdmission(
 					FROM runs older
 					JOIN turns t ON t.id=older.turn_id
 					JOIN inbox_events event ON event.id=t.event_id
-					WHERE older.session_id=? AND older.id<>? AND older.trigger_kind=?
+					WHERE older.session_id=? AND older.admission_key=? AND older.id<>? AND older.trigger_kind=?
 					  AND event.accept_seq<? AND older.state IN (?,?,?)
 					ORDER BY event.accept_seq,older.created_at,older.id
-				`, sessionID, runID, domain.TriggerAmbient, acceptSeq,
+				`, sessionID, admissionKey, runID, domain.TriggerAmbient, acceptSeq,
 					domain.RunQueued, domain.RunLeased, domain.RunRetryWait)
 			}
 		default:

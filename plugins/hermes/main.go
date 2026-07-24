@@ -14,6 +14,7 @@ import (
 	"golem_plugin_hermes/internal/ingress"
 	sqlitestore "golem_plugin_hermes/internal/store/sqlite"
 
+	"github.com/sbgayhub/golem/sdk/cdn"
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
 	"github.com/sbgayhub/golem/sdk/plugin"
@@ -22,6 +23,7 @@ import (
 type HermesPlugin struct {
 	plugin.ConfigAbility[config.Config]
 	message message.Ability
+	cdn     cdn.Ability
 	contact contact.Ability
 
 	lifecycleMu sync.Mutex

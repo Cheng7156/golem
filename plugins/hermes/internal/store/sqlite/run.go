@@ -57,20 +57,39 @@ func (s *Store) CreateRun(ctx context.Context, value domain.Run) (domain.Run, er
 	value.UpdatedAt = now
 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var turnSession string
-		if err := tx.QueryRowContext(ctx, `SELECT session_id FROM turns WHERE id=?`, value.TurnID).Scan(&turnSession); err != nil {
+		var turnSession, eventID string
+		if err := tx.QueryRowContext(ctx, `SELECT session_id,event_id FROM turns WHERE id=?`, value.TurnID).
+			Scan(&turnSession, &eventID); err != nil {
 			return mapScanError(err)
 		}
 		if turnSession != value.SessionID {
 			return errors.New("Run 与 Turn 的 session_id 不一致")
 		}
+		admissionKey := ""
+		if value.Lane == domain.LaneInteractive {
+			var bindingJSON, payloadJSON []byte
+			if err := tx.QueryRowContext(ctx,
+				`SELECT binding_json,payload_json FROM inbox_events WHERE id=?`, eventID,
+			).Scan(&bindingJSON, &payloadJSON); err != nil {
+				return mapScanError(err)
+			}
+			var binding domain.ChannelBinding
+			var message domain.InboundMessage
+			if err := json.Unmarshal(bindingJSON, &binding); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(payloadJSON, &message); err != nil {
+				return err
+			}
+			admissionKey = runAdmissionKey(value.SessionID, value.Lane, binding.Principal, message)
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO runs(
 				id,turn_id,session_id,lane,state,revision,attempt,lease_token,
-				lease_until,deadline,next_attempt_at,checkpoint_json,last_error,
+				lease_until,deadline,next_attempt_at,checkpoint_json,last_error,admission_key,
 					created_at,updated_at,conversation_id,current_observation_id,
 					current_payload_hash,required_context_seq,trigger_kind,invocation_id
-				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		`,
 			value.ID,
 			value.TurnID,
@@ -85,6 +104,7 @@ func (s *Store) CreateRun(ctx context.Context, value domain.Run) (domain.Run, er
 			unixMillis(value.NextAttempt),
 			nullableJSON(value.Checkpoint),
 			value.LastError,
+			admissionKey,
 			unixMillis(value.CreatedAt),
 			unixMillis(value.UpdatedAt),
 			value.ConversationID,
@@ -165,6 +185,7 @@ func (s *Store) leaseNextRun(
 			    FROM runs active
 			    WHERE active.session_id=r.session_id
 			      AND active.lane=r.lane
+			      AND active.admission_key=r.admission_key
 			      AND active.id<>r.id
 			      AND active.state IN (?,?,?)
 			  )
@@ -175,6 +196,7 @@ func (s *Store) leaseNextRun(
 			    JOIN inbox_events earlier_event ON earlier_event.id=earlier_turn.event_id
 			    WHERE earlier.session_id=r.session_id
 			      AND earlier.lane=r.lane
+			      AND earlier.admission_key=r.admission_key
 			      AND earlier.id<>r.id
 			      AND earlier.state IN (?,?,?,?,?,?)
 			      AND (

@@ -177,24 +177,29 @@ func (g *RelayGateway) capabilityRun(value capabilitySessionContext) (*relayRun,
 		return nil, errors.New("chat context is missing")
 	}
 	g.mu.Lock()
-	run := g.pending[chatID]
+	runs := g.pendingRunsForChatLocked(chatID)
 	g.mu.Unlock()
-	if run == nil {
+	if len(runs) == 0 {
 		return nil, errors.New("no active run for this chat")
 	}
-	identity := relaySessionIdentity{
-		request: run.request, chatID: run.chatID, profile: value.Profile,
+	var matched *relayRun
+	for _, candidate := range runs {
+		identity := relaySessionIdentity{
+			request: candidate.request, chatID: candidate.chatID, profile: value.Profile,
+		}
+		if !identity.matches(sessionKey) || userID != candidate.request.Principal.ID ||
+			(messageID != candidate.request.MessageID && messageID != candidate.request.PlatformMessageID) {
+			continue
+		}
+		if matched != nil {
+			return nil, ErrGatewayRunAmbiguous
+		}
+		matched = candidate
 	}
-	if !identity.matches(sessionKey) {
+	if matched == nil {
 		return nil, errors.New("session context does not match the active run")
 	}
-	if userID != run.request.Principal.ID {
-		return nil, errors.New("user context does not match the active run")
-	}
-	if messageID != run.request.MessageID && messageID != run.request.PlatformMessageID {
-		return nil, errors.New("message context does not match the active run")
-	}
-	return run, nil
+	return matched, nil
 }
 
 // authorizeInteractiveMedia keeps the model-visible toolset stable while

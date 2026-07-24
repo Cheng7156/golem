@@ -203,13 +203,12 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		}
 		currentObservation = &item.Observation
 	}
-	media := append([]domain.InboundMedia(nil), incoming.Media...)
-	if w.media != nil {
-		media, err = w.media.Resolve(runCtx, media)
-		if err != nil {
-			return w.finishFailure(parent, run, fmt.Errorf("resolve inbound media: %w", err))
-		}
-	}
+	// Inbound media is intentionally not resolved here.  Receiving an image
+	// must only enrich the durable conversation context; downloading it and
+	// attaching it to every Run would silently invoke vision.  The Relay image
+	// capabilities receive the same connector-verified message metadata and
+	// resolve bytes only after the Agent explicitly calls the read tool.
+	var media []domain.InboundMedia
 	scope := toolScope(run, inbox.Binding.Principal)
 	var contextMessages []domain.ContextMessage
 	if cfg.Context.Mode == "legacy_shadow" {
@@ -243,6 +242,9 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		ChatName:             incoming.RoomName,
 		MessageID:            inbox.ID,
 		PlatformMessageID:    platformMessageID(inbox.MessageID),
+		CurrentEventID:       inbox.ID,
+		CurrentAcceptSeq:     inbox.AcceptSeq,
+		CurrentMessage:       cloneInboundMessage(incoming),
 		RequireVisibleReply:  incoming.Explicit(),
 		Media:                media,
 	})
@@ -454,6 +456,34 @@ type inboundContextReader interface {
 	ListRecentInboundContext(context.Context, string, int64, int) ([]domain.ContextMessage, error)
 }
 
+// cloneInboundMessage keeps the Relay's lazy capability scope independent of
+// the decoded Inbox value.  In particular, a resolver must never be able to
+// mutate the durable message's media/source slices while materializing a
+// candidate.
+func cloneInboundMessage(message domain.InboundMessage) domain.InboundMessage {
+	clone := message
+	clone.MentionTargetIDs = append([]string(nil), message.MentionTargetIDs...)
+	clone.Media = make([]domain.InboundMedia, len(message.Media))
+	for index, item := range message.Media {
+		clone.Media[index] = item
+		clone.Media[index].Data = append([]byte(nil), item.Data...)
+		clone.Media[index].DownloadSource = append([]byte(nil), item.DownloadSource...)
+	}
+	if message.ReplyContext.MessageID != nil {
+		value := *message.ReplyContext.MessageID
+		clone.ReplyContext.MessageID = &value
+	}
+	if message.ReplyContext.ActorID != nil {
+		value := *message.ReplyContext.ActorID
+		clone.ReplyContext.ActorID = &value
+	}
+	if message.ReplyContext.Text != nil {
+		value := *message.ReplyContext.Text
+		clone.ReplyContext.Text = &value
+	}
+	return clone
+}
+
 func (w *Worker) shadowContext(
 	ctx context.Context,
 	inbox domain.InboxEvent,
@@ -506,7 +536,7 @@ func guardAmbientDrafts(
 	if configuredAutomatedSpeaker(cfg, principal, message) {
 		return nil, "自动化发送者的 ambient 消息不得产生可见回复"
 	}
-	if standaloneInboundMedia(message) {
+	if message.VisualMediaOnly {
 		return nil, "未点名的独立图片或表情不得产生可见回复"
 	}
 	if !principal.IsOwner {
@@ -544,18 +574,6 @@ func configuredAutomatedSpeaker(
 		}
 	}
 	return false
-}
-
-func standaloneInboundMedia(message domain.InboundMessage) bool {
-	if len(message.Media) == 0 {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(message.Text)) {
-	case "", "[sticker]", "[emoji]", "[image]", "[图片]", "[表情包]":
-		return true
-	default:
-		return false
-	}
 }
 
 func textDraftContents(drafts []domain.OutboxDraft) []string {

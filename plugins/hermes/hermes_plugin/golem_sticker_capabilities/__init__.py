@@ -13,6 +13,7 @@ from . import async_delivery_state as _async_state
 from . import async_delivery_text as _async_text
 from . import capability_client as _client
 from . import cron_delivery as _cron_delivery
+from . import image_tools as _image_tools
 from . import video_async_tools as _video_async_tools
 from . import video_fetch_tools as _video_fetch_tools
 from . import video_tools as _video_tools
@@ -265,6 +266,21 @@ def register(ctx) -> None:
             is_async=True,
             **common,
         )
+    ctx.register_tool(
+        name="golem_image_search_current_session",
+        schema=_image_tools.SEARCH_SCHEMA,
+        handler=_image_tools._handle_search,
+        emoji="image-search",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_image_read_current_session",
+        schema=_image_tools.READ_SCHEMA,
+        handler=_image_tools._handle_read,
+        emoji="image-read",
+        is_async=True,
+        **common,
+    )
     ctx.register_tool(
         name="golem_sticker_select",
         schema=SELECT_SCHEMA,

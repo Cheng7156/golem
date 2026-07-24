@@ -28,6 +28,7 @@ type InboundMessage struct {
 	RoomName         string         `json:"room_name,omitempty"`
 	OccurredAt       time.Time      `json:"occurred_at"`
 	Media            []InboundMedia `json:"media,omitempty"`
+	VisualMediaOnly  bool           `json:"visual_media_only,omitempty"`
 }
 
 type InboundMedia struct {
@@ -113,11 +114,16 @@ type InboxEvent struct {
 }
 
 type ContextMessage struct {
-	AcceptSeq  int64
-	OccurredAt time.Time
-	Binding    ChannelBinding
-	Message    InboundMessage
-	Route      Route
+	// EventID is the opaque durable inbox event identifier.  It is useful to
+	// capability consumers that need to distinguish two otherwise identical
+	// messages, but it must never be treated as an authorization token.
+	EventID           string
+	PlatformMessageID string
+	AcceptSeq         int64
+	OccurredAt        time.Time
+	Binding           ChannelBinding
+	Message           InboundMessage
+	Route             Route
 }
 
 func (e InboxEvent) Validate() error {

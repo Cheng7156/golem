@@ -47,8 +47,16 @@ type RunRequest struct {
 	ChatName             string
 	MessageID            string
 	PlatformMessageID    string
-	RequireVisibleReply  bool
-	Media                []domain.InboundMedia
+	// CurrentEventID/CurrentAcceptSeq and CurrentMessage are connector-verified
+	// scope for lazy media capabilities.  They are deliberately separate from
+	// Media: Media is only populated when a caller explicitly wants to attach
+	// bytes to the model request, while CurrentMessage remains metadata that a
+	// model tool may query later.
+	CurrentEventID      string
+	CurrentAcceptSeq    int64
+	CurrentMessage      domain.InboundMessage
+	RequireVisibleReply bool
+	Media               []domain.InboundMedia
 }
 
 type EventKind string

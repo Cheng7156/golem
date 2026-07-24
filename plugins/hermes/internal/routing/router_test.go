@@ -384,13 +384,6 @@ func TestHybridStillFastFiltersOwnerAmbientRisks(t *testing.T) {
 			},
 		},
 		{
-			name: "standalone sticker",
-			message: domain.InboundMessage{
-				Text: "[sticker]", SpeakerID: "owner", IsChatroom: true,
-				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "emoji"}},
-			},
-		},
-		{
 			name:   "earlier fragment",
 			reader: fixedContextReader{newer: true},
 			message: domain.InboundMessage{
@@ -447,13 +440,6 @@ func TestHybridFastFiltersHighRiskAmbientMessages(t *testing.T) {
 				IsChatroom: true, OccurredAt: time.Now(),
 			},
 		},
-		{
-			name: "standalone sticker",
-			message: domain.InboundMessage{
-				Text: "[sticker]", SpeakerID: "member", IsChatroom: true,
-				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "emoji"}},
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -472,6 +458,82 @@ func TestHybridFastFiltersHighRiskAmbientMessages(t *testing.T) {
 				t.Fatal("fast-observed message reached SocialDecider")
 			}
 		})
+	}
+}
+
+func TestStandaloneVisualMediaIsStoredWithoutStartingVision(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      string
+		principal domain.Principal
+		message   domain.InboundMessage
+	}{
+		{
+			name:      "hybrid owner sticker",
+			mode:      "hybrid",
+			principal: domain.Principal{ID: "owner", IsOwner: true},
+			message: domain.InboundMessage{Text: "[sticker]", SpeakerID: "owner", IsChatroom: true, VisualMediaOnly: true,
+				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "emoji"}}},
+		},
+		{
+			name:      "hybrid participant image",
+			mode:      "hybrid",
+			principal: domain.Principal{ID: "member"},
+			message: domain.InboundMessage{Text: "[image]", SpeakerID: "member", IsChatroom: true, VisualMediaOnly: true,
+				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "image"}}},
+		},
+		{
+			name:      "agent group image",
+			mode:      "agent",
+			principal: domain.Principal{ID: "member"},
+			message: domain.InboundMessage{Text: "[image]", SpeakerID: "member", IsChatroom: true, VisualMediaOnly: true,
+				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "image"}}},
+		},
+		{
+			name:      "private image",
+			mode:      "hybrid",
+			principal: domain.Principal{ID: "owner", IsOwner: true},
+			message: domain.InboundMessage{Text: "[image]", SpeakerID: "owner", VisualMediaOnly: true,
+				OccurredAt: time.Now(), Media: []domain.InboundMedia{{Kind: "image"}}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := validHybridConfig()
+			value.Routing.SocialMode = test.mode
+			manager, _ := config.NewManager(value)
+			decider := &fixedSocialDecider{route: domain.RouteChat}
+			router, _ := NewRulesRouter(manager.Current, decider)
+			decision, err := router.Route(context.Background(), domain.InboxEvent{
+				ID: "visual-" + test.name, SessionID: "chatroom:test",
+				Binding: domain.ChannelBinding{Principal: test.principal},
+			}, test.message)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			if decision.Route != domain.RouteObserve || decision.Disposition != DispositionObserve {
+				t.Fatalf("visual media decision=%#v", decision)
+			}
+			if decider.calls != 0 {
+				t.Fatalf("standalone media reached SocialDecider %d times", decider.calls)
+			}
+		})
+	}
+}
+
+func TestVisualRoutingUsesStructuredMediaFlagNotPlaceholderText(t *testing.T) {
+	value := validHybridConfig()
+	manager, _ := config.NewManager(value)
+	router, _ := NewRulesRouter(manager.Current, &fixedSocialDecider{route: domain.RouteChat})
+	decision, err := router.Route(context.Background(), domain.InboxEvent{ID: "literal-placeholder"}, domain.InboundMessage{
+		Text: "[image]", SpeakerID: "member", IsChatroom: true, Mentioned: true,
+		Media: []domain.InboundMedia{{Kind: "image"}},
+	})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if decision.Route != domain.RouteChat {
+		t.Fatalf("literal placeholder was treated as media-only: %#v", decision)
 	}
 }
 

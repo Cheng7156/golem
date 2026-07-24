@@ -118,6 +118,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			{"required_context_seq", "INTEGER NOT NULL DEFAULT 0"},
 			{"trigger_kind", "TEXT NOT NULL DEFAULT 'ambient'"},
 			{"invocation_id", "TEXT NOT NULL DEFAULT ''"},
+			{"admission_key", "TEXT NOT NULL DEFAULT ''"},
 		} {
 			if err := ensureTableColumn(ctx, tx, "runs", column.name, column.ddl); err != nil {
 				return err
@@ -126,6 +127,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx,
 			`CREATE INDEX IF NOT EXISTS idx_runs_invocation ON runs(invocation_id)`,
 		); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`CREATE INDEX IF NOT EXISTS idx_runs_admission
+			 ON runs(session_id,lane,admission_key,state,next_attempt_at,created_at)`,
+		); err != nil {
+			return err
+		}
+		// Older databases predate the per-sender admission key.  Recover it from
+		// the connector-authenticated Inbox binding without changing the public
+		// session id or any conversation history.
+		if _, err := tx.ExecContext(ctx, `UPDATE runs
+			SET admission_key=COALESCE(NULLIF(admission_key,''),
+				CASE WHEN lane=? AND (json_extract((SELECT e.payload_json
+					FROM turns t JOIN inbox_events e ON e.id=t.event_id
+					WHERE t.id=runs.turn_id),'$.is_chatroom')=1 OR session_id LIKE 'chatroom:%')
+					THEN COALESCE(json_extract((SELECT e.binding_json
+						FROM turns t JOIN inbox_events e ON e.id=t.event_id
+						WHERE t.id=runs.turn_id),'$.principal.id'),'')
+					ELSE '' END)
+			WHERE admission_key=''`, domain.LaneInteractive); err != nil {
 			return err
 		}
 		if err := backfillPendingContext(ctx, tx); err != nil {

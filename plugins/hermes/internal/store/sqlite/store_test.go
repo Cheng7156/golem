@@ -118,6 +118,10 @@ func createQueuedRunForSession(
 	eventValue := inboxEvent(suffix, messageID)
 	eventValue.SessionID = sessionID
 	eventValue.Binding.SessionID = sessionID
+	// This helper models two turns from the same participant.  A separate
+	// regression test below covers parallel participants in one group.
+	eventValue.Binding.Principal.ID = "fifo-speaker"
+	eventValue.Binding.Principal.Name = "FIFO Speaker"
 	event, inserted, err := value.AcceptInbox(ctx, eventValue)
 	if err != nil || !inserted {
 		t.Fatalf("AcceptInbox: inserted=%v err=%v", inserted, err)

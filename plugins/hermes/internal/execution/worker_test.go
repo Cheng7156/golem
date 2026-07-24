@@ -125,6 +125,143 @@ func (e *completingEngine) Health(context.Context) agent.Health {
 
 func (e *completingEngine) Close(context.Context) error { return nil }
 
+type recordingMediaResolver struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *recordingMediaResolver) Resolve(
+	_ context.Context,
+	media []domain.InboundMedia,
+) ([]domain.InboundMedia, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	return media, nil
+}
+
+func (r *recordingMediaResolver) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func TestWorkerNeverResolvesOrAttachesInboundMediaAutomatically(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	cfg := config.Default()
+	cfg.Context.Mode = "legacy_shadow"
+	manager, err := config.NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	broker, _ := tool.NewBroker(1, 1024, nil)
+	engine := &completingEngine{requests: make(chan agent.RunRequest, 2)}
+	resolver := &recordingMediaResolver{}
+	runWake := make(chan struct{}, 1)
+	worker, err := execution.NewWorker(
+		1, store, engine, broker, resolver, domain.LaneInteractive, manager.Current,
+		runWake, make(chan struct{}, 1),
+	)
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	sessionID := "chatroom:visual-history"
+	owner := domain.Principal{ID: "owner", Name: "Owner", IsOwner: true}
+	accept := func(id string, message domain.InboundMessage, route domain.Route) *domain.Run {
+		t.Helper()
+		payload, marshalErr := json.Marshal(message)
+		if marshalErr != nil {
+			t.Fatalf("marshal message: %v", marshalErr)
+		}
+		inbox, inserted, acceptErr := store.AcceptInbox(ctx, domain.InboxEvent{
+			ID: id, DedupeKey: "wechat/" + id, MessageID: int64(len(id)),
+			Topic: "message::image", SessionID: sessionID, OccurredAt: time.Now(),
+			Binding: domain.ChannelBinding{Channel: "wechat", SessionID: sessionID,
+				ReceiverID: "room", Principal: owner}, Payload: payload,
+		})
+		if acceptErr != nil || !inserted {
+			t.Fatalf("AcceptInbox: inserted=%v err=%v", inserted, acceptErr)
+		}
+		turn, turnErr := store.MaterializeTurn(ctx, inbox.ID, 100)
+		if turnErr != nil {
+			t.Fatalf("MaterializeTurn: %v", turnErr)
+		}
+		lane := domain.Lane("")
+		if route == domain.RouteChat {
+			lane = domain.LaneInteractive
+		}
+		_, run, routeErr := store.RouteTurn(ctx, turn.ID, route, lane, time.Now().Add(time.Minute))
+		if routeErr != nil || (route == domain.RouteChat && run == nil) {
+			t.Fatalf("RouteTurn: run=%#v err=%v", run, routeErr)
+		}
+		return run
+	}
+
+	ordinaryRun := accept("ordinary-caption", domain.InboundMessage{
+		Text: "这是我拍的午饭", IsChatroom: true, SpeakerID: "owner",
+		Media: []domain.InboundMedia{{Kind: "image", MIMEType: "image/jpeg", Data: []byte("caption-image")}},
+	}, domain.RouteChat)
+	accept("visual-image", domain.InboundMessage{
+		Text: "[image]", IsChatroom: true, SpeakerID: "owner",
+		Media: []domain.InboundMedia{{Kind: "image", MIMEType: "image/jpeg", Data: []byte("stored-image")}},
+	}, domain.RouteObserve)
+	accept("intervening-image", domain.InboundMessage{
+		Text: "[image]", IsChatroom: true, SpeakerID: "member",
+		Media: []domain.InboundMedia{{Kind: "image", MIMEType: "image/jpeg", Data: []byte("member-image")}},
+	}, domain.RouteObserve)
+	run := accept("visual-request", domain.InboundMessage{
+		Text: "@ccff 看看这张新的", IsChatroom: true, Mentioned: true, SpeakerID: "owner",
+	}, domain.RouteChat)
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(workerCtx) }()
+	runWake <- struct{}{}
+	select {
+	case request := <-engine.requests:
+		if len(request.Media) != 0 {
+			t.Fatalf("ordinary caption unexpectedly attached media=%#v", request.Media)
+		}
+		if len(request.CurrentMessage.Media) != 1 || string(request.CurrentMessage.Media[0].Data) != "caption-image" {
+			t.Fatalf("current lazy media scope=%#v", request.CurrentMessage.Media)
+		}
+		if request.CurrentEventID != "ordinary-caption" || request.CurrentAcceptSeq <= 0 {
+			t.Fatalf("current event scope=%#v", request)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not start the ordinary caption run")
+	}
+	waitRunState(t, store, ordinaryRun.ID, domain.RunSucceeded)
+	select {
+	case request := <-engine.requests:
+		if len(request.Media) != 0 {
+			t.Fatalf("visual-looking text unexpectedly attached media=%#v", request.Media)
+		}
+		if len(request.CurrentMessage.Media) != 0 || request.CurrentEventID != "visual-request" {
+			t.Fatalf("current request scope=%#v", request.CurrentMessage)
+		}
+		if resolver.callCount() != 0 {
+			t.Fatalf("worker resolved media %d times, want 0", resolver.callCount())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not start the visual follow-up run")
+	}
+	waitRunState(t, store, run.ID, domain.RunSucceeded)
+	if resolver.callCount() != 0 {
+		t.Fatalf("worker resolved media after completion %d times, want 0", resolver.callCount())
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Worker.Run: %v", err)
+	}
+}
+
 type observationCompletingEngine struct {
 	*completingEngine
 }

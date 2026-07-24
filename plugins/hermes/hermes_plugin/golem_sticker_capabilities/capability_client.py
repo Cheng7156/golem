@@ -18,6 +18,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8789"
 SEARCH_PATH = "capabilities/v1/stickers/search"
 MATERIALIZE_PATH = "capabilities/v1/stickers/materialize"
 SELECT_PATH = "capabilities/v1/stickers/select"
+IMAGE_SEARCH_PATH = "capabilities/v1/images/search"
+IMAGE_READ_PATH = "capabilities/v1/images/read"
 VIDEO_SEARCH_PATH = "capabilities/v1/videos/search"
 VIDEO_SELECT_PATH = "capabilities/v1/videos/select"
 VIDEO_STATUS_PATH = "capabilities/v1/videos/status"
@@ -262,4 +264,49 @@ def materialize(candidate_id: str, context: Dict[str, str]) -> Tuple[bytes, str]
         raise CapabilityError("Golem capability API returned unsupported sticker media")
     if not raw:
         raise CapabilityError("Golem capability API returned empty sticker media")
+    return raw, content_type
+
+
+def search_current_images(
+    context: Dict[str, str],
+    *,
+    speaker_id: str = "",
+    speaker_name: str = "",
+    message_id: str = "",
+    limit: int = 8,
+) -> Dict[str, Any]:
+    """Return metadata candidates without downloading any image bytes."""
+    payload: Dict[str, Any] = {"limit": limit, "context": context}
+    if speaker_id:
+        payload["speaker_id"] = speaker_id
+    if speaker_name:
+        payload["speaker_name"] = speaker_name
+    if message_id:
+        payload["message_id"] = message_id
+    return post_json_limited(IMAGE_SEARCH_PATH, payload, MAX_RESPONSE_BYTES)
+
+
+def read_current_image(
+    candidate_id: str,
+    context: Dict[str, str],
+    *,
+    question: str = "",
+) -> Tuple[bytes, str]:
+    """Materialize one run-scoped image candidate on explicit request."""
+    payload: Dict[str, Any] = {
+        "candidate_id": candidate_id,
+        "context": context,
+    }
+    if question:
+        payload["question"] = question
+    raw, content_type = _request(
+        IMAGE_READ_PATH,
+        payload,
+        accept="image/jpeg,image/png,image/gif,image/webp,image/bmp",
+        maximum=MAX_MEDIA_BYTES,
+    )
+    if content_type not in SUPPORTED_MEDIA_TYPES:
+        raise CapabilityError("Golem capability API returned unsupported image media")
+    if not raw:
+        raise CapabilityError("Golem capability API returned empty image media")
     return raw, content_type

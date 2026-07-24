@@ -173,6 +173,22 @@ func TestRelayInvokeTrustedCommandRequiresOwner(t *testing.T) {
 	}
 }
 
+func TestRelayPresentsMaterializedEmojiAsVisualInput(t *testing.T) {
+	request := RunRequest{
+		RunID: "run-emoji", SessionID: "chatroom:room", Lane: domain.LaneInteractive,
+		Media: []domain.InboundMedia{{Kind: "emoji", URL: "https://media.example/sticker.jpg"}},
+	}
+	frame := relayInvokeObservation(request, "chat", []string{"https://media.example/sticker.jpg"})
+	media, ok := frame["media"].([]map[string]any)
+	if !ok || len(media) != 1 || media[0]["kind"] != "image" {
+		t.Fatalf("relay emoji media=%#v", frame["media"])
+	}
+	legacy := relayInboundEvent(request, "chat", []string{"https://media.example/sticker.jpg"})
+	if legacy["message_type"] != "photo" {
+		t.Fatalf("legacy emoji message_type=%v", legacy["message_type"])
+	}
+}
+
 func TestRelayInvokeCarriesCurrentObservationOnlyForLagFallback(t *testing.T) {
 	observation := &domain.ConversationObservation{ObservationID: "o3", ConversationSeq: 3, PayloadHash: "hash"}
 	base := RunRequest{RunID: "run-lag", SessionID: "chatroom:room", Input: "hello",
@@ -283,10 +299,7 @@ func TestV2InvalidRequiredObserveFailsRunAndReleasesChatSlot(t *testing.T) {
 		body["error"] != "invalid observe result" {
 		t.Fatalf("result=%#v", result)
 	}
-	gateway.mu.Lock()
-	_, stillPending := gateway.pending[relayChatID(request)]
-	gateway.mu.Unlock()
-	if stillPending {
+	if pending, _ := gateway.pendingRunForChat(relayChatID(request), request.InvocationID); pending != nil {
 		t.Fatal("invalid durable proposal kept the chat admission slot")
 	}
 }
@@ -308,9 +321,7 @@ func TestV2ProgressDoesNotCompleteAndStagedEffectIsMerged(t *testing.T) {
 	}
 
 	effect := OutputProposal{Kind: "emoji", Payload: []byte(`{"url":"https://example.test/e.gif"}`)}
-	gateway.mu.Lock()
-	run := gateway.pending[relayChatID(request)]
-	gateway.mu.Unlock()
+	run, _ := gateway.pendingRunForChat(relayChatID(request), request.InvocationID)
 	if run == nil {
 		t.Fatal("progress completed the run")
 	}
@@ -367,10 +378,7 @@ func TestV2TerminalProposalReleasesRunBeforeReceipt(t *testing.T) {
 		t.Fatalf("completed=%#v err=%v", event, err)
 	}
 
-	gateway.mu.Lock()
-	_, stillPending := gateway.pending[relayChatID(request)]
-	gateway.mu.Unlock()
-	if stillPending {
+	if pending, _ := gateway.pendingRunForChat(relayChatID(request), request.InvocationID); pending != nil {
 		t.Fatal("terminal proposal kept the chat admission slot before receipt")
 	}
 	cancel()

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"golem_plugin_hermes/internal/domain"
@@ -22,7 +23,7 @@ func (s *Store) ListRecentInboundContext(
 		limit = 12
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT e.accept_seq,e.occurred_at,e.binding_json,e.payload_json,COALESCE(t.route,'')
+		SELECT e.id,e.message_id,e.accept_seq,e.occurred_at,e.binding_json,e.payload_json,COALESCE(t.route,'')
 		FROM inbox_events e
 		LEFT JOIN turns t ON t.event_id=e.id
 		WHERE e.session_id=? AND e.accept_seq<?
@@ -36,10 +37,14 @@ func (s *Store) ListRecentInboundContext(
 	values := make([]domain.ContextMessage, 0, limit)
 	for rows.Next() {
 		var value domain.ContextMessage
+		var platformMessageID int64
 		var occurredAt int64
 		var binding, payload []byte
-		if err := rows.Scan(&value.AcceptSeq, &occurredAt, &binding, &payload, &value.Route); err != nil {
+		if err := rows.Scan(&value.EventID, &platformMessageID, &value.AcceptSeq, &occurredAt, &binding, &payload, &value.Route); err != nil {
 			return nil, err
+		}
+		if platformMessageID != 0 {
+			value.PlatformMessageID = strconv.FormatInt(platformMessageID, 10)
 		}
 		if err := json.Unmarshal(binding, &value.Binding); err != nil {
 			return nil, err

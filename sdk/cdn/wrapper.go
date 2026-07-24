@@ -80,7 +80,18 @@ func (c GRPCClient) UploadVideo(receiver string, thumb []byte, reader io.Reader,
 
 // DownloadImage 服务端流式下载高清图片
 func (c GRPCClient) DownloadImage(fileID, fileAesKey string) (io.ReadCloser, error) {
-	stream, err := c.Client.DownloadImage(context.Background(), &DownloadImage_Request{
+	return c.DownloadImageContext(context.Background(), fileID, fileAesKey)
+}
+
+// DownloadImageContext is the cancellation-aware variant used by callers that
+// expose a request-scoped media capability.  Keep DownloadImage above for
+// backwards compatibility with the public Ability interface, but never force
+// a capability request to inherit an unbounded background gRPC stream.
+func (c GRPCClient) DownloadImageContext(ctx context.Context, fileID, fileAesKey string) (io.ReadCloser, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stream, err := c.Client.DownloadImage(ctx, &DownloadImage_Request{
 		FileId: fileID,
 		AesKey: fileAesKey,
 	})

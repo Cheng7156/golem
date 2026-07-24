@@ -106,12 +106,31 @@ func (p *HermesPlugin) normalizeMessage(
 		RoomName:         speaker.roomName,
 		OccurredAt:       occurredAt,
 		Media:            media,
+		VisualMediaOnly:  visualMediaOnly(msg, media),
 	}
 	inbox, err := newWechatInboxEvent(msg, speaker, incoming)
 	if err != nil {
 		return domain.InboxEvent{}, false, err
 	}
 	return inbox, true, nil
+}
+
+func visualMediaOnly(msg *message.Message, media []domain.InboundMedia) bool {
+	if msg == nil || len(media) == 0 {
+		return false
+	}
+	for _, item := range media {
+		kind := strings.ToLower(strings.TrimSpace(item.Kind))
+		if kind != "image" && kind != "emoji" {
+			return false
+		}
+	}
+	switch msg.GetData().(type) {
+	case *message.Message_Image, *message.Message_Emoji:
+		return true
+	default:
+		return false
+	}
 }
 
 func configuredActorKind(cfg config.RoutingConfig, id, name string) string {

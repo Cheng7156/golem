@@ -81,4 +81,16 @@ func TestOpenMigratesSchemaV1ToV10(t *testing.T) {
 	).Scan(&table); err != nil {
 		t.Fatalf("async video URLs table missing: %v", err)
 	}
+	var admissionColumn string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM pragma_table_info('runs') WHERE name='admission_key'`,
+	).Scan(&admissionColumn); err != nil {
+		t.Fatalf("runs.admission_key missing after migration: %v", err)
+	}
+	var admissionIndex string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_runs_admission'`,
+	).Scan(&admissionIndex); err != nil {
+		t.Fatalf("runs admission index missing after migration: %v", err)
+	}
 }

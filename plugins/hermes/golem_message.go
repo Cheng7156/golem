@@ -7,7 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"net/http"
+	"net/url"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -178,23 +178,84 @@ func inboundMedia(msg *message.Message) ([]domain.InboundMedia, error) {
 		return nil, nil
 	}
 	data := append([]byte(nil), media.GetData()...)
+	md5 := strings.TrimSpace(media.GetMd5())
+	key := strings.TrimSpace(media.GetKey())
+	sourceURL := strings.TrimSpace(media.GetUrl())
+	size := media.GetSize()
+	downloadMessage := msg
+	recovered := recoveredWechatImage{}
+	if kind == "image" || kind == "emoji" {
+		recovered = recoverRawWechatImage(msg.GetRaw())
+		if len(data) == 0 && len(recovered.Data) > 0 {
+			data = recovered.Data
+		}
+		md5 = firstNonEmpty(md5, recovered.MD5)
+		key = firstNonEmpty(key, recovered.Key)
+		sourceURL = firstNonEmpty(sourceURL, recovered.FileID)
+		if size == 0 {
+			size = recovered.Size
+		}
+		if len(data) == 0 && (md5 != media.GetMd5() || key != media.GetKey() ||
+			sourceURL != media.GetUrl() || size != media.GetSize()) {
+			downloadMessage = proto.Clone(msg).(*message.Message)
+			_, recoveredMedia := inboundMediaValue(downloadMessage)
+			recoveredMedia.Md5 = md5
+			recoveredMedia.Key = key
+			recoveredMedia.Url = sourceURL
+			recoveredMedia.Size = size
+		}
+	}
+	// Keep the opaque CDN file id separate from a browser URL.  Some host
+	// versions expose the latter in Media.Url while the raw XML still carries
+	// the former in cdnmidimgurl; the CDN ability needs the opaque id when an
+	// AES key is present.
+	downloadFileID := opaqueMediaFileID(sourceURL)
+	if recoveredFileID := opaqueMediaFileID(recovered.FileID); recoveredFileID != "" {
+		downloadFileID = firstNonEmpty(downloadFileID, recoveredFileID)
+	}
+	trustedURL := firstTrustedWechatURL(sourceURL, recovered.URL, recovered.EncryptURL, recovered.ExternURL)
+	hasCDNCredentials := key != "" && firstNonEmpty(downloadFileID, md5) != ""
 	if kind == "emoji" && len(data) == 0 {
-		return nil, nil
+		// Prefer a CDN download whenever WeChat supplied decryptable
+		// credentials. Otherwise defer only when a strictly allowlisted URL is
+		// available; arbitrary remote emoji URLs are never trusted.
+		if trustedURL == "" && !hasCDNCredentials {
+			return nil, nil
+		}
 	}
 	if len(data) > maxInboundMediaBytes {
 		return nil, errors.New("inbound media exceeds 16 MiB")
 	}
 	mimeType := ""
 	if len(data) > 0 {
-		mimeType = http.DetectContentType(data)
+		var err error
+		mimeType, err = detectInboundImageMIME(data)
+		if err != nil {
+			return nil, err
+		}
 	}
-	downloadSource, err := imageDownloadSource(msg, kind, data)
+	// A URL that accompanies an AES key is commonly an encrypted/temporary
+	// reference. Do not let it bypass CDN decryption; only expose a direct URL
+	// when no CDN credentials are available.
+	directURL := trustedURL
+	if hasCDNCredentials {
+		directURL = ""
+	}
+	if len(data) == 0 && hasCDNCredentials {
+		_, downloadMedia := inboundMediaValue(downloadMessage)
+		if downloadMedia == nil || opaqueMediaFileID(downloadMedia.GetUrl()) != downloadFileID {
+			downloadMessage = proto.Clone(downloadMessage).(*message.Message)
+			_, recoveredMedia := inboundMediaValue(downloadMessage)
+			recoveredMedia.Url = firstNonEmpty(downloadFileID, recoveredMedia.GetUrl())
+		}
+	}
+	downloadSource, err := imageDownloadSource(downloadMessage, kind, data, directURL)
 	if err != nil {
 		return nil, err
 	}
 	return []domain.InboundMedia{{
-		Kind: kind, URL: strings.TrimSpace(media.GetUrl()), Data: data,
-		MIMEType: mimeType, MD5: strings.TrimSpace(media.GetMd5()),
+		Kind: kind, URL: directURL, Data: data,
+		MIMEType: mimeType, MD5: md5,
 		DownloadSource: downloadSource,
 	}}, nil
 }
@@ -209,15 +270,138 @@ func inboundMediaValue(msg *message.Message) (string, *message.Media) {
 	return "", nil
 }
 
-func imageDownloadSource(msg *message.Message, kind string, data []byte) ([]byte, error) {
-	if len(data) > 0 || kind != "image" {
+func imageDownloadSource(msg *message.Message, kind string, data []byte, directURL string) ([]byte, error) {
+	if len(data) > 0 || directURL != "" || (kind != "image" && kind != "emoji") {
 		return nil, nil
 	}
 	encoded, err := proto.Marshal(msg)
 	if err != nil {
-		return nil, fmt.Errorf("encode image download source: %w", err)
+		return nil, fmt.Errorf("encode media download source: %w", err)
 	}
 	return encoded, nil
+}
+
+type recoveredWechatImage struct {
+	Data       []byte
+	FileID     string
+	URL        string
+	EncryptURL string
+	ExternURL  string
+	MD5        string
+	Key        string
+	Size       uint32
+}
+
+type rawWechatImageAttributes struct {
+	MD5          string `xml:"md5,attr"`
+	Key          string `xml:"aeskey,attr"`
+	URL          string `xml:"url,attr"`
+	CDNMidURL    string `xml:"cdnmidimgurl,attr"`
+	CDNThumbURL  string `xml:"cdnthumburl,attr"`
+	CDNURL       string `xml:"cdnurl,attr"`
+	EncryptURL   string `xml:"encrypturl,attr"`
+	ExternURL    string `xml:"externurl,attr"`
+	Size         uint32 `xml:"length,attr"`
+	ThumbnailLen uint32 `xml:"cdnthumblength,attr"`
+}
+
+func recoverRawWechatImage(raw string) recoveredWechatImage {
+	if strings.TrimSpace(raw) == "" {
+		return recoveredWechatImage{}
+	}
+	var envelope struct {
+		Content struct {
+			Value string `json:"value"`
+		} `json:"content"`
+		ImageBuffer struct {
+			Data []byte `json:"data"`
+		} `json:"image_buffer"`
+	}
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		return recoveredWechatImage{}
+	}
+	result := recoveredWechatImage{Data: append([]byte(nil), envelope.ImageBuffer.Data...)}
+	xmlPayload := envelope.Content.Value
+	if start := strings.Index(xmlPayload, "<msg"); start >= 0 {
+		xmlPayload = xmlPayload[start:]
+	}
+	var parsed struct {
+		Image        rawWechatImageAttributes `xml:"img"`
+		ImageMessage rawWechatImageAttributes `xml:"imgmsg"`
+		Emoji        rawWechatImageAttributes `xml:"emoji"`
+	}
+	if err := xml.Unmarshal([]byte(xmlPayload), &parsed); err != nil {
+		return result
+	}
+	attributes := parsed.Image
+	if attributes.MD5 == "" && attributes.Key == "" && attributes.URL == "" &&
+		attributes.CDNMidURL == "" && attributes.CDNThumbURL == "" && attributes.CDNURL == "" &&
+		attributes.EncryptURL == "" && attributes.ExternURL == "" {
+		attributes = parsed.ImageMessage
+	}
+	if attributes.MD5 == "" && attributes.Key == "" && attributes.URL == "" &&
+		attributes.CDNMidURL == "" && attributes.CDNThumbURL == "" && attributes.CDNURL == "" &&
+		attributes.EncryptURL == "" && attributes.ExternURL == "" {
+		attributes = parsed.Emoji
+	}
+	result.MD5 = strings.TrimSpace(attributes.MD5)
+	result.Key = strings.TrimSpace(attributes.Key)
+	result.FileID = firstOpaqueMediaID(attributes.CDNMidURL, attributes.URL,
+		attributes.CDNURL, attributes.CDNThumbURL, attributes.EncryptURL, attributes.ExternURL)
+	result.URL = firstTrustedWechatURL(attributes.CDNURL, attributes.URL,
+		attributes.CDNMidURL, attributes.CDNThumbURL)
+	result.EncryptURL = trustedWechatMediaURL(attributes.EncryptURL)
+	result.ExternURL = trustedWechatMediaURL(attributes.ExternURL)
+	result.Size = attributes.Size
+	if result.Size == 0 {
+		result.Size = attributes.ThumbnailLen
+	}
+	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstOpaqueMediaID(values ...string) string {
+	for _, value := range values {
+		if id := opaqueMediaFileID(value); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func firstTrustedWechatURL(values ...string) string {
+	for _, value := range values {
+		if trusted := trustedWechatMediaURL(value); trusted != "" {
+			return trusted
+		}
+	}
+	return ""
+}
+
+func trustedWechatMediaURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" || (!strings.HasSuffix(host, ".qpic.cn") && host != "qpic.cn" &&
+		!strings.HasSuffix(host, ".tc.qq.com") && host != "tc.qq.com") {
+		return ""
+	}
+	if port := parsed.Port(); port != "" &&
+		!((parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443")) {
+		return ""
+	}
+	return value
 }
 
 type mentionTargets struct {

@@ -20,12 +20,26 @@ func createAdmissionRun(
 	messageID int64,
 	trigger domain.TriggerKind,
 ) runningFixture {
+	return createAdmissionRunForSpeaker(t, store, suffix, sessionID, messageID, trigger, "speaker-admission")
+}
+
+func createAdmissionRunForSpeaker(
+	t *testing.T,
+	store *sqlite.Store,
+	suffix string,
+	sessionID string,
+	messageID int64,
+	trigger domain.TriggerKind,
+	speakerID string,
+) runningFixture {
 	t.Helper()
 	event := inboxEvent(suffix, messageID)
 	event.SessionID = sessionID
 	event.Binding.SessionID = sessionID
+	event.Binding.Principal.ID = speakerID
+	event.Binding.Principal.Name = speakerID
 	message := domain.InboundMessage{
-		Text: "ambient", IsChatroom: true, SpeakerID: "speaker-" + suffix,
+		Text: "ambient", IsChatroom: true, SpeakerID: event.Binding.Principal.ID,
 		OccurredAt: time.Now(),
 	}
 	priority := 10
@@ -62,6 +76,39 @@ func createAdmissionRun(
 		t.Fatalf("trigger=%s, want %s", run.TriggerKind, trigger)
 	}
 	return runningFixture{event: accepted, turn: turn, run: *run}
+}
+
+func TestInteractiveRunsFromDifferentGroupSpeakersCanLeaseConcurrently(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	ctx := context.Background()
+	sessionID := "chatroom:admission-parallel"
+	first := createAdmissionRunForSpeaker(t, store, "parallel-first", sessionID, 1, domain.TriggerExplicit, "speaker-a")
+	second := createAdmissionRunForSpeaker(t, store, "parallel-second", sessionID, 2, domain.TriggerExplicit, "speaker-b")
+	if first.run.ID == second.run.ID {
+		t.Fatal("parallel fixtures reused a run id")
+	}
+	firstLeased, err := store.LeaseNextRun(ctx, domain.LaneInteractive, time.Now(), time.Minute)
+	if err != nil || firstLeased.ID != first.run.ID {
+		t.Fatalf("lease first=%#v err=%v", firstLeased, err)
+	}
+	if err := store.MarkRunRunning(ctx, firstLeased.ID, firstLeased.LeaseToken); err != nil {
+		t.Fatalf("mark first running: %v", err)
+	}
+	secondLeased, err := store.LeaseNextRun(ctx, domain.LaneInteractive, time.Now(), time.Minute)
+	if err != nil || secondLeased.ID != second.run.ID {
+		t.Fatalf("different speaker was blocked by first run: second=%#v err=%v", secondLeased, err)
+	}
+
+	// Admission preemption is scoped by the same verified speaker as leasing.
+	third := createAdmissionRunForSpeaker(t, store, "parallel-third", sessionID, 3, domain.TriggerAmbient, "speaker-c")
+	result, err := store.ReconcileRunAdmission(ctx, third.run.ID, domain.RunAdmissionActive)
+	if err != nil {
+		t.Fatalf("admit independent ambient: %v", err)
+	}
+	if len(result.CancelledRunIDs) != 0 {
+		t.Fatalf("independent speaker was preempted: %#v", result)
+	}
 }
 
 func TestAdmissionCoalescesAmbientAndForegroundCancelsLatest(t *testing.T) {
@@ -150,6 +197,10 @@ func TestOlderAmbientRoutedAfterForegroundIsSuperseded(t *testing.T) {
 	ambientEvent := inboxEvent("admission-race-ambient", 1)
 	ambientEvent.SessionID = sessionID
 	ambientEvent.Binding.SessionID = sessionID
+	// The race being tested is within one verified participant's admission
+	// lane.  Different verified speakers in a group intentionally have
+	// independent lanes now.
+	ambientEvent.Binding.Principal.ID = "same-verified-speaker"
 	ambientEvent.Payload, _ = json.Marshal(domain.InboundMessage{
 		Text: "older", IsChatroom: true, SpeakerID: "ambient", OccurredAt: time.Now(),
 	})
@@ -160,6 +211,7 @@ func TestOlderAmbientRoutedAfterForegroundIsSuperseded(t *testing.T) {
 	explicitEvent := inboxEvent("admission-race-explicit", 2)
 	explicitEvent.SessionID = sessionID
 	explicitEvent.Binding.SessionID = sessionID
+	explicitEvent.Binding.Principal.ID = "same-verified-speaker"
 	explicitEvent.Payload, _ = json.Marshal(domain.InboundMessage{
 		Text: "@ccff now", IsChatroom: true, Mentioned: true, SpeakerID: "user", OccurredAt: time.Now(),
 	})

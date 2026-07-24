@@ -49,6 +49,29 @@ func TestNormalizeMessageAcceptsOtherChatroomMember(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageMarksVisualOnlyFromProtobufType(t *testing.T) {
+	plugin := newHermesPlugin()
+	plugin.self = &contact.SelfInfo{Username: "wxid_bot"}
+	msg := &message.Message{
+		Id: 2, Type: message.TypeImage, Sender: room("room@chatroom"),
+		Member: &chatroom.Member{Username: "wxid_member"},
+		Data: &message.Message_Image{Image: &message.ImageData{Media: &message.Media{
+			Url: "http://vweixinf.tc.qq.com/110/20401/stodownload?m=test",
+		}}},
+	}
+	event, accepted, err := plugin.normalizeMessage(msg, nil, config.RoutingConfig{})
+	if err != nil || !accepted {
+		t.Fatalf("normalizeMessage accepted=%v err=%v", accepted, err)
+	}
+	var incoming domain.InboundMessage
+	if err := json.Unmarshal(event.Payload, &incoming); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !incoming.VisualMediaOnly || len(incoming.Media) != 1 || incoming.Media[0].Kind != "image" {
+		t.Fatalf("visual-only metadata=%#v", incoming)
+	}
+}
+
 func TestNormalizeMessageClassifiesMentions(t *testing.T) {
 	plugin := newHermesPlugin()
 	plugin.self = &contact.SelfInfo{

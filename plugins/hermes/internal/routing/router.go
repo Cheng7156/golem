@@ -93,6 +93,13 @@ func (r *RulesRouter) Route(
 		return Decision{}, errors.New("routing config 不可用")
 	}
 	now := r.now()
+	if message.VisualMediaOnly {
+		return Decision{
+			Route:       domain.RouteObserve,
+			Disposition: DispositionObserve,
+			Reason:      "独立图片或表情先保存为上下文，由 Agent 工具按需查询",
+		}, nil
+	}
 	if message.Explicit() {
 		if isControlCommand(message.Text) {
 			return Decision{
@@ -193,9 +200,6 @@ func (r *RulesRouter) fastObserve(
 	if automatedSpeaker(cfg.Routing, event.Binding.Principal, message) {
 		return "已配置的自动化发送者默认只进入影子上下文", true
 	}
-	if standaloneAmbientMedia(message) {
-		return "未点名的独立图片或表情只进入影子上下文", true
-	}
 	if automatedBroadcast(message.Text) {
 		return "自动化播报或静默元消息只进入影子上下文", true
 	}
@@ -265,18 +269,6 @@ func automatedSpeaker(
 		}
 	}
 	return false
-}
-
-func standaloneAmbientMedia(message domain.InboundMessage) bool {
-	if len(message.Media) == 0 {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(message.Text)) {
-	case "", "[sticker]", "[emoji]", "[image]", "[图片]", "[表情包]":
-		return true
-	default:
-		return false
-	}
 }
 
 func automatedBroadcast(value string) bool {

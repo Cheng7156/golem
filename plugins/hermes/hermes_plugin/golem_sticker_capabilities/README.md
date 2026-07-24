@@ -84,6 +84,18 @@ Restart Hermes Gateway after installing or changing environment variables.
 The main conversation model does not need native vision support. Configure the
 visual model and credentials through Hermes; Golem never receives model keys.
 
+## Lazy inbound image vision
+
+WeChat images and stickers are indexed as conversation metadata only. They are
+not downloaded or passed to vision when they arrive, and `[image]`/`[sticker]`
+text is never treated as image bytes. In an addressed Relay turn, the Agent can
+call `golem_image_search_current_session` to inspect sender, message id, time,
+and readability, then choose one opaque candidate and call
+`golem_image_read_current_session`. Only the second call materializes the
+verified media and invokes Hermes' vision adapter. Native-vision models receive
+the real image block; text-mode configurations receive the configured
+auxiliary vision analysis.
+
 ## Agent behavior
 
 The tools are optional by design. Their descriptions tell Hermes to decide

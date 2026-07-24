@@ -42,6 +42,7 @@ type runtimeAssembly struct {
 	runWake       chan struct{}
 	outputWake    chan struct{}
 	mediaObjects  mediaobject.Reader
+	mediaResolver golemMediaResolver
 }
 
 type runtimeBuildInput struct {
@@ -76,7 +77,8 @@ func (p *HermesPlugin) buildRuntime() (*pluginRuntime, error) {
 func (p *HermesPlugin) assembleRuntime(input runtimeBuildInput) (*pluginRuntime, error) {
 	runWake := make(chan struct{}, 1)
 	outputWake := make(chan struct{}, 1)
-	built, err := buildGateway(input.config, input.store, outputWake)
+	mediaResolver := golemMediaResolver{message: p.message, cdn: p.cdn}
+	built, err := buildGateway(input.config, input.store, outputWake, mediaResolver)
 	if err != nil {
 		_ = input.store.Close()
 		return nil, err
@@ -90,7 +92,7 @@ func (p *HermesPlugin) assembleRuntime(input runtimeBuildInput) (*pluginRuntime,
 	assembly := runtimeAssembly{
 		plugin: p, config: input.config, store: input.store, manager: input.manager, engine: engine,
 		runtimeRunner: built.runner, runWake: runWake, outputWake: outputWake,
-		mediaObjects: built.mediaObjects,
+		mediaObjects: built.mediaObjects, mediaResolver: mediaResolver,
 	}
 	return assembly.start(input.ctx, input.databasePath)
 }
@@ -105,10 +107,11 @@ func buildGateway(
 	cfg config.Config,
 	store *sqlitestore.Store,
 	outputWake chan<- struct{},
+	mediaResolver golemMediaResolver,
 ) (gatewayBuild, error) {
 	switch cfg.Agent.Mode {
 	case "relay":
-		return buildRelayGateway(cfg, store, outputWake)
+		return buildRelayGateway(cfg, store, outputWake, mediaResolver)
 	case "http":
 		gateway, err := agent.NewHTTPEngine(agent.HTTPConfig{
 			BaseURL: cfg.Agent.BaseURL,
@@ -128,6 +131,7 @@ func buildRelayGateway(
 	cfg config.Config,
 	store *sqlitestore.Store,
 	outputWake chan<- struct{},
+	mediaResolver golemMediaResolver,
 ) (gatewayBuild, error) {
 	capabilities, err := buildRelayCapabilityBundle(
 		cfg,
@@ -151,6 +155,8 @@ func buildRelayGateway(
 		CronDelivery:         cronDeliveryCapability(cfg, store),
 		AsyncDeliveryWake:    func() { signalWake(outputWake) },
 		MediaDirectory:       filepath.Join(cfg.DataDir, "media"),
+		ImageContext:         store,
+		ImageResolver:        mediaResolver,
 		RunResults:           store,
 		ObservationV2Enabled: cfg.Context.Mode == "full",
 		RecentRawMessages:    cfg.Context.RecentRawMessages,
@@ -256,12 +262,11 @@ func (a runtimeAssembly) appendWorkers(
 		return nil, nil, err
 	}
 	runners = append(runners, control)
-	mediaResolver := golemMediaResolver{message: a.plugin.message}
-	runners, err = a.appendLaneWorkers(runners, broker, mediaResolver, domain.LaneInteractive)
+	runners, err = a.appendLaneWorkers(runners, broker, a.mediaResolver, domain.LaneInteractive)
 	if err != nil {
 		return nil, nil, err
 	}
-	runners, err = a.appendLaneWorkers(runners, broker, mediaResolver, domain.LaneJob)
+	runners, err = a.appendLaneWorkers(runners, broker, a.mediaResolver, domain.LaneJob)
 	return runners, processor, err
 }
 
