@@ -1,6 +1,6 @@
 # Hermes 表情收藏与自然回复设计
 
-状态：已在 `feat/hermes-sticker-collection` 实现。
+状态：已在 `feat/hermes-sticker-collection` 实现，并于 2026-07-24 完成生产部署验收。
 
 ## 1. 目标
 
@@ -94,3 +94,17 @@ collection_policy = "owner"
 8. 非 owner 收藏：在图片下载前返回拒绝。
 9. 旧 V1-V10 数据库加载：自动创建 V11 表和索引，不影响现有 Run/outbox。
 10. 并发重复收藏：只产生一个 asset，数据库与磁盘一致。
+
+## 9. 生产部署验收
+
+2026-07-24 17:59-18:09 UTC 已完成生产部署：
+
+- 部署提交：`b447a161fb885247d3ee9b5a0885fc76b7683251`；
+- 生产二进制 SHA-256：`7c34698ff2c03b8cc86e07aead4c823105c411e44bbcb3ae13de11bdac0a39c1`；
+- Golem 备份：`/opt/software/wechat/deploy-backups/20260724_175712/`；
+- Hermes 备份：`/root/.hermes/deploy-backups/20260724_175712/`；
+- 只 reload `hermes` 插件，Host PID `727041` 保持不变；新插件 PID 为 `867839`；
+- Hermes Gateway 平滑重启到 PID `867898`，用户插件 `1.11.0` 加载成功，Relay 已重连；
+- SQLite 已迁移到 V11，`integrity_check` 与 `foreign_key_check` 通过；
+- 新收藏/检索端点已注册并通过与 Gateway 相同的 Bearer token 鉴权；
+- 实机验证完成“发送图片 → 自然语言收藏 → 本地模糊检索 → `golem_sticker_select` → Emoji Outbox sent”；收藏文件 SHA-256 与内容寻址文件名一致。
