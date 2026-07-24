@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -279,12 +280,47 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		}
 		lastSequence = event.Sequence
 		switch event.Kind {
-		case agent.EventReplyProposed, agent.EventEffectProposed, agent.EventProgress:
+		case agent.EventReplyProposed, agent.EventEffectProposed:
 			draft, proposalErr := outputDraft(run, inbox.Binding.ReceiverID, event, deliveryTarget)
 			if proposalErr != nil {
 				return w.finishFailure(parent, run, proposalErr)
 			}
 			drafts = append(drafts, draft)
+		case agent.EventProgress:
+			if run.TriggerKind == domain.TriggerAmbient {
+				suppressed := errors.New("progress output is not allowed for an ambient Run")
+				if err := acknowledgeProgress(runCtx, stream, run.ID, event.ProposalID, suppressed); err != nil {
+					return w.finishFailure(parent, run, err)
+				}
+				continue
+			}
+			draft, proposalErr := outputDraft(
+				run, inbox.Binding.ReceiverID, event, domain.DeliveryTarget{},
+			)
+			if proposalErr != nil {
+				_ = acknowledgeProgress(runCtx, stream, run.ID, event.ProposalID, proposalErr)
+				return w.finishFailure(parent, run, proposalErr)
+			}
+			_, progressErr := w.store.CommitRunProgress(
+				parent, run.ID, run.LeaseToken, progressEventID(event, draft), draft,
+				cfg.Output.ProgressMaxMessages,
+			)
+			if errors.Is(progressErr, storeport.ErrCapacity) {
+				if err := acknowledgeProgress(runCtx, stream, run.ID, event.ProposalID, progressErr); err != nil {
+					return w.finishFailure(parent, run, err)
+				}
+				slog.Debug("[hermes] Run progress limit reached",
+					"run_id", run.ID, "limit", cfg.Output.ProgressMaxMessages)
+				continue
+			}
+			if progressErr != nil {
+				_ = acknowledgeProgress(runCtx, stream, run.ID, event.ProposalID, progressErr)
+				return w.finishFailure(parent, run, progressErr)
+			}
+			signal(w.outputWake)
+			if err := acknowledgeProgress(runCtx, stream, run.ID, event.ProposalID, nil); err != nil {
+				return w.finishFailure(parent, run, err)
+			}
 		case agent.EventCheckpoint:
 			if err := w.store.SaveRunCheckpoint(parent, run.ID, run.LeaseToken, event.Checkpoint); err != nil {
 				return w.finishFailure(parent, run, err)
@@ -614,6 +650,34 @@ func validateEvent(runID string, previous uint64, event agent.Event) error {
 	return nil
 }
 
+func progressEventID(event agent.Event, draft domain.OutboxDraft) string {
+	if value := strings.TrimSpace(event.ProposalID); value != "" {
+		return value
+	}
+	identity := make([]byte, 0, len(draft.Kind)+1+len(draft.Payload))
+	identity = append(identity, draft.Kind...)
+	identity = append(identity, 0)
+	identity = append(identity, draft.Payload...)
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("event-sequence-%d-%x", event.Sequence, digest[:])
+}
+
+func acknowledgeProgress(
+	ctx context.Context,
+	stream agent.Stream,
+	runID string,
+	proposalID string,
+	result error,
+) error {
+	if strings.TrimSpace(proposalID) == "" {
+		return nil
+	}
+	return stream.Send(ctx, agent.Command{
+		Kind: agent.CommandProposalResult, RunID: runID,
+		ProposalID: proposalID, Err: result,
+	})
+}
+
 func outputDraft(
 	run domain.Run,
 	receiverID string,
@@ -780,20 +844,62 @@ func (w *Worker) finishFailure(ctx context.Context, run domain.Run, cause error)
 		)
 		return cause
 	}
-	// Internal execution failures are operational state, not assistant output.
-	// Persist an exhausted Run for diagnostics, but never turn it into a
-	// synthetic chat reply. In particular this prevents provider, adapter, and
-	// timeout errors from leaking to WeChat as a hard-coded English message.
-	if err := w.store.FailRun(ctx, run.ID, run.LeaseToken, cause.Error(), false, time.Time{}); err != nil {
+	// Normal tool failures are returned to Hermes and are described by the
+	// Agent in its own voice. If the execution infrastructure itself exhausts
+	// every retry, send one deliberately generic fallback without exposing
+	// provider, adapter, path, credential, or transport details.
+	fallback := w.terminalFailureDraft(ctx, run)
+	if _, err := w.store.CommitRunFailure(
+		ctx, run.ID, run.LeaseToken, cause.Error(), fallback,
+	); err != nil {
 		return errors.Join(cause, err)
 	}
-	slog.Error("[hermes] Run 已达到自动重试上限，未生成微信兜底回复",
+	if len(fallback) > 0 {
+		signal(w.outputWake)
+	}
+	slog.Error("[hermes] Run 已达到自动重试上限",
 		"run_id", run.ID,
 		"session_id", run.SessionID,
 		"attempt", run.Attempt,
+		"fallback_queued", len(fallback) > 0,
 		"err", cause,
 	)
 	return cause
+}
+
+const terminalFailureMessage = "这次处理没能完成，我已经停下来了。你可以稍后再试一次，或者换个方式发给我。"
+
+func (w *Worker) terminalFailureDraft(ctx context.Context, run domain.Run) []domain.OutboxDraft {
+	if run.TriggerKind != domain.TriggerExplicit {
+		return nil
+	}
+	turn, err := w.store.GetTurn(ctx, run.TurnID)
+	if err != nil {
+		slog.Warn("[hermes] could not load Turn for terminal failure reply", "run_id", run.ID, "err", err)
+		return nil
+	}
+	inbox, err := w.store.GetInbox(ctx, turn.EventID)
+	if err != nil {
+		slog.Warn("[hermes] could not load Inbox for terminal failure reply", "run_id", run.ID, "err", err)
+		return nil
+	}
+	var incoming domain.InboundMessage
+	if err := json.Unmarshal(inbox.Payload, &incoming); err != nil {
+		slog.Warn("[hermes] could not decode Inbox for terminal failure reply", "run_id", run.ID, "err", err)
+		return nil
+	}
+	proposal, err := agent.NewTextProposal(terminalFailureMessage)
+	if err != nil {
+		return nil
+	}
+	draft, err := outputDraft(run, inbox.Binding.ReceiverID, agent.Event{
+		Kind: agent.EventReplyProposed, Proposal: &proposal,
+	}, deliveryTargetForInbound(inbox, incoming))
+	if err != nil {
+		slog.Warn("[hermes] could not build terminal failure reply", "run_id", run.ID, "err", err)
+		return nil
+	}
+	return []domain.OutboxDraft{draft}
 }
 
 func executionContext(

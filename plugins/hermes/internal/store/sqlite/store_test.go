@@ -354,6 +354,130 @@ func TestRunCommitAndOutboxDeliveryAreTransactionalAndOrdered(t *testing.T) {
 	}
 }
 
+func TestRunProgressIsDurableIdempotentAndKeepsRunActive(t *testing.T) {
+	t.Parallel()
+	value := openStore(t)
+	fixture := createRunningRun(t, value, "durable-progress")
+	ctx := context.Background()
+	draft := domain.OutboxDraft{
+		SessionID: fixture.event.SessionID, ReceiverID: fixture.event.Binding.ReceiverID,
+		Kind: "text", Payload: json.RawMessage(`{"content":"我先去看看"}`),
+	}
+	first, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-1", draft, 2,
+	)
+	if err != nil {
+		t.Fatalf("CommitRunProgress: %v", err)
+	}
+	run, err := value.GetRun(ctx, fixture.run.ID)
+	if err != nil || run.State != domain.RunRunning {
+		t.Fatalf("progress completed Run: run=%#v err=%v", run, err)
+	}
+	turn, err := value.GetTurn(ctx, fixture.turn.ID)
+	if err != nil || turn.State != domain.TurnRunning {
+		t.Fatalf("progress completed Turn: turn=%#v err=%v", turn, err)
+	}
+
+	duplicate, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-1", draft, 2,
+	)
+	if err != nil || duplicate.ID != first.ID {
+		t.Fatalf("same-id progress duplicate=%#v err=%v", duplicate, err)
+	}
+	contentDuplicate, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-2", draft, 2,
+	)
+	if err != nil || contentDuplicate.ID != first.ID {
+		t.Fatalf("same-content progress duplicate=%#v err=%v", contentDuplicate, err)
+	}
+	conflict := draft
+	conflict.Payload = json.RawMessage(`{"content":"different"}`)
+	if _, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-1", conflict, 2,
+	); !errors.Is(err, storeport.ErrConflict) {
+		t.Fatalf("conflicting progress error=%v, want conflict", err)
+	}
+
+	secondDraft := draft
+	secondDraft.Payload = json.RawMessage(`{"content":"已经开始处理了"}`)
+	second, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-3", secondDraft, 2,
+	)
+	if err != nil || second.Sequence != first.Sequence+1 {
+		t.Fatalf("second progress=%#v err=%v", second, err)
+	}
+	thirdDraft := draft
+	thirdDraft.Payload = json.RawMessage(`{"content":"third"}`)
+	if _, err := value.CommitRunProgress(
+		ctx, fixture.run.ID, fixture.run.LeaseToken, "progress-4", thirdDraft, 2,
+	); !errors.Is(err, storeport.ErrCapacity) {
+		t.Fatalf("progress over capacity error=%v, want capacity", err)
+	}
+
+	final, err := value.CommitRunSuccess(ctx, fixture.run.ID, fixture.run.LeaseToken,
+		[]domain.OutboxDraft{{
+			SessionID: fixture.event.SessionID, ReceiverID: fixture.event.Binding.ReceiverID,
+			Kind: "text", Payload: json.RawMessage(`{"content":"完成了"}`),
+		}})
+	if err != nil || len(final) != 1 || final[0].Sequence != second.Sequence+1 {
+		t.Fatalf("final outbox=%#v err=%v", final, err)
+	}
+}
+
+func TestPendingProgressBlocksLaterFinalDelivery(t *testing.T) {
+	t.Parallel()
+	value := openStore(t)
+	fixture := createRunningRun(t, value, "progress-order")
+	ctx := context.Background()
+	progress, err := value.CommitRunProgress(ctx, fixture.run.ID, fixture.run.LeaseToken,
+		"progress-1", domain.OutboxDraft{
+			SessionID: fixture.event.SessionID, ReceiverID: fixture.event.Binding.ReceiverID,
+			Kind: "text", Payload: json.RawMessage(`{"content":"working"}`),
+		}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := value.CommitRunSuccess(ctx, fixture.run.ID, fixture.run.LeaseToken,
+		[]domain.OutboxDraft{{
+			SessionID: fixture.event.SessionID, ReceiverID: fixture.event.Binding.ReceiverID,
+			Kind: "text", Payload: json.RawMessage(`{"content":"done"}`),
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leased, err := value.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil || leased.ID != progress.ID {
+		t.Fatalf("leased=%#v err=%v, want progress", leased, err)
+	}
+	if err := value.MarkOutboxRetry(ctx, leased.ID, leased.LeaseToken,
+		"failed", "temporary", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := value.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("final bypassed retrying progress: %v", err)
+	}
+	retry, err := value.LeaseNextOutbox(ctx, time.Now().Add(2*time.Minute), time.Minute)
+	if err != nil || retry.ID != progress.ID {
+		t.Fatalf("retry=%#v err=%v", retry, err)
+	}
+	if _, err := value.LeaseNextOutbox(ctx, time.Now().Add(2*time.Minute), time.Minute); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("final bypassed leased progress retry: %v", err)
+	}
+	if err := value.MarkOutboxSending(ctx, retry.ID, retry.LeaseToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := value.LeaseNextOutbox(ctx, time.Now().Add(2*time.Minute), time.Minute); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("final bypassed sending progress retry: %v", err)
+	}
+	if err := value.MarkOutboxSent(ctx, retry.ID, retry.LeaseToken, 9001, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	leasedFinal, err := value.LeaseNextOutbox(ctx, time.Now().Add(2*time.Minute), time.Minute)
+	if err != nil || leasedFinal.ID != final[0].ID {
+		t.Fatalf("final=%#v err=%v", leasedFinal, err)
+	}
+}
+
 func TestRelayRunResultCommitIsIdempotentAfterRunCompleted(t *testing.T) {
 	t.Parallel()
 	value := openStore(t)

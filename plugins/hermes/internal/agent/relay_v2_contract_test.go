@@ -312,12 +312,19 @@ func TestV2ProgressDoesNotCompleteAndStagedEffectIsMerged(t *testing.T) {
 	writeRelayFrame(t, connection, map[string]any{"type": "outbound", "requestId": "progress",
 		"action": map[string]any{"op": "send", "chat_id": relayChatID(request), "content": "working",
 			"metadata": map[string]any{"notify": false}}})
-	if body := readRelayFrame(t, connection)["result"].(map[string]any); body["success"] != true {
-		t.Fatalf("progress=%#v", body)
-	}
 	progress, err := stream.Recv(context.Background())
-	if err != nil || progress.Kind != EventProgress {
+	if err != nil || progress.Kind != EventProgress || progress.ProposalID == "" ||
+		progress.CorrelationID != "progress" {
 		t.Fatalf("progress event=%#v err=%v", progress, err)
+	}
+	if err := stream.Send(context.Background(), Command{
+		Kind: CommandProposalResult, RunID: request.RunID, ProposalID: progress.ProposalID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if body := readRelayFrame(t, connection)["result"].(map[string]any); body["success"] != true ||
+		body["message_id"] != progress.ProposalID {
+		t.Fatalf("progress=%#v", body)
 	}
 
 	effect := OutputProposal{Kind: "emoji", Payload: []byte(`{"url":"https://example.test/e.gif"}`)}
@@ -349,6 +356,33 @@ func TestV2ProgressDoesNotCompleteAndStagedEffectIsMerged(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = readRelayFrame(t, connection)
+}
+
+func TestV2ProgressReturnsDurableRejection(t *testing.T) {
+	request := RunRequest{RunID: "run-progress-rejected", SessionID: "private:user",
+		Lane: domain.LaneInteractive, Input: "hello", ChatType: "dm",
+		ConversationID: "wechat:dm:user", CurrentObservationID: "obs",
+		CurrentPayloadHash: "payload", RequiredContextSeq: 1,
+		InvocationID: "invoke-progress-rejected"}
+	_, _, connection, stream := startV2Relay(t, request)
+	writeRelayFrame(t, connection, map[string]any{"type": "outbound", "requestId": "progress-rejected",
+		"action": map[string]any{"op": "send", "chat_id": relayChatID(request), "content": "working",
+			"metadata": map[string]any{"notify": false}}})
+	progress, err := stream.Recv(context.Background())
+	if err != nil || progress.Kind != EventProgress || progress.ProposalID == "" {
+		t.Fatalf("progress=%#v err=%v", progress, err)
+	}
+	if err := stream.Send(context.Background(), Command{
+		Kind: CommandProposalResult, RunID: request.RunID, ProposalID: progress.ProposalID,
+		Err: storeport.ErrCapacity,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := readRelayFrame(t, connection)
+	body := result["result"].(map[string]any)
+	if body["success"] != false || !strings.Contains(body["error"].(string), "capacity") {
+		t.Fatalf("result=%#v", result)
+	}
 }
 
 func TestV2TerminalProposalReleasesRunBeforeReceipt(t *testing.T) {

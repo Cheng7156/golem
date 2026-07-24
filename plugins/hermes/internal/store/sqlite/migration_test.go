@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenMigratesSchemaV1ToV11(t *testing.T) {
+func TestOpenMigratesSchemaV1ToV12(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hermes.db")
 	db, err := sql.Open("sqlite", path)
@@ -37,8 +37,8 @@ func TestOpenMigratesSchemaV1ToV11(t *testing.T) {
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("schema version=%d, want 11", version)
+	if version != 12 {
+		t.Fatalf("schema version=%d, want 12", version)
 	}
 	var table string
 	if err := store.db.QueryRowContext(ctx,
@@ -87,6 +87,11 @@ func TestOpenMigratesSchemaV1ToV11(t *testing.T) {
 		).Scan(&table); err != nil {
 			t.Fatalf("%s table missing: %v", name, err)
 		}
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='run_progress_outputs'`,
+	).Scan(&table); err != nil {
+		t.Fatalf("run progress table missing: %v", err)
 	}
 	var index string
 	if err := store.db.QueryRowContext(ctx,

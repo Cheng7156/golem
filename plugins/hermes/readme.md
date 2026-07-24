@@ -194,6 +194,7 @@ delivery_semantics = "at_least_once"
 workers = 4
 max_attempts = 12
 ambiguous_max_attempts = 2
+progress_max_messages = 8
 send_timeout_seconds = 180
 retry_min_seconds = 1
 retry_max_seconds = 300
@@ -210,12 +211,29 @@ send_jitter_milliseconds = 250
 - `relay_session_namespace` 修改后会创建新的 Hermes 会话命名空间，可用于有意隔离旧会话。
 - 无 HMAC 时 relay 只能监听 loopback。跨主机必须配置 `relay_gateway_id`、`relay_shared_secret`，并使用 TLS/WSS 隧道。
 - `delivery_semantics` 是 at-least-once。微信发送结果不确定时宁可有限重试，因此极端情况下可能重复，不承诺 exactly-once。
+- `progress_max_messages` 限制单个 Run 可持久发送的自然语言中途消息，默认 8、最大 32；
+  超限只丢弃新的进度，不会终止主任务。
 
 ## 6. Hermes 配置、人格和 skill
 
 Hermes 配置位于 `/root/.hermes/config.yaml`：
 
 ```yaml
+agent:
+  gateway_notify_interval: 90
+
+display:
+  tool_progress: false
+  interim_assistant_messages: true
+  long_running_notifications: generic
+  status_phrases:
+    mode: replace
+    phrases:
+      status:
+        - 我还在处理，结果出来就告诉你
+        - 还在继续弄，暂时没有卡住
+        - 这一步还需要一点时间，我处理完就回来
+
 gateway:
   relay:
     observation_mode: auto
@@ -226,6 +244,10 @@ gateway:
         relay_url: http://127.0.0.1:8789
         group_sessions_per_user: true
 ```
+
+上述显示配置让模型在慢步骤前和真实阶段变化时发送自然 commentary，并以低频通用心跳
+覆盖单个长时间阻塞步骤。不要为微信打开原始 `tool_progress`；进度持久化、幂等、顺序和
+失败语义见 [PROGRESS_COMMUNICATION_DESIGN.md](./PROGRESS_COMMUNICATION_DESIGN.md)。
 
 `observation_mode`：
 

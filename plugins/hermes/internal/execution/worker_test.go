@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +125,69 @@ func (e *completingEngine) Health(context.Context) agent.Health {
 }
 
 func (e *completingEngine) Close(context.Context) error { return nil }
+
+type progressEngine struct {
+	ack     chan agent.Command
+	release chan struct{}
+}
+
+func (e *progressEngine) Start(_ context.Context, request agent.RunRequest) (agent.Stream, error) {
+	events := make(chan agent.Event, 4)
+	proposal, _ := agent.NewTextProposal("我先去看看，处理好了就告诉你")
+	events <- agent.Event{Kind: agent.EventRunAccepted, RunID: request.RunID, Sequence: 1}
+	events <- agent.Event{Kind: agent.EventProgress, RunID: request.RunID, Sequence: 2,
+		ProposalID: "progress-1", Text: "我先去看看，处理好了就告诉你", Proposal: &proposal}
+	return &progressStream{
+		runID: request.RunID, events: events, ack: e.ack, release: e.release,
+	}, nil
+}
+
+func (e *progressEngine) Health(context.Context) agent.Health {
+	return agent.Health{Ready: true, Status: "test"}
+}
+
+func (e *progressEngine) Close(context.Context) error { return nil }
+
+type progressStream struct {
+	runID   string
+	events  chan agent.Event
+	ack     chan agent.Command
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *progressStream) Recv(ctx context.Context) (agent.Event, error) {
+	select {
+	case <-ctx.Done():
+		return agent.Event{}, ctx.Err()
+	case event, ok := <-s.events:
+		if !ok {
+			return agent.Event{}, io.EOF
+		}
+		return event, nil
+	}
+}
+
+func (s *progressStream) Send(_ context.Context, command agent.Command) error {
+	if command.Kind != agent.CommandProposalResult || command.ProposalID != "progress-1" {
+		return errors.New("unexpected progress command")
+	}
+	s.ack <- command
+	s.once.Do(func() {
+		go func() {
+			<-s.release
+			proposal, _ := agent.NewTextProposal("已经处理好了")
+			s.events <- agent.Event{Kind: agent.EventReplyProposed, RunID: s.runID,
+				Sequence: 3, Text: "已经处理好了", Proposal: &proposal}
+			s.events <- agent.Event{Kind: agent.EventRunCompleted, RunID: s.runID, Sequence: 4}
+			close(s.events)
+		}()
+	})
+	return nil
+}
+
+func (s *progressStream) Cancel() error { return nil }
+func (s *progressStream) Close() error  { return nil }
 
 type recordingMediaResolver struct {
 	mu    sync.Mutex
@@ -385,6 +449,135 @@ func TestWorkerPersistsCheckpointExecutesToolAndCommitsOutbox(t *testing.T) {
 	}
 }
 
+func TestWorkerCommitsProgressBeforeRunCompletion(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager, err := config.NewManager(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, _ := tool.NewBroker(1, 1024, nil)
+	engine := &progressEngine{
+		ack: make(chan agent.Command, 1), release: make(chan struct{}),
+	}
+	runWake := make(chan struct{}, 1)
+	outputWake := make(chan struct{}, 2)
+	worker, err := execution.NewWorker(
+		1, store, engine, broker, nil, domain.LaneInteractive,
+		manager.Current, runWake, outputWake,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := createRun(t, store, time.Now().Add(time.Minute))
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(workerCtx) }()
+	runWake <- struct{}{}
+
+	select {
+	case command := <-engine.ack:
+		if command.Err != nil {
+			t.Fatalf("progress acknowledgement error=%v", command.Err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("progress was not durably acknowledged")
+	}
+	select {
+	case <-outputWake:
+	case <-time.After(time.Second):
+		t.Fatal("progress did not wake the output dispatcher")
+	}
+	progress, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(progress.Payload) != `{"content":"我先去看看，处理好了就告诉你"}` {
+		t.Fatalf("progress payload=%s", progress.Payload)
+	}
+	stored, err := store.GetRun(ctx, run.ID)
+	if err != nil || stored.State != domain.RunRunning {
+		t.Fatalf("Run completed before final result: run=%#v err=%v", stored, err)
+	}
+	if err := store.MarkOutboxSent(ctx, progress.ID, progress.LeaseToken, 9001, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	close(engine.release)
+	waitRunState(t, store, run.ID, domain.RunSucceeded)
+	final, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(final.Payload) != `{"content":"已经处理好了"}` {
+		t.Fatalf("final payload=%s", final.Payload)
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Worker.Run: %v", err)
+	}
+}
+
+func TestWorkerRejectsAmbientProgressWithoutCreatingOutbox(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager, err := config.NewManager(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, _ := tool.NewBroker(1, 1024, nil)
+	engine := &progressEngine{
+		ack: make(chan agent.Command, 1), release: make(chan struct{}),
+	}
+	runWake := make(chan struct{}, 1)
+	worker, err := execution.NewWorker(
+		1, store, engine, broker, nil, domain.LaneInteractive,
+		manager.Current, runWake, make(chan struct{}, 2),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := createRunForMessage(t, store, time.Now().Add(time.Minute),
+		"chatroom:room-1", "room-1", domain.InboundMessage{
+			Text: "群里随口说了一句", IsChatroom: true,
+			SpeakerID: "user-1", SpeakerName: "成员甲",
+		})
+	if run.TriggerKind != domain.TriggerAmbient {
+		t.Fatalf("trigger=%s, want ambient", run.TriggerKind)
+	}
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(workerCtx) }()
+	runWake <- struct{}{}
+
+	select {
+	case command := <-engine.ack:
+		if command.Err == nil || !strings.Contains(command.Err.Error(), "ambient") {
+			t.Fatalf("ambient progress acknowledgement error=%v", command.Err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ambient progress was not rejected")
+	}
+	if _, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("ambient progress created an Outbox item: %v", err)
+	}
+
+	close(engine.release)
+	waitRunState(t, store, run.ID, domain.RunSucceeded)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Worker.Run: %v", err)
+	}
+}
+
 func TestRelayWorkerIgnoresLegacyAbsoluteDeadline(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
@@ -492,7 +685,7 @@ func TestWorkerBoundsObservationBarrierAndCarriesCurrentFallback(t *testing.T) {
 	}
 }
 
-func TestTerminalRunFailureDoesNotCreateChatFallback(t *testing.T) {
+func TestTerminalRunFailureCreatesSafeChatFallback(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
 	if err != nil {
@@ -522,8 +715,16 @@ func TestTerminalRunFailureDoesNotCreateChatFallback(t *testing.T) {
 	go func() { done <- worker.Run(workerCtx) }()
 	runWake <- struct{}{}
 	waitRunState(t, store, run.ID, domain.RunFailed)
-	if _, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute); !errors.Is(err, storeport.ErrNotFound) {
-		t.Fatalf("terminal failure created a chat outbox item: %v", err)
+	item, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("terminal failure did not create a chat fallback: %v", err)
+	}
+	var output domain.TextOutput
+	if err := json.Unmarshal(item.Payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Content == "" || strings.Contains(output.Content, "permanent adapter failure") {
+		t.Fatalf("unsafe terminal fallback=%q", output.Content)
 	}
 
 	cancel()
@@ -582,15 +783,27 @@ func TestRelayDisconnectRetainsRunWithoutChatFallback(t *testing.T) {
 
 func createRun(t *testing.T, store *sqlite.Store, deadline time.Time) domain.Run {
 	t.Helper()
+	return createRunForMessage(t, store, deadline, "private:user-1", "user-1",
+		domain.InboundMessage{Text: "hello", SpeakerID: "user-1"})
+}
+
+func createRunForMessage(
+	t *testing.T,
+	store *sqlite.Store,
+	deadline time.Time,
+	sessionID string,
+	receiverID string,
+	message domain.InboundMessage,
+) domain.Run {
+	t.Helper()
 	ctx := context.Background()
-	sessionID := "private:user-1"
-	payload, _ := json.Marshal(domain.InboundMessage{Text: "hello", SpeakerID: "user-1"})
+	payload, _ := json.Marshal(message)
 	inbox, inserted, err := store.AcceptInbox(ctx, domain.InboxEvent{
 		ID: "event-" + t.Name(), DedupeKey: "wechat/" + t.Name(), MessageID: 1,
 		Topic: "message::text", SessionID: sessionID, OccurredAt: time.Now(),
 		Binding: domain.ChannelBinding{
-			Channel: "wechat", SessionID: sessionID, ReceiverID: "user-1",
-			Principal: domain.Principal{ID: "user-1"},
+			Channel: "wechat", SessionID: sessionID, ReceiverID: receiverID,
+			Principal: domain.Principal{ID: message.SpeakerID, Name: message.SpeakerName},
 		},
 		Payload: payload,
 	})

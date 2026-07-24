@@ -64,6 +64,7 @@ group_sessions_per_user: true
 agent:
   gateway_timeout: 1800
   gateway_timeout_warning: 900
+  gateway_notify_interval: 90
 
 platform_toolsets:
   relay:
@@ -78,6 +79,15 @@ display:
   tool_progress: off
   busy_input_mode: queue
   busy_ack_enabled: false
+  interim_assistant_messages: true
+  long_running_notifications: generic
+  status_phrases:
+    mode: replace
+    phrases:
+      status:
+        - 我还在处理，结果出来就告诉你
+        - 还在继续弄，暂时没有卡住
+        - 这一步还需要一点时间，我处理完就回来
 ```
 
 `web` 保留 Agent 搜索能力；`file` 与 `skills` 用于读取、维护 `silence_rules_file` 和 `~/.hermes/skills/` 下的 Skill。不要给 relay 开放 `terminal`。微信发送等平台副作用仍只能经 Go Capability Broker 授权；`file` 会继承 Hermes Gateway 服务账户的本地文件权限，因此只应在专用 Relay profile 中启用。
@@ -101,7 +111,13 @@ invocation 的 task-local trigger binding，不读取模型参数或环境变量
 引用 Hermes 和 control 回合不受此限制。Golem Capability Broker 还会基于 active Run
 再次拒绝 ambient 媒体请求，确保即使绕过 Hermes hook 也不会调用 Provider 或创建 job。
 
-插件 `0.4.2` 起，Relay 模式忽略 Golem `agent.timeout_seconds`，不再用墙钟 Deadline 提前放弃仍在运行的 Hermes Turn。任务活性由 Hermes `agent.gateway_timeout`（无活动超时，`0` 表示无限）管理；Relay 断线会保留 Run 并退避重试。插件内部失败只写 SQLite 和日志，不再生成 `The request failed temporarily. Please try again later.` 之类的微信聊天回复。
+`tool_progress` 应保持关闭，避免把工具名和参数逐条刷到微信；
+`interim_assistant_messages` 负责模型自己的自然阶段说明，`long_running_notifications=generic`
+则在长时间没有新阶段时发送不含工具细节的低频心跳。Golem 会先把这些消息持久写入
+Transactional Outbox，再向 Relay 返回成功；完整时序见
+[PROGRESS_COMMUNICATION_DESIGN.md](./PROGRESS_COMMUNICATION_DESIGN.md)。
+
+插件 `0.4.2` 起，Relay 模式忽略 Golem `agent.timeout_seconds`，不再用墙钟 Deadline 提前放弃仍在运行的 Hermes Turn。任务活性由 Hermes `agent.gateway_timeout`（无活动超时，`0` 表示无限）管理；Relay 断线会保留 Run 并退避重试。普通工具错误由 Hermes 自然总结；只有执行基础设施耗尽全部重试且无法生成最终回复时，插件才向 explicit 回合发送不包含内部细节的通用失败消息，ambient 回合仍保持静默。
 
 `RELAY_HOME_CHANNEL=disabled` 仅用于专用 Relay profile，抑制 Hermes 首轮会话的 Home Channel 引导；它不是微信目标 ID。Hermes v0.18.2 的 `hermes tools` CLI 静态白名单不包含动态 Relay，不能使用 `hermes tools list --platform relay`；运行时仍会正确读取 `platform_toolsets.relay`。可用部署手册中的 Hermes Python 运行时解析命令核验最终工具面。`no_mcp` 不负责禁用 Hermes 插件 toolset。未授权的插件 toolset 只放入 `known_plugin_toolsets.relay`，不要放入 `platform_toolsets.relay`；需要启用 0.5.0 表情能力时则显式把受控的 `golem_stickers` 放入后者。
 
@@ -153,13 +169,17 @@ Golem -> Gateway：
 - `interrupt_inbound`
 - `going_idle_ack`
 
-`outbound_result.success=true` 表示 Golem 已接受输出提案，不表示微信已经发送成功。真实投递必须先经过 Run 成功事务和 Transactional Outbox；SDK 结果随后写入 DeliveryAttempt/receipt。
+对非最终进度，`outbound_result.success=true` 表示进度已经持久写入 Transactional Outbox；
+对最终 V2 proposal，表示 durable Run result 已提交。两者都不表示微信已经发送成功，真实 SDK
+结果随后写入 DeliveryAttempt/receipt。
 
 ## 6. 当前 contract v1 限制
 
 官方 relay v1 标记为 experimental，并且没有独立的 `turn_completed` 帧，也尚未定义 media outbound action。当前实现采用以下兼容策略：
 
 - `send.metadata.notify=true` 视为最终回复，其他 send 视为 progress proposal。
+- progress proposal 只允许 explicit Run 的文本，按 Run 幂等并受条数上限约束；它立即进入
+  Outbox，但不结束 Run。处于待发、重试、租约或发送中的进度会阻止后续最终消息越序。
 - descriptor 声明不支持 draft/edit/thread，减少中间消息和修订语义。
 - platform hint 要求私聊和 `group addressed` 给出可见最终回复；若 Hermes 对任意群消息最终仍返回 Connector 专用观察 token，Connector 都以无 Outbox 的成功 Run 完成，避免模型偏差阻塞 Session。部分 Provider 会把该决定渲染成完整括号式说明（例如 `[... — staying silent]` 或 `[silence]`），Connector 仅在整条群聊最终回复明确为这类静默说明时作同样处理。其他 Provider 特有文本通过 `silence_rules_file` 管理。私聊不接受观察 token，正文中提及 silent/no reply 也不会被吞。
 - Gateway 输出图片/表情的标准 relay action 尚未发布。0.5.0 的受控 Hermes 工具只能暂存结构化 Emoji effect，最终仍由 Relay send 完成 Run，并由 Go Outbox 发送。

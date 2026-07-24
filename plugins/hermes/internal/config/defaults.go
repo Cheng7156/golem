@@ -49,6 +49,7 @@ func Default() Config {
 			Workers:                  4,
 			MaxAttempts:              12,
 			AmbiguousMaxAttempts:     2,
+			ProgressMaxMessages:      8,
 			SendTimeoutSeconds:       15,
 			RetryMinSeconds:          1,
 			RetryMaxSeconds:          300,

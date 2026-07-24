@@ -80,6 +80,12 @@ func TestNormalizeRejectsUnsafeOrContradictoryValues(t *testing.T) {
 			},
 		},
 		{
+			name: "too many progress messages",
+			mutate: func(value *config.Config) {
+				value.Output.ProgressMaxMessages = 33
+			},
+		},
+		{
 			name: "current directory data",
 			mutate: func(value *config.Config) {
 				value.DataDir = "."
@@ -163,6 +169,7 @@ func TestNormalizeAppliesOutputSafetyDefaults(t *testing.T) {
 	value.Output.Workers = 0
 	value.Output.MaxAttempts = 0
 	value.Output.AmbiguousMaxAttempts = 0
+	value.Output.ProgressMaxMessages = 0
 	normalized, err := config.Normalize(value)
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
@@ -179,6 +186,13 @@ func TestNormalizeAppliesOutputSafetyDefaults(t *testing.T) {
 			"ambiguous max attempts=%d, want %d",
 			normalized.Output.AmbiguousMaxAttempts,
 			defaults.Output.AmbiguousMaxAttempts,
+		)
+	}
+	if normalized.Output.ProgressMaxMessages != defaults.Output.ProgressMaxMessages {
+		t.Fatalf(
+			"progress max messages=%d, want %d",
+			normalized.Output.ProgressMaxMessages,
+			defaults.Output.ProgressMaxMessages,
 		)
 	}
 }

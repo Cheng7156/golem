@@ -356,3 +356,18 @@ CREATE TABLE IF NOT EXISTS sticker_terms (
 CREATE INDEX IF NOT EXISTS idx_sticker_terms_lookup
   ON sticker_terms(term,sticker_id,weight);
 `
+
+const schemaV12 = `
+CREATE TABLE IF NOT EXISTS run_progress_outputs (
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  progress_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  outbox_id TEXT NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,progress_id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_progress_content
+  ON run_progress_outputs(run_id,content_hash);
+CREATE INDEX IF NOT EXISTS idx_run_progress_outbox
+  ON run_progress_outputs(outbox_id);
+`

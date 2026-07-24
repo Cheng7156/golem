@@ -125,6 +125,7 @@ type OutputConfig struct {
 	Workers                  int    `toml:"workers"`
 	MaxAttempts              int    `toml:"max_attempts"`
 	AmbiguousMaxAttempts     int    `toml:"ambiguous_max_attempts"`
+	ProgressMaxMessages      int    `toml:"progress_max_messages" comment:"单个 Run 最多持久发送的自然语言进度消息数"`
 	SendTimeoutSeconds       int    `toml:"send_timeout_seconds"`
 	RetryMinSeconds          int    `toml:"retry_min_seconds"`
 	RetryMaxSeconds          int    `toml:"retry_max_seconds"`

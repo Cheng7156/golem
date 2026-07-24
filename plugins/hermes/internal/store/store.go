@@ -51,6 +51,7 @@ type Store interface {
 	RequestSessionCancel(context.Context, string, string) ([]string, error)
 	MarkRunCancelled(context.Context, string, string) error
 	FailRun(context.Context, string, string, string, bool, time.Time) error
+	CommitRunProgress(context.Context, string, string, string, domain.OutboxDraft, int) (domain.OutboxItem, error)
 	CommitRunSuccess(context.Context, string, string, []domain.OutboxDraft) ([]domain.OutboxItem, error)
 	CommitRunFailure(context.Context, string, string, string, []domain.OutboxDraft) ([]domain.OutboxItem, error)
 	CommitRelayRunResult(context.Context, string, string, domain.RelayRunResult, []domain.OutboxDraft) ([]domain.OutboxItem, error)

@@ -273,6 +273,12 @@ func normalizeOutput(value *OutputConfig, defaults OutputConfig) error {
 	if value.AmbiguousMaxAttempts <= 0 {
 		value.AmbiguousMaxAttempts = defaults.AmbiguousMaxAttempts
 	}
+	if value.ProgressMaxMessages <= 0 {
+		value.ProgressMaxMessages = defaults.ProgressMaxMessages
+	}
+	if value.ProgressMaxMessages > 32 {
+		return errors.New("output.progress_max_messages 不能大于 32")
+	}
 	if value.SendTimeoutSeconds <= 0 {
 		value.SendTimeoutSeconds = defaults.SendTimeoutSeconds
 	}

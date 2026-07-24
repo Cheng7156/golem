@@ -51,7 +51,7 @@ func TestRelayGatewayRoundTrip(t *testing.T) {
 		t.Fatalf("descriptor capabilities missing: %#v", descriptor)
 	}
 	hint, _ := capabilities["platform_hint"].(string)
-	for _, required := range []string{"ordinary final assistant text", "Do not search for or call MCP", "automatically delivers it through Golem", "group ambient", "Never explain that no reply is needed", relayObserveToken} {
+	for _, required := range []string{"ordinary final assistant text", "Do not search for or call MCP", "automatically delivers it through Golem", "brief acknowledgement", "meaningful new phase", "Never send progress for ambient observation", "group ambient", "Never explain that no reply is needed", relayObserveToken} {
 		if !strings.Contains(hint, required) {
 			t.Fatalf("platform_hint %q does not contain %q", hint, required)
 		}

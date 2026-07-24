@@ -100,11 +100,17 @@ func selectNextOutbox(ctx context.Context, tx *sql.Tx, now time.Time) (domain.Ou
 			WHERE active.session_id=o.session_id AND active.id<>o.id
 			AND ((active.state IN (?,?) AND active.attempt=1)
 				OR (active.sequence<o.sequence AND active.state=?)))
+		AND NOT EXISTS (SELECT 1
+			FROM outbox progress
+			JOIN run_progress_outputs marker ON marker.outbox_id=progress.id
+			WHERE progress.session_id=o.session_id AND progress.sequence<o.sequence
+			AND progress.state IN (?,?,?,?))
 		ORDER BY o.created_at,o.session_id,o.sequence LIMIT 1`
 	return scanOutbox(tx.QueryRowContext(
 		ctx, query, domain.OutboxPending, domain.OutboxRetryWait, unixMillis(now),
 		domain.OutboxLeased, unixMillis(now), domain.OutboxSending, unixMillis(now),
 		domain.OutboxLeased, domain.OutboxSending, domain.OutboxPending,
+		domain.OutboxPending, domain.OutboxRetryWait, domain.OutboxLeased, domain.OutboxSending,
 	))
 }
 
