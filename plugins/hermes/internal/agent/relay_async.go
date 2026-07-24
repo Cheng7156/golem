@@ -95,7 +95,7 @@ type asyncReconcileRequest struct {
 func capabilityPath(path string) bool {
 	switch path {
 	case stickerSearchPath, stickerMaterializePath, stickerSelectPath,
-		imageSearchPath, imageReadPath,
+		imageSearchPath, imageReadPath, stickerLibrarySearchPath, stickerLibraryCollectPath,
 		videoSearchPath, videoResolvePath, videoSelectPath, videoStatusPath,
 		inlineVideoFetchPath,
 		asyncDeliveryRegisterPath, asyncDeliveryStatusPath,

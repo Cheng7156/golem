@@ -19,7 +19,13 @@ from . import video_fetch_tools as _video_fetch_tools
 from . import video_tools as _video_tools
 from . import vision_inspect as _vision
 from .errors import CapabilityError
-from .tool_schemas import ATTACH_SCHEMA, SEARCH_SCHEMA, SELECT_SCHEMA
+from .tool_schemas import (
+    ATTACH_SCHEMA,
+    COLLECT_SCHEMA,
+    LIBRARY_SEARCH_SCHEMA,
+    SEARCH_SCHEMA,
+    SELECT_SCHEMA,
+)
 
 
 TOOLSET = "golem_stickers"
@@ -93,6 +99,57 @@ def _handle_search(args: Dict[str, Any], **_: Any) -> str:
         {"query": query, "limit": limit, "context": _current_context()},
     )
     return _sticker_search_result(result, limit)
+
+
+def _handle_library_search(args: Dict[str, Any], **_: Any) -> str:
+    query, limit = _search_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "The local sticker library is unavailable in an async completion turn"
+        )
+    result = _client.search_sticker_library(query, limit, _current_context())
+    return _sticker_search_result(result, limit)
+
+
+def _collect_args(args: Dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(args, dict):
+        raise CapabilityError("Collection arguments must be an object")
+    if set(args) - {"candidate_id", "description"}:
+        raise CapabilityError("Collection contains unsupported arguments")
+    candidate_id = args.get("candidate_id")
+    description = args.get("description")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise CapabilityError("candidate_id is required")
+    if not isinstance(description, str) or not description.strip():
+        raise CapabilityError("description is required")
+    candidate_id = candidate_id.strip()
+    description = description.strip()
+    if len(candidate_id) > 128:
+        raise CapabilityError("candidate_id is too long")
+    if len(description) > 300:
+        raise CapabilityError("description must be at most 300 characters")
+    return candidate_id, description
+
+
+def _handle_collect(args: Dict[str, Any], **_: Any) -> str:
+    candidate_id, description = _collect_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Sticker collection is unavailable in an async completion turn"
+        )
+    result = _client.collect_current_sticker(
+        candidate_id, description, _current_context()
+    )
+    if result.get("stored") is not True:
+        raise CapabilityError("Golem did not store the selected sticker")
+    return _json_result(
+        {
+            "stored": True,
+            "description": _text(result.get("description"), 300),
+            "asset_created": bool(result.get("asset_created", False)),
+            "label_created": bool(result.get("label_created", False)),
+        }
+    )
 
 
 def _sticker_search_result(result: Dict[str, Any], limit: int) -> str:
@@ -248,6 +305,20 @@ def register(ctx) -> None:
         schema=SEARCH_SCHEMA,
         handler=_handle_search,
         emoji="search",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_library_search",
+        schema=LIBRARY_SEARCH_SCHEMA,
+        handler=_handle_library_search,
+        emoji="library-search",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_collect_current_session",
+        schema=COLLECT_SCHEMA,
+        handler=_handle_collect,
+        emoji="collect",
         **common,
     )
     ctx.register_tool(

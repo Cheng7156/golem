@@ -145,6 +145,68 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(body["message_id"], "wx-7")
         self.assertTrue(opened.call_args.args[0].full_url.endswith("/capabilities/v1/images/search"))
 
+    def test_library_search_precedes_external_fallback_and_sanitizes_results(self):
+        response = _Response(
+            {
+                "candidates": [
+                    {
+                        "id": "local-candidate-1",
+                        "description": "大傻逼；震惊",
+                        "path": "/must/not/leak.png",
+                    }
+                ],
+                "expires_in": 300,
+            }
+        )
+        with mock.patch.object(plugin._opener, "open", return_value=response) as opened:
+            result = json.loads(
+                plugin._handle_library_search({"query": "傻比", "limit": 4})
+            )
+        self.assertEqual(result["candidates"][0]["id"], "local-candidate-1")
+        self.assertNotIn("path", result["candidates"][0])
+        request = opened.call_args.args[0]
+        body = json.loads(request.data.decode())
+        self.assertEqual(body["query"], "傻比")
+        self.assertEqual(body["context"]["message_id"], "msg-1")
+        self.assertTrue(
+            request.full_url.endswith("/capabilities/v1/stickers/library/search")
+        )
+
+    def test_collect_posts_exact_image_candidate_and_user_description(self):
+        response = _Response(
+            {
+                "stored": True,
+                "description": "大傻逼",
+                "asset_created": True,
+                "label_created": True,
+                "path": "/must/not/leak.png",
+            }
+        )
+        with mock.patch.object(plugin._opener, "open", return_value=response) as opened:
+            result = json.loads(
+                plugin._handle_collect(
+                    {"candidate_id": "img_opaque", "description": "大傻逼"}
+                )
+            )
+        self.assertEqual(
+            result,
+            {
+                "stored": True,
+                "description": "大傻逼",
+                "asset_created": True,
+                "label_created": True,
+            },
+        )
+        body = json.loads(opened.call_args.args[0].data.decode())
+        self.assertEqual(set(body), {"candidate_id", "description", "context"})
+        self.assertEqual(body["candidate_id"], "img_opaque")
+        self.assertEqual(body["description"], "大傻逼")
+        self.assertTrue(
+            opened.call_args.args[0].full_url.endswith(
+                "/capabilities/v1/stickers/library/collect"
+            )
+        )
+
     def test_image_read_keeps_native_multimodal_result(self):
         envelope = {
             "_multimodal": True,
@@ -281,6 +343,10 @@ class PluginTests(unittest.TestCase):
             "http://127.0.0.1:8789/capabilities/v1/async-delivery/status",
             503, "unavailable", {}, None,
         )
+        storage_error = __import__("urllib.error").error.HTTPError(
+            "http://127.0.0.1:8789/capabilities/v1/stickers/library/collect",
+            507, "full", {}, None,
+        )
         with mock.patch.object(plugin._opener, "open", side_effect=auth_error):
             with self.assertRaises(plugin.CapabilityError) as caught:
                 plugin._post("capabilities/v1/async-delivery/status", {})
@@ -288,6 +354,10 @@ class PluginTests(unittest.TestCase):
         with mock.patch.object(plugin._opener, "open", side_effect=unavailable_error):
             with self.assertRaises(plugin._client.RetryableCapabilityError):
                 plugin._post("capabilities/v1/async-delivery/status", {})
+        with mock.patch.object(plugin._opener, "open", side_effect=storage_error):
+            with self.assertRaises(plugin.CapabilityError) as caught:
+                plugin._post("capabilities/v1/stickers/library/collect", {})
+        self.assertNotIsInstance(caught.exception, plugin._client.RetryableCapabilityError)
 
     def test_conflict_includes_bounded_golem_error_detail(self):
         conflict = __import__("urllib.error").error.HTTPError(
@@ -308,6 +378,20 @@ class PluginTests(unittest.TestCase):
         self.assertIn(
             "message context does not match the active run", str(caught.exception)
         )
+
+    def test_collection_policy_error_is_not_reported_as_bad_token(self):
+        forbidden = __import__("urllib.error").error.HTTPError(
+            "http://127.0.0.1:8789/capabilities/v1/stickers/library/collect",
+            403,
+            "forbidden",
+            {"Content-Type": "application/json"},
+            io.BytesIO(json.dumps({"error": "only the owner may collect stickers"}).encode()),
+        )
+        with mock.patch.object(plugin._opener, "open", side_effect=forbidden):
+            with self.assertRaises(plugin.CapabilityError) as caught:
+                plugin._post("capabilities/v1/stickers/library/collect", {})
+        self.assertIn("only the owner", str(caught.exception))
+        self.assertNotIn("GOLEM_CAPABILITIES_TOKEN", str(caught.exception))
 
     def test_retryable_error_includes_bounded_golem_error_detail(self):
         unavailable = __import__("urllib.error").error.HTTPError(
@@ -383,6 +467,8 @@ class PluginTests(unittest.TestCase):
             set(registrations),
             {
                 "golem_sticker_search",
+                "golem_sticker_library_search",
+                "golem_sticker_collect_current_session",
                 "golem_sticker_attach",
                 "golem_sticker_inspect",
                 "golem_sticker_select",
@@ -420,6 +506,8 @@ class PluginTests(unittest.TestCase):
             set(registrations),
             {
                 "golem_sticker_search",
+                "golem_sticker_library_search",
+                "golem_sticker_collect_current_session",
                 "golem_sticker_attach",
                 "golem_sticker_select",
                 "golem_image_search_current_session",

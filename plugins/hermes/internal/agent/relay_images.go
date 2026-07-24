@@ -31,6 +31,13 @@ const (
 	maxImageMaterializeTime    = 14 * time.Second
 )
 
+var (
+	errImageCandidateUnavailable   = errors.New("image candidate is unavailable")
+	errImageBytesUnavailable       = errors.New("image bytes are unavailable")
+	errImageMaterializationMissing = errors.New("image materialization is unavailable")
+	errImageMaterializationBusy    = errors.New("image materialization is busy")
+)
+
 // InboundContextReader is intentionally narrower than the full Store.  The
 // Relay can therefore expose a read-only view to a capability without giving
 // the model access to persistence or run mutation operations.
@@ -200,73 +207,97 @@ func (g *RelayGateway) serveImageRead(w http.ResponseWriter, request *http.Reque
 		writeCapabilityError(w, http.StatusBadRequest, "candidate_id is invalid")
 		return
 	}
-	candidate, flight, owner, ok := run.beginImageRead(candidateID)
-	if !ok {
-		writeCapabilityError(w, http.StatusNotFound, "image candidate is unavailable")
+	_, data, mimeType, err := g.materializeRunImage(request.Context(), run, candidateID)
+	if err != nil {
+		if request.Context().Err() != nil {
+			return
+		}
+		writeImageMaterializeError(w, err)
 		return
 	}
+	writeImagePayload(w, request, run, data, mimeType)
+}
+
+func (g *RelayGateway) materializeRunImage(
+	ctx context.Context,
+	run *relayRun,
+	candidateID string,
+) (relayImageCandidate, []byte, string, error) {
+	candidate, flight, owner, ok := run.beginImageRead(candidateID)
+	if !ok {
+		return relayImageCandidate{}, nil, "", errImageCandidateUnavailable
+	}
 	if !candidate.Readable {
-		writeCapabilityError(w, http.StatusBadGateway, "image bytes are unavailable")
-		return
+		return candidate, nil, "", errImageBytesUnavailable
+	}
+	if len(candidate.MaterializedData) > 0 {
+		return candidate, candidate.MaterializedData, candidate.MaterializedMIME, nil
 	}
 	if g.config.ImageResolver == nil {
 		if owner {
-			run.finishImageRead(candidateID, flight, nil, "", errors.New("image materialization is unavailable"))
+			run.finishImageRead(candidateID, flight, nil, "", errImageMaterializationMissing)
 		}
-		writeCapabilityError(w, http.StatusServiceUnavailable, "image materialization is unavailable")
-		return
-	}
-	if len(candidate.MaterializedData) > 0 {
-		writeImagePayload(w, request, run, candidate.MaterializedData, candidate.MaterializedMIME)
-		return
+		return candidate, nil, "", errImageMaterializationMissing
 	}
 	if !owner {
 		select {
-		case <-request.Context().Done():
-			return
+		case <-ctx.Done():
+			return candidate, nil, "", ctx.Err()
 		case <-flight.done:
 		}
 		if flight.err != nil {
-			writeCapabilityError(w, http.StatusBadGateway, "image materialization failed")
-			return
+			return candidate, nil, "", flight.err
 		}
-		writeImagePayload(w, request, run, flight.data, flight.mimeType)
-		return
+		return candidate, append([]byte(nil), flight.data...), flight.mimeType, nil
 	}
 	select {
 	case g.imageResolveSlots <- struct{}{}:
 		defer func() { <-g.imageResolveSlots }()
-	case <-request.Context().Done():
-		run.finishImageRead(candidateID, flight, nil, "", request.Context().Err())
-		return
+	case <-ctx.Done():
+		run.finishImageRead(candidateID, flight, nil, "", ctx.Err())
+		return candidate, nil, "", ctx.Err()
 	default:
-		run.finishImageRead(candidateID, flight, nil, "", errors.New("image materialization is busy"))
-		w.Header().Set("Retry-After", "1")
-		writeCapabilityError(w, http.StatusTooManyRequests, "image materialization is busy; retry shortly")
-		return
+		run.finishImageRead(candidateID, flight, nil, "", errImageMaterializationBusy)
+		return candidate, nil, "", errImageMaterializationBusy
 	}
-	resolveCtx, cancel := context.WithTimeout(request.Context(), maxImageMaterializeTime)
+	resolveCtx, cancel := context.WithTimeout(ctx, maxImageMaterializeTime)
 	defer cancel()
-	resolved, err := g.config.ImageResolver.Resolve(resolveCtx, []domain.InboundMedia{cloneInboundMedia(candidate.Media)})
+	resolved, err := g.config.ImageResolver.Resolve(
+		resolveCtx, []domain.InboundMedia{cloneInboundMedia(candidate.Media)},
+	)
 	if err != nil {
 		run.finishImageRead(candidateID, flight, nil, "", err)
 		slog.Warn("[hermes] image materialization failed", "run_id", run.request.RunID, "err", err)
-		writeCapabilityError(w, http.StatusBadGateway, "image materialization failed")
-		return
+		return candidate, nil, "", err
 	}
 	if len(resolved) != 1 {
-		run.finishImageRead(candidateID, flight, nil, "", errors.New("image materialization returned an invalid result"))
-		writeCapabilityError(w, http.StatusBadGateway, "image materialization returned an invalid result")
-		return
+		err = errors.New("image materialization returned an invalid result")
+		run.finishImageRead(candidateID, flight, nil, "", err)
+		return candidate, nil, "", err
 	}
 	data, mimeType, err := validateImagePayload(resolved[0])
 	if err != nil {
 		run.finishImageRead(candidateID, flight, nil, "", err)
-		writeCapabilityError(w, http.StatusBadGateway, err.Error())
-		return
+		return candidate, nil, "", err
 	}
 	run.finishImageRead(candidateID, flight, data, mimeType, nil)
-	writeImagePayload(w, request, run, data, mimeType)
+	return candidate, data, mimeType, nil
+}
+
+func writeImageMaterializeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errImageCandidateUnavailable):
+		writeCapabilityError(w, http.StatusNotFound, "image candidate is unavailable")
+	case errors.Is(err, errImageBytesUnavailable):
+		writeCapabilityError(w, http.StatusBadGateway, "image bytes are unavailable")
+	case errors.Is(err, errImageMaterializationMissing):
+		writeCapabilityError(w, http.StatusServiceUnavailable, "image materialization is unavailable")
+	case errors.Is(err, errImageMaterializationBusy):
+		w.Header().Set("Retry-After", "1")
+		writeCapabilityError(w, http.StatusTooManyRequests, "image materialization is busy; retry shortly")
+	default:
+		writeCapabilityError(w, http.StatusBadGateway, "image materialization failed")
+	}
 }
 
 func writeImagePayload(

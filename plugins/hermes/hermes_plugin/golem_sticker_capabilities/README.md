@@ -6,8 +6,9 @@ Async results still enter Golem's Transactional Outbox and are sent by
 `message.send`.
 
 The plugin never accepts a chat id, wxId, receiver, URL, or local path from the
-model. Sticker and video tools accept only a search query or opaque candidate
-id. Video candidates come from configured Golem Provider APIs; Golem validates
+model. Sticker and video tools accept only a search query, an opaque candidate
+id, or a bounded user-supplied collection description. Video candidates come
+from configured Golem Provider APIs; Golem validates
 and downloads them inside the active run. The plugin injects Hermes' task-local
 Gateway context, and Golem validates it against the active run before accepting
 a selection.
@@ -111,12 +112,19 @@ using a sticker mechanically on every turn.
 
 The flow is:
 
-1. `golem_sticker_search(query, limit)` returns short-lived opaque candidates.
-2. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
+1. When the user asks to remember a recent sticker/image, first use
+   `golem_image_search_current_session`, then call
+   `golem_sticker_collect_current_session(candidate_id, description)`. Collection
+   persists verified bytes without invoking vision; Golem defaults writes to the owner.
+2. For conversational replies, call `golem_sticker_library_search(query, limit)`
+   first. Closely relevant local matches are randomized. If it returns no
+   candidates, fall back to `golem_sticker_search(query, limit)`.
+3. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
    candidate bytes to Hermes `auxiliary.vision` and returns a short textual
    analysis. When disabled, Hermes selects from the search descriptions alone.
-3. `golem_sticker_select(candidate_id)` stages the exact cached candidate bytes.
-4. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
+4. `golem_sticker_select(candidate_id)` stages either a local or external
+   candidate using the same Run-bound effect path.
+5. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
    the selection result. For text plus sticker, it returns ordinary final text.
 
 Provider API keys, provider response parsing, downloads, media validation, and
@@ -260,5 +268,9 @@ recreate those jobs from the intended WeChat conversation after deployment.
   never include the configured token.
 - Candidate bytes are disclosed only to the visual Provider explicitly
   configured in Hermes. The Agent never receives the data URL or source URL.
+- Collected sticker files are content-addressed outside SQLite; search exposes
+  only Run-bound opaque candidates and descriptions, never local paths.
+- Collection authorization is checked before image materialization. The default
+  `owner` policy prevents other group members from poisoning the shared library.
 - Image text is treated as untrusted content by a fixed inspection prompt; the
   model cannot supply or override that prompt.

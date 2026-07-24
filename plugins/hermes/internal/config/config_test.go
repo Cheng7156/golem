@@ -301,6 +301,34 @@ func TestNormalizeRejectsStickerCapabilityOutsideRelayMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeStickerLibraryDefaultsAndPolicy(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Agent.Mode = "relay"
+	value.Capabilities.Sticker.Enabled = true
+	value.Capabilities.Sticker.LibraryStorageMaxBytes = 0
+	value.Capabilities.Sticker.CollectionPolicy = ""
+	value.Capabilities.Sticker.Providers = []config.StickerProviderConfig{{
+		ID: "provider", Driver: "http_json", Endpoint: "https://example.com/search",
+		Method: "GET", AllowedMediaHosts: []string{"media.example.com"},
+		Response: config.StickerResponseConfig{
+			ItemsPath: "items", URL: config.StickerFieldMapping{Path: "url"},
+		},
+	}}
+	normalized, err := config.Normalize(value)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if normalized.Capabilities.Sticker.LibraryStorageMaxBytes != 512<<20 ||
+		normalized.Capabilities.Sticker.CollectionPolicy != "owner" {
+		t.Fatalf("library defaults=%#v", normalized.Capabilities.Sticker)
+	}
+	value.Capabilities.Sticker.CollectionPolicy = "admins"
+	if _, err := config.Normalize(value); err == nil {
+		t.Fatal("Normalize accepted invalid sticker collection policy")
+	}
+}
+
 func TestNormalizeRejectsProjectionLimitsAboveRelayContract(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

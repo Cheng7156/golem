@@ -96,6 +96,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, schemaV10); err != nil {
 			return fmt.Errorf("execute Hermes Outbox Delivery State Schema: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, schemaV11); err != nil {
+			return fmt.Errorf("execute Hermes Sticker Library Schema: %w", err)
+		}
 		if err := ensureTableColumn(
 			ctx, tx, "async_video_jobs", "stage", "TEXT NOT NULL DEFAULT 'queued'",
 		); err != nil {
@@ -207,8 +210,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(10,?)`,
+			unixMillis(time.Now()),
+		); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)`,
 			unixMillis(time.Now()),
 		)
 		return err

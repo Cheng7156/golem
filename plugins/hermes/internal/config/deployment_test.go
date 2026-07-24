@@ -27,6 +27,8 @@ max_candidates = 5
 candidate_ttl_seconds = 300
 max_media_bytes = 4194304
 materialized_cache_max_bytes = 67108864
+library_storage_max_bytes = 536870912
+collection_policy = "owner"
 
 [[capabilities.sticker.providers]]
 id = "apihz"
@@ -75,6 +77,10 @@ func assertAPiHzDeployment(t *testing.T, value config.Config) {
 	}
 	if value.Capabilities.Sticker.MaterializedCacheMaxBytes != 64<<20 {
 		t.Fatalf("materialized cache bytes=%d", value.Capabilities.Sticker.MaterializedCacheMaxBytes)
+	}
+	if value.Capabilities.Sticker.LibraryStorageMaxBytes != 512<<20 ||
+		value.Capabilities.Sticker.CollectionPolicy != "owner" {
+		t.Fatalf("sticker library config=%#v", value.Capabilities.Sticker)
 	}
 	if value.Capabilities.EnvironmentFile != filepath.Clean("data/hermes/capabilities.env") {
 		t.Fatalf("environment file=%q", value.Capabilities.EnvironmentFile)

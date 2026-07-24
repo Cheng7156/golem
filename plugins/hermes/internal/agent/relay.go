@@ -49,6 +49,7 @@ type RelayConfig struct {
 	SilenceRulesFile  string
 	CapabilityToken   string
 	Stickers          StickerCapability
+	StickerLibrary    StickerLibraryCapability
 	Videos            VideoCapability
 	VideoLinkFallback bool
 	AsyncDelivery     AsyncDeliveryCapability
@@ -94,13 +95,16 @@ func (c RelayConfig) normalize() (RelayConfig, error) {
 	if (c.GatewayID == "") != (c.SharedSecret == "") {
 		return RelayConfig{}, errors.New("relay gateway_id and shared_secret must be configured together")
 	}
+	if c.StickerLibrary != nil && c.Stickers == nil {
+		return RelayConfig{}, errors.New("sticker library requires the sticker selection capability")
+	}
 	if c.SharedSecret == "" && !isLoopbackListener(c.ListenAddress) {
 		return RelayConfig{}, errors.New("unauthenticated relay must listen on a loopback address")
 	}
-	if (c.Stickers != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && len(c.CapabilityToken) < 16 {
+	if (c.Stickers != nil || c.StickerLibrary != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && len(c.CapabilityToken) < 16 {
 		return RelayConfig{}, errors.New("Hermes capabilities require a shared token of at least 16 characters")
 	}
-	if (c.Stickers != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && capabilityPath(c.Path) {
+	if (c.Stickers != nil || c.StickerLibrary != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && capabilityPath(c.Path) {
 		return RelayConfig{}, errors.New("relay path conflicts with a capability endpoint")
 	}
 	if c.MaxFrameBytes <= 0 {
@@ -217,6 +221,12 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 		mux.HandleFunc(stickerSearchPath, g.serveStickerSearch)
 		mux.HandleFunc(stickerMaterializePath, g.serveStickerMaterialize)
 		mux.HandleFunc(stickerSelectPath, g.serveStickerSelect)
+	}
+	if g.config.StickerLibrary != nil && g.config.Stickers != nil {
+		mux.HandleFunc(stickerLibrarySearchPath, g.serveStickerLibrarySearch)
+		if g.config.ImageContext != nil && g.config.ImageResolver != nil {
+			mux.HandleFunc(stickerLibraryCollectPath, g.serveStickerLibraryCollect)
+		}
 	}
 	if g.config.ImageContext != nil && g.config.ImageResolver != nil {
 		mux.HandleFunc(imageSearchPath, g.serveImageSearch)

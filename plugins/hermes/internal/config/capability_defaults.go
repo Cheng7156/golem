@@ -6,6 +6,7 @@ func defaultCapabilities() CapabilityConfig {
 		Sticker: StickerCapabilityConfig{
 			MaxCandidates: 5, CandidateTTLSeconds: 300,
 			MaxMediaBytes: 2 << 20, MaterializedCacheMaxBytes: 64 << 20,
+			LibraryStorageMaxBytes: 512 << 20, CollectionPolicy: "owner",
 		},
 		Video: defaultVideoCapability(),
 	}

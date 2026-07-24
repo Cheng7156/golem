@@ -14,6 +14,7 @@ var (
 	ErrConflict = errors.New("hermes store: state conflict")
 	ErrClosed   = errors.New("hermes store: closed")
 	ErrInvalid  = errors.New("hermes store: invalid input")
+	ErrCapacity = errors.New("hermes store: capacity exceeded")
 )
 
 type Store interface {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"golem_plugin_hermes/internal/agent"
 	"golem_plugin_hermes/internal/config"
@@ -10,10 +11,11 @@ import (
 )
 
 type relayCapabilityBundle struct {
-	stickers     agent.StickerCapability
-	videos       agent.VideoCapability
-	mediaObjects mediaobject.Reader
-	token        string
+	stickers       agent.StickerCapability
+	stickerLibrary agent.StickerLibraryCapability
+	videos         agent.VideoCapability
+	mediaObjects   mediaobject.Reader
+	token          string
 }
 
 func buildRelayCapabilityBundle(
@@ -23,11 +25,18 @@ func buildRelayCapabilityBundle(
 	stickers, token, err := buildRelayCapabilities(
 		cfg.Capabilities,
 		cfg.Agent.AsyncDeliveryEnabled,
+		stickerLibraryDependencies{
+			repository: store,
+			directory:  filepath.Join(cfg.DataDir, "sticker-library"),
+		},
 	)
 	if err != nil {
 		return relayCapabilityBundle{}, err
 	}
 	bundle := relayCapabilityBundle{stickers: stickers, token: token}
+	if bridge, ok := stickers.(*stickerCapabilityBridge); ok && bridge.library != nil {
+		bundle.stickerLibrary = bridge
+	}
 	if !cfg.Capabilities.Video.Enabled {
 		return bundle, nil
 	}
@@ -54,6 +63,7 @@ func buildStickerCapability(
 func buildRelayCapabilities(
 	value config.CapabilityConfig,
 	asyncDeliveryEnabled bool,
+	libraryDependencies ...stickerLibraryDependencies,
 ) (agent.StickerCapability, string, error) {
 	if !value.Sticker.Enabled && !value.Video.Enabled && !asyncDeliveryEnabled {
 		return nil, "", nil
@@ -70,7 +80,7 @@ func buildRelayCapabilities(
 	if !value.Sticker.Enabled {
 		return nil, token, nil
 	}
-	stickers, err := newStickerCapability(value.Sticker, lookup)
+	stickers, err := newStickerCapability(value.Sticker, lookup, libraryDependencies...)
 	if err != nil {
 		return nil, "", fmt.Errorf("create Hermes sticker capability: %w", err)
 	}

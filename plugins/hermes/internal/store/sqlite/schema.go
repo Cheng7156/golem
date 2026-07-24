@@ -319,3 +319,40 @@ BEGIN
   DELETE FROM outbox_media_refs WHERE outbox_id = NEW.id;
 END;
 `
+
+const schemaV11 = `
+CREATE TABLE IF NOT EXISTS sticker_assets (
+  id TEXT PRIMARY KEY,
+  mime_type TEXT NOT NULL,
+  path TEXT NOT NULL UNIQUE,
+  size INTEGER NOT NULL CHECK(size > 0),
+  sha256 TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sticker_labels (
+  sticker_id TEXT NOT NULL REFERENCES sticker_assets(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  description_norm TEXT NOT NULL,
+  source_session_id TEXT NOT NULL DEFAULT '',
+  source_event_id TEXT NOT NULL DEFAULT '',
+  source_message_id TEXT NOT NULL DEFAULT '',
+  source_speaker_id TEXT NOT NULL DEFAULT '',
+  source_speaker_name TEXT NOT NULL DEFAULT '',
+  collected_by_id TEXT NOT NULL DEFAULT '',
+  collected_by_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(sticker_id,description_norm)
+);
+CREATE INDEX IF NOT EXISTS idx_sticker_labels_created
+  ON sticker_labels(sticker_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sticker_terms (
+  sticker_id TEXT NOT NULL REFERENCES sticker_assets(id) ON DELETE CASCADE,
+  term TEXT NOT NULL,
+  weight INTEGER NOT NULL CHECK(weight > 0),
+  PRIMARY KEY(sticker_id,term)
+);
+CREATE INDEX IF NOT EXISTS idx_sticker_terms_lookup
+  ON sticker_terms(term,sticker_id,weight);
+`

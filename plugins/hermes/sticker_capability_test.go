@@ -50,6 +50,7 @@ func TestStickerCapabilityBridgeBoundsAgentInputAndPreservesScope(t *testing.T) 
 	service := &recordingStickerService{}
 	bridge := &stickerCapabilityBridge{
 		service: service, expires: 5 * time.Minute, maxCandidates: 5, maxQueryRunes: 3,
+		library: &sticker.LocalLibrary{},
 	}
 	scope := agent.StickerScope{RunID: "run-1", ChatID: "chat-1"}
 	result, err := bridge.Search(context.Background(), scope, "开心大笑", 99)
@@ -64,6 +65,12 @@ func TestStickerCapabilityBridgeBoundsAgentInputAndPreservesScope(t *testing.T) 
 	}
 	if len(result.Candidates) != 1 || result.Candidates[0].ID != "opaque-1" || result.ExpiresInSeconds != 300 {
 		t.Fatalf("search result=%#v", result)
+	}
+	if _, err := bridge.SearchLibrary(context.Background(), scope, "开心大笑", 2); err != nil {
+		t.Fatalf("SearchLibrary: %v", err)
+	}
+	if service.search.Query != "开心大笑" || service.search.ProviderID != sticker.LocalLibraryProviderID || service.search.Limit != 2 {
+		t.Fatalf("library search request=%#v", service.search)
 	}
 
 	if _, err := bridge.Select(context.Background(), scope, "opaque-1"); err != nil {

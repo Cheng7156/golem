@@ -44,7 +44,9 @@ SUPPORTED_VERSION = "0.18.2"
 _PATCH_MARKER = "_golem_async_delivery_v1"
 _BLOCKED_ASYNC_TOOLS = {
     "delegate_task",
+    "golem_sticker_collect_current_session",
     "golem_sticker_inspect",
+    "golem_sticker_library_search",
     "golem_sticker_select",
     "golem_video_fetch",
 }

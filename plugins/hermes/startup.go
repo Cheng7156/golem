@@ -148,6 +148,7 @@ func buildRelayGateway(
 		SilenceRulesFile:     cfg.Agent.SilenceRulesFile,
 		CapabilityToken:      capabilities.token,
 		Stickers:             capabilities.stickers,
+		StickerLibrary:       capabilities.stickerLibrary,
 		Videos:               capabilities.videos,
 		VideoLinkFallback:    cfg.Capabilities.Video.LinkFallbackEnabled,
 		AsyncDelivery:        asyncDeliveryCapability(cfg, store),

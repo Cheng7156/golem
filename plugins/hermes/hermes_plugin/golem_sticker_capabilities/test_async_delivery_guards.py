@@ -10,7 +10,12 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
     def test_async_turn_blocks_nested_and_sticker_tools(self):
         token = shared.state.current_delivery.set(shared.binding())
         try:
-            for tool_name in ("delegate_task", "golem_sticker_select"):
+            for tool_name in (
+                "delegate_task",
+                "golem_sticker_collect_current_session",
+                "golem_sticker_library_search",
+                "golem_sticker_select",
+            ):
                 directive = shared.runtime.pre_tool_call(tool_name=tool_name)
                 self.assertEqual(directive["action"], "block")
             self.assertIsNone(
@@ -27,6 +32,8 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
         with mock.patch.object(shared.runtime, "_session_trigger_kind", return_value="ambient"):
             for tool_name in (
                 "delegate_task",
+                "golem_sticker_collect_current_session",
+                "golem_sticker_library_search",
                 "golem_sticker_search",
                 "golem_sticker_inspect",
                 "golem_sticker_attach",
@@ -45,6 +52,8 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
         with mock.patch.object(shared.runtime, "_session_trigger_kind", return_value="explicit"):
             for tool_name in (
                 "delegate_task",
+                "golem_sticker_collect_current_session",
+                "golem_sticker_library_search",
                 "golem_sticker_select",
                 "golem_video_fetch",
             ):

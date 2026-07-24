@@ -18,6 +18,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8789"
 SEARCH_PATH = "capabilities/v1/stickers/search"
 MATERIALIZE_PATH = "capabilities/v1/stickers/materialize"
 SELECT_PATH = "capabilities/v1/stickers/select"
+STICKER_LIBRARY_SEARCH_PATH = "capabilities/v1/stickers/library/search"
+STICKER_LIBRARY_COLLECT_PATH = "capabilities/v1/stickers/library/collect"
 IMAGE_SEARCH_PATH = "capabilities/v1/images/search"
 IMAGE_READ_PATH = "capabilities/v1/images/read"
 VIDEO_SEARCH_PATH = "capabilities/v1/videos/search"
@@ -219,14 +221,23 @@ def _read_http_error_detail(error: urllib.error.HTTPError) -> str:
 
 
 def _raise_http_error(error: urllib.error.HTTPError, detail: str = "") -> NoReturn:
+    if error.code == 507:
+        raise CapabilityError(
+            "Golem sticker library storage is full; increase its configured budget"
+        ) from None
     if error.code in {408, 425, 429} or 500 <= error.code < 600:
         suffix = f": {detail}" if detail else ""
         raise RetryableCapabilityError(
             f"Golem capability API is temporarily unavailable (HTTP {error.code}){suffix}"
         ) from None
-    if error.code in {401, 403}:
+    if error.code == 401:
         raise CapabilityError(
             "Golem capability authentication failed; check GOLEM_CAPABILITIES_TOKEN"
+        ) from None
+    if error.code == 403:
+        suffix = f": {detail}" if detail else ""
+        raise CapabilityError(
+            f"Golem capability request is forbidden{suffix}"
         ) from None
     if 300 <= error.code < 400:
         raise CapabilityError("Golem capability API redirects are not allowed") from None
@@ -284,6 +295,34 @@ def search_current_images(
     if message_id:
         payload["message_id"] = message_id
     return post_json_limited(IMAGE_SEARCH_PATH, payload, MAX_RESPONSE_BYTES)
+
+
+def search_sticker_library(
+    query: str,
+    limit: int,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        STICKER_LIBRARY_SEARCH_PATH,
+        {"query": query, "limit": limit, "context": context},
+        MAX_RESPONSE_BYTES,
+    )
+
+
+def collect_current_sticker(
+    candidate_id: str,
+    description: str,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        STICKER_LIBRARY_COLLECT_PATH,
+        {
+            "candidate_id": candidate_id,
+            "description": description,
+            "context": context,
+        },
+        MAX_RESPONSE_BYTES,
+    )
 
 
 def read_current_image(

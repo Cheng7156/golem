@@ -35,6 +35,8 @@ type StickerCapabilityConfig struct {
 	CandidateTTLSeconds       int                     `toml:"candidate_ttl_seconds" comment:"候选 ID 有效期秒数"`
 	MaxMediaBytes             int                     `toml:"max_media_bytes" comment:"落库前允许的最大媒体字节数"`
 	MaterializedCacheMaxBytes int64                   `toml:"materialized_cache_max_bytes" comment:"已物化候选的内存缓存字节预算"`
+	LibraryStorageMaxBytes    int64                   `toml:"library_storage_max_bytes" comment:"本地收藏表情的独立磁盘预算"`
+	CollectionPolicy          string                  `toml:"collection_policy" comment:"收藏权限：owner 或 any"`
 	Providers                 []StickerProviderConfig `toml:"providers" comment:"可替换表情来源列表"`
 }
 

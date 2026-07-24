@@ -329,6 +329,22 @@ func normalizeCapabilities(value *CapabilityConfig, defaults CapabilityConfig) e
 	if sticker.MaterializedCacheMaxBytes < int64(sticker.MaxMediaBytes) {
 		return errors.New("capabilities.sticker.materialized_cache_max_bytes 不能小于 max_media_bytes")
 	}
+	if sticker.LibraryStorageMaxBytes <= 0 {
+		sticker.LibraryStorageMaxBytes = defaults.Sticker.LibraryStorageMaxBytes
+	}
+	if sticker.LibraryStorageMaxBytes < int64(sticker.MaxMediaBytes) {
+		return errors.New("capabilities.sticker.library_storage_max_bytes 不能小于 max_media_bytes")
+	}
+	if sticker.LibraryStorageMaxBytes > 16<<30 {
+		return errors.New("capabilities.sticker.library_storage_max_bytes 不能大于 16 GiB")
+	}
+	sticker.CollectionPolicy = strings.ToLower(strings.TrimSpace(sticker.CollectionPolicy))
+	if sticker.CollectionPolicy == "" {
+		sticker.CollectionPolicy = defaults.Sticker.CollectionPolicy
+	}
+	if sticker.CollectionPolicy != "owner" && sticker.CollectionPolicy != "any" {
+		return errors.New("capabilities.sticker.collection_policy 只支持 owner 或 any")
+	}
 	if err := normalizeStickerProviders(sticker); err != nil {
 		return err
 	}

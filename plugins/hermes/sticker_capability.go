@@ -12,16 +12,23 @@ import (
 	"golem_plugin_hermes/internal/domain"
 )
 
+type stickerLibraryDependencies struct {
+	repository sticker.LibraryRepository
+	directory  string
+}
+
 type stickerCapabilityBridge struct {
 	service       sticker.SearchService
 	expires       time.Duration
 	maxCandidates int
 	maxQueryRunes int
+	library       *sticker.LocalLibrary
 }
 
 func newStickerCapability(
 	value config.StickerCapabilityConfig,
 	providerEnvironment func(string) (string, bool),
+	libraryDependencies ...stickerLibraryDependencies,
 ) (agent.StickerCapability, error) {
 	providers := make([]sticker.Provider, 0, len(value.Providers))
 	maxQueryRunes := 0
@@ -60,6 +67,21 @@ func newStickerCapability(
 			maxQueryRunes = providerConfig.MaxQueryRunes
 		}
 	}
+	var library *sticker.LocalLibrary
+	if len(libraryDependencies) > 0 && libraryDependencies[0].repository != nil {
+		dependencies := libraryDependencies[0]
+		var err error
+		library, err = sticker.NewLocalLibrary(sticker.LibraryConfig{
+			Directory:        dependencies.directory,
+			MaxStorageBytes:  value.LibraryStorageMaxBytes,
+			MaxMediaBytes:    int64(value.MaxMediaBytes),
+			CollectionPolicy: value.CollectionPolicy,
+		}, dependencies.repository)
+		if err != nil {
+			return nil, fmt.Errorf("local library: %w", err)
+		}
+		providers = append(providers, library)
+	}
 	service, err := sticker.NewSearchService(sticker.ServiceConfig{
 		DefaultProvider:           value.DefaultProvider,
 		CandidateTTL:              time.Duration(value.CandidateTTLSeconds) * time.Second,
@@ -75,6 +97,7 @@ func newStickerCapability(
 		expires:       time.Duration(value.CandidateTTLSeconds) * time.Second,
 		maxCandidates: value.MaxCandidates,
 		maxQueryRunes: maxQueryRunes,
+		library:       library,
 	}, nil
 }
 
@@ -84,7 +107,29 @@ func (b *stickerCapabilityBridge) Search(
 	query string,
 	limit int,
 ) (agent.StickerSearchResult, error) {
-	if b.maxQueryRunes > 0 {
+	return b.search(ctx, scope, query, limit, "")
+}
+
+func (b *stickerCapabilityBridge) SearchLibrary(
+	ctx context.Context,
+	scope agent.StickerScope,
+	query string,
+	limit int,
+) (agent.StickerSearchResult, error) {
+	if b.library == nil {
+		return agent.StickerSearchResult{}, errors.New("sticker library is unavailable")
+	}
+	return b.search(ctx, scope, query, limit, sticker.LocalLibraryProviderID)
+}
+
+func (b *stickerCapabilityBridge) search(
+	ctx context.Context,
+	scope agent.StickerScope,
+	query string,
+	limit int,
+	providerID string,
+) (agent.StickerSearchResult, error) {
+	if providerID == "" && b.maxQueryRunes > 0 {
 		runes := []rune(query)
 		if len(runes) > b.maxQueryRunes {
 			query = string(runes[:b.maxQueryRunes])
@@ -94,10 +139,8 @@ func (b *stickerCapabilityBridge) Search(
 		limit = b.maxCandidates
 	}
 	values, err := b.service.Search(ctx, sticker.SearchRequest{
-		Scope: sticker.Scope{RunID: scope.RunID, ChatID: scope.ChatID},
-		Query: query,
-		Limit: limit,
-		Page:  1,
+		Scope:      sticker.Scope{RunID: scope.RunID, ChatID: scope.ChatID},
+		ProviderID: providerID, Query: query, Limit: limit, Page: 1,
 	})
 	if err != nil {
 		return agent.StickerSearchResult{}, err
@@ -113,6 +156,52 @@ func (b *stickerCapabilityBridge) Search(
 		})
 	}
 	return result, nil
+}
+
+func (b *stickerCapabilityBridge) Collect(
+	ctx context.Context,
+	_ agent.StickerScope,
+	request agent.StickerLibraryCollection,
+) (agent.StickerLibraryCollectionResult, error) {
+	if b.library == nil {
+		return agent.StickerLibraryCollectionResult{}, errors.New("sticker library is unavailable")
+	}
+	result, err := b.library.Collect(ctx, sticker.LibraryCollectRequest{
+		Description: request.Description, Data: request.Data, MIMEType: request.MIMEType,
+		SourceSessionID: request.SourceSessionID, SourceEventID: request.SourceEventID,
+		SourceMessageID: request.SourceMessageID, SourceSpeakerID: request.SourceSpeakerID,
+		SourceSpeakerName: request.SourceSpeakerName, Collector: request.Collector,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, sticker.ErrCollectionForbidden):
+			return agent.StickerLibraryCollectionResult{}, fmt.Errorf("%w: %v", agent.ErrStickerCollectionForbidden, err)
+		case errors.Is(err, sticker.ErrLibraryStorageFull):
+			return agent.StickerLibraryCollectionResult{}, fmt.Errorf("%w: %v", agent.ErrStickerLibraryStorageFull, err)
+		default:
+			return agent.StickerLibraryCollectionResult{}, err
+		}
+	}
+	return agent.StickerLibraryCollectionResult{
+		Description:  result.Description,
+		AssetCreated: result.AssetCreated, LabelCreated: result.LabelCreated,
+	}, nil
+}
+
+func (b *stickerCapabilityBridge) AuthorizeCollection(
+	_ context.Context,
+	scope agent.StickerScope,
+) error {
+	if b.library == nil {
+		return errors.New("sticker library is unavailable")
+	}
+	if err := b.library.AuthorizeCollection(scope.Principal); err != nil {
+		if errors.Is(err, sticker.ErrCollectionForbidden) {
+			return fmt.Errorf("%w: %v", agent.ErrStickerCollectionForbidden, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *stickerCapabilityBridge) Select(

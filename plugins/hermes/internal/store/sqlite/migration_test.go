@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenMigratesSchemaV1ToV10(t *testing.T) {
+func TestOpenMigratesSchemaV1ToV11(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hermes.db")
 	db, err := sql.Open("sqlite", path)
@@ -37,8 +37,8 @@ func TestOpenMigratesSchemaV1ToV10(t *testing.T) {
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema version=%d, want 10", version)
+	if version != 11 {
+		t.Fatalf("schema version=%d, want 11", version)
 	}
 	var table string
 	if err := store.db.QueryRowContext(ctx,
@@ -80,6 +80,19 @@ func TestOpenMigratesSchemaV1ToV10(t *testing.T) {
 		`SELECT name FROM sqlite_master WHERE type='table' AND name='async_video_urls'`,
 	).Scan(&table); err != nil {
 		t.Fatalf("async video URLs table missing: %v", err)
+	}
+	for _, name := range []string{"sticker_assets", "sticker_labels", "sticker_terms"} {
+		if err := store.db.QueryRowContext(ctx,
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name,
+		).Scan(&table); err != nil {
+			t.Fatalf("%s table missing: %v", name, err)
+		}
+	}
+	var index string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sticker_terms_lookup'`,
+	).Scan(&index); err != nil {
+		t.Fatalf("sticker term lookup index missing: %v", err)
 	}
 	var admissionColumn string
 	if err := store.db.QueryRowContext(ctx,
