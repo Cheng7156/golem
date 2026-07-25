@@ -19,7 +19,7 @@ func newRelayTextProposalWithDelivery(
 	content string,
 	delivery domain.DeliveryTarget,
 ) (string, *OutputProposal, error) {
-	visibleContent := markdownToWeChatText(content)
+	visibleContent := markdownToWeChatText(stripRelayInternalTokens(content))
 	if visibleContent == "" {
 		return "", nil, errors.New("reply is empty after Markdown normalization")
 	}
@@ -88,6 +88,35 @@ var (
 	markdownItalicAsterisk   = regexp.MustCompile(`\*([^*\s](?:[^*\n]*[^*\s])?)\*`)
 	markdownEscapePattern    = regexp.MustCompile(`\\([\\` + "`" + `*_[\]{}()#+.!|>~-])`)
 )
+
+var (
+	relayInternalTokenPattern = regexp.MustCompile(
+		"(?i)[`*_~\"'“”‘’]*\\[\\[\\s*GOLEM[\\s_-]+HERMES[\\s_-]+" +
+			"[A-Z0-9]+([\\s_-]+[A-Z0-9]+)*\\s*\\]\\][`*_~\"'“”‘’]*",
+	)
+	relayExcessBlankLinesPattern = regexp.MustCompile(`\n{3,}`)
+)
+
+const relayInternalTokenOnlyTrimChars = " \t\r\n`*_~\"'“”‘’[]【】()（）<>.,;:!?。；：！？"
+
+func stripRelayInternalTokens(content string) string {
+	if !relayInternalTokenPattern.MatchString(content) {
+		return content
+	}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+	visible := make([]string, 0, len(lines))
+	for _, line := range lines {
+		lineHadToken := relayInternalTokenPattern.MatchString(line)
+		cleaned := relayInternalTokenPattern.ReplaceAllString(line, "")
+		if lineHadToken && strings.Trim(cleaned, relayInternalTokenOnlyTrimChars) == "" {
+			continue
+		}
+		visible = append(visible, strings.TrimRight(cleaned, " \t"))
+	}
+	cleaned := strings.TrimSpace(strings.Join(visible, "\n"))
+	return relayExcessBlankLinesPattern.ReplaceAllString(cleaned, "\n\n")
+}
 
 func markdownToWeChatText(content string) string {
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")

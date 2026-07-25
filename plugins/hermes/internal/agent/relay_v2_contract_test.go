@@ -275,6 +275,44 @@ func TestV2VisibleAndObserveResultHashInterop(t *testing.T) {
 	}
 }
 
+func TestV2VisibleResultStripsInternalCompletionToken(t *testing.T) {
+	request := RunRequest{RunID: "run-visible-sanitized", SessionID: "chatroom:room", Lane: domain.LaneInteractive,
+		Input: "ambient", ChatType: "group", ConversationID: "wechat:group:room",
+		CurrentObservationID: "obs-1", CurrentPayloadHash: "payload", RequiredContextSeq: 1,
+		InvocationID: "invoke-visible-sanitized"}
+	_, results, connection, stream := startV2Relay(t, request)
+	unknownToken := "[[GOLEM_HERMES_FUTURE_V2]]"
+	content := "hello\n\n`" + relayObserveToken + "`。\n" + unknownToken
+	proposalID := "proposal-visible-sanitized"
+	hash := resultHash(t, request.InvocationID, proposalID, "visible_reply", content, []OutputProposal{})
+	writeRelayFrame(t, connection, map[string]any{"type": "outbound", "requestId": "request-sanitized",
+		"action": map[string]any{"op": "commit_run_result_v1", "invocation_id": request.InvocationID,
+			"proposal_id": proposalID, "result_kind": "visible_reply", "content": content,
+			"effects": []any{}, "result_hash": hash}})
+
+	reply, err := stream.Recv(context.Background())
+	if err != nil || reply.Kind != EventReplyProposed || reply.Text != "hello" || reply.Proposal == nil ||
+		strings.Contains(string(reply.Proposal.Payload), relayObserveToken) ||
+		strings.Contains(string(reply.Proposal.Payload), unknownToken) {
+		t.Fatalf("reply=%#v err=%v", reply, err)
+	}
+	completed, err := stream.Recv(context.Background())
+	if err != nil || completed.Kind != EventRunCompleted || completed.ResultHash != hash {
+		t.Fatalf("completed=%#v err=%v", completed, err)
+	}
+	results.put(domain.RelayRunResult{ProposalID: proposalID, InvocationID: request.InvocationID,
+		RunID: request.RunID, ResultKind: "visible_reply", ResultHash: hash, OutboxIDs: []string{"outbox-1"}})
+	if err := stream.Send(context.Background(), Command{Kind: CommandProposalResult, RunID: request.RunID,
+		ProposalID: proposalID}); err != nil {
+		t.Fatal(err)
+	}
+	result := readRelayFrame(t, connection)
+	body := result["result"].(map[string]any)
+	if body["success"] != true || body["result_hash"] != hash {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestV2InvalidRequiredObserveFailsRunAndReleasesChatSlot(t *testing.T) {
 	request := RunRequest{RunID: "run-required", SessionID: "chatroom:room", Lane: domain.LaneInteractive,
 		Input: "@ccff hello", ChatType: "group", ConversationID: "wechat:group:room",
