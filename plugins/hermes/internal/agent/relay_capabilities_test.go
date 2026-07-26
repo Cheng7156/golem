@@ -21,6 +21,7 @@ type fakeStickerCapability struct {
 	materializeScope StickerScope
 	query            string
 	selectedID       string
+	selectedIDs      []string
 }
 
 func (f *fakeStickerCapability) Search(_ context.Context, scope StickerScope, query string, limit int) (StickerSearchResult, error) {
@@ -39,6 +40,7 @@ func (f *fakeStickerCapability) Select(_ context.Context, scope StickerScope, ca
 	defer f.mu.Unlock()
 	f.selectScope = scope
 	f.selectedID = candidateID
+	f.selectedIDs = append(f.selectedIDs, candidateID)
 	return fakeStickerOutput(candidateID)
 }
 
@@ -50,11 +52,12 @@ func (f *fakeStickerCapability) Materialize(_ context.Context, scope StickerScop
 }
 
 func fakeStickerOutput(candidateID string) (domain.EmojiOutput, error) {
-	if candidateID != "candidate-1" {
+	if candidateID != "candidate-1" && candidateID != "candidate-2" &&
+		candidateID != "candidate-3" && candidateID != "candidate-4" {
 		return domain.EmojiOutput{}, fmt.Errorf("%w: %s", ErrStickerCandidateUnavailable, candidateID)
 	}
 	return domain.EmojiOutput{
-		Data: []byte("sticker-bytes"), MIMEType: "image/png", Description: "开心",
+		Data: []byte("sticker-bytes"), MIMEType: "image/png", Description: candidateID,
 	}, nil
 }
 
@@ -150,6 +153,7 @@ func TestAmbientRunRejectsStickerCapabilitiesBeforeProvider(t *testing.T) {
 	mux.HandleFunc(stickerSearchPath, gateway.serveStickerSearch)
 	mux.HandleFunc(stickerMaterializePath, gateway.serveStickerMaterialize)
 	mux.HandleFunc(stickerSelectPath, gateway.serveStickerSelect)
+	mux.HandleFunc(stickerSelectManyPath, gateway.serveStickerSelectMany)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
@@ -167,6 +171,9 @@ func TestAmbientRunRejectsStickerCapabilitiesBeforeProvider(t *testing.T) {
 		{name: "select", path: stickerSelectPath, body: stickerSelectRequest{
 			CandidateID: "candidate-1", Context: capabilityContext(request),
 		}},
+		{name: "select many", path: stickerSelectManyPath, body: stickerSelectManyRequest{
+			CandidateIDs: []string{"candidate-1", "candidate-2"}, Context: capabilityContext(request),
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			status, response := postCapability(t, server.URL+test.path, test.body)
@@ -177,14 +184,14 @@ func TestAmbientRunRejectsStickerCapabilitiesBeforeProvider(t *testing.T) {
 	}
 	capability.mu.Lock()
 	defer capability.mu.Unlock()
-	if capability.query != "" || capability.selectedID != "" ||
+	if capability.query != "" || capability.selectedID != "" || len(capability.selectedIDs) != 0 ||
 		capability.materializeScope.RunID != "" {
 		t.Fatalf("ambient request reached sticker provider: %#v", capability)
 	}
 }
 
 func TestStickerCapabilityRejectsRelayPathCollision(t *testing.T) {
-	for _, path := range []string{stickerSearchPath, stickerMaterializePath, stickerSelectPath} {
+	for _, path := range []string{stickerSearchPath, stickerMaterializePath, stickerSelectPath, stickerSelectManyPath} {
 		if _, err := NewRelayGateway(RelayConfig{
 			Path: path, CapabilityToken: testCapabilityToken, Stickers: &fakeStickerCapability{},
 		}); err == nil {
@@ -285,6 +292,65 @@ func TestStickerCapabilityAllowsMultipleSelections(t *testing.T) {
 		}
 		if kind == EventEffectProposed && (event.Proposal == nil || event.Proposal.Kind != "emoji") {
 			t.Fatalf("event %d effect missing: %#v", index, event)
+		}
+	}
+}
+
+func TestStickerCapabilitySelectManyStagesFourEffectsInOneRequest(t *testing.T) {
+	fixture := newStickerRelayFixture(t, "[direct]\nmessage: preview")
+	defer fixture.close(t)
+
+	status, response := postCapability(t, fixture.server.URL+stickerSelectManyPath, stickerSelectManyRequest{
+		CandidateIDs: []string{"candidate-1", "candidate-2", "candidate-3", "candidate-4"},
+		Context:      capabilityContext(fixture.request),
+	})
+	if status != http.StatusOK || response["staged"] != true || response["staged_count"] != float64(4) {
+		t.Fatalf("select many status=%d response=%#v", status, response)
+	}
+	fixture.sendFinal(t, "四张预览")
+	want := []EventKind{
+		EventRunAccepted, EventReplyProposed,
+		EventEffectProposed, EventEffectProposed, EventEffectProposed, EventEffectProposed,
+		EventRunCompleted,
+	}
+	for index, kind := range want {
+		event := recvRelayEvent(t, fixture.stream)
+		if event.Kind != kind {
+			t.Fatalf("event %d kind=%s, want %s", index, event.Kind, kind)
+		}
+	}
+}
+
+func TestStickerCapabilitySelectManyStagesNothingOnMaterializeFailure(t *testing.T) {
+	fixture := newStickerRelayFixture(t, "[direct]\nmessage: preview")
+	defer fixture.close(t)
+
+	status, _ := postCapability(t, fixture.server.URL+stickerSelectManyPath, stickerSelectManyRequest{
+		CandidateIDs: []string{"candidate-1", "missing"}, Context: capabilityContext(fixture.request),
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("select many status=%d, want %d", status, http.StatusBadRequest)
+	}
+	fixture.sendFinal(t, "未发送表情")
+	for index, kind := range []EventKind{EventRunAccepted, EventReplyProposed, EventRunCompleted} {
+		if event := recvRelayEvent(t, fixture.stream); event.Kind != kind {
+			t.Fatalf("event %d kind=%s, want %s", index, event.Kind, kind)
+		}
+	}
+}
+
+func TestStickerCapabilitySelectManyRejectsInvalidBatches(t *testing.T) {
+	for _, candidateIDs := range [][]string{
+		{"candidate-1", "candidate-1"},
+		{"candidate-1", "candidate-2", "candidate-3", "candidate-4", "candidate-5", "candidate-6"},
+	} {
+		fixture := newStickerRelayFixture(t, "[direct]\nmessage: preview")
+		status, _ := postCapability(t, fixture.server.URL+stickerSelectManyPath, stickerSelectManyRequest{
+			CandidateIDs: candidateIDs, Context: capabilityContext(fixture.request),
+		})
+		fixture.close(t)
+		if status != http.StatusBadRequest {
+			t.Fatalf("candidate IDs=%v status=%d, want %d", candidateIDs, status, http.StatusBadRequest)
 		}
 	}
 }

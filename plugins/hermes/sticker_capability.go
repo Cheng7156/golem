@@ -124,7 +124,7 @@ func (b *stickerCapabilityBridge) SearchLibrary(
 
 func (b *stickerCapabilityBridge) InventoryLibrary(
 	ctx context.Context,
-	_ agent.StickerScope,
+	scope agent.StickerScope,
 	limit int,
 	offset int,
 ) (agent.StickerLibraryInventoryResult, error) {
@@ -135,14 +135,30 @@ func (b *stickerCapabilityBridge) InventoryLibrary(
 	if err != nil {
 		return agent.StickerLibraryInventoryResult{}, err
 	}
-	result := agent.StickerLibraryInventoryResult{
-		Items: make([]agent.StickerLibraryInventoryItem, 0, len(inventory.Items)),
-		Total: inventory.Total, Limit: inventory.Limit, Offset: inventory.Offset,
-		HasMore: inventory.Offset+len(inventory.Items) < inventory.Total,
-	}
+	providerCandidates := make([]sticker.ProviderCandidate, 0, len(inventory.Items))
 	for _, item := range inventory.Items {
+		providerCandidates = append(providerCandidates, sticker.ProviderCandidate{
+			Reference: item.StickerID, Description: item.Description,
+		})
+	}
+	bound, err := b.service.Bind(
+		ctx,
+		sticker.Scope{RunID: scope.RunID, ChatID: scope.ChatID},
+		sticker.LocalLibraryProviderID,
+		providerCandidates,
+	)
+	if err != nil {
+		return agent.StickerLibraryInventoryResult{}, err
+	}
+	result := agent.StickerLibraryInventoryResult{
+		Items: make([]agent.StickerLibraryInventoryItem, 0, len(bound)),
+		Total: inventory.Total, Limit: inventory.Limit, Offset: inventory.Offset,
+		HasMore:          inventory.Offset+len(bound) < inventory.Total,
+		ExpiresInSeconds: int(b.expires / time.Second),
+	}
+	for _, item := range bound {
 		result.Items = append(result.Items, agent.StickerLibraryInventoryItem{
-			Description: item.Description,
+			ID: item.ID, Description: item.Description,
 		})
 	}
 	return result, nil

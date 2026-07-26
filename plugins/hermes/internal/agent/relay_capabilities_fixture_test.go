@@ -63,6 +63,7 @@ func newStickerRelayServer(gateway *RelayGateway) *httptest.Server {
 	mux.HandleFunc(stickerSearchPath, gateway.serveStickerSearch)
 	mux.HandleFunc(stickerMaterializePath, gateway.serveStickerMaterialize)
 	mux.HandleFunc(stickerSelectPath, gateway.serveStickerSelect)
+	mux.HandleFunc(stickerSelectManyPath, gateway.serveStickerSelectMany)
 	return httptest.NewServer(mux)
 }
 

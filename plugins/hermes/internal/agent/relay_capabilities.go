@@ -17,7 +17,9 @@ const (
 	stickerSearchPath      = "/capabilities/v1/stickers/search"
 	stickerMaterializePath = "/capabilities/v1/stickers/materialize"
 	stickerSelectPath      = "/capabilities/v1/stickers/select"
+	stickerSelectManyPath  = "/capabilities/v1/stickers/select-many"
 	maxCapabilityBody      = 32 << 10
+	maxStickerSelections   = 5
 	ambientMediaDenied     = "media capability is unavailable for unaddressed ambient runs"
 )
 
@@ -73,6 +75,11 @@ type stickerSearchRequest struct {
 type stickerSelectRequest struct {
 	CandidateID string                   `json:"candidate_id"`
 	Context     capabilitySessionContext `json:"context"`
+}
+
+type stickerSelectManyRequest struct {
+	CandidateIDs []string                 `json:"candidate_ids"`
+	Context      capabilitySessionContext `json:"context"`
 }
 
 func (g *RelayGateway) serveStickerSearch(w http.ResponseWriter, request *http.Request) {
@@ -147,6 +154,71 @@ func (g *RelayGateway) serveStickerSelect(w http.ResponseWriter, request *http.R
 		"staged":            true,
 		"effect_only_token": relayEffectOnlyToken,
 		"description":       output.Description,
+	})
+}
+
+func (g *RelayGateway) serveStickerSelectMany(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input stickerSelectManyRequest
+	if err := decodeCapabilityRequest(w, request, &input); err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid sticker batch selection request")
+		return
+	}
+	run, err := g.capabilityRun(input.Context)
+	if err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
+	if len(input.CandidateIDs) < 1 || len(input.CandidateIDs) > maxStickerSelections {
+		writeCapabilityError(w, http.StatusBadRequest, "candidate_ids must contain between 1 and 5 items")
+		return
+	}
+	seen := make(map[string]struct{}, len(input.CandidateIDs))
+	payloads := make([]json.RawMessage, 0, len(input.CandidateIDs))
+	descriptions := make([]string, 0, len(input.CandidateIDs))
+	for _, rawID := range input.CandidateIDs {
+		candidateID := strings.TrimSpace(rawID)
+		if candidateID == "" {
+			writeCapabilityError(w, http.StatusBadRequest, "candidate_id is empty")
+			return
+		}
+		if _, duplicate := seen[candidateID]; duplicate {
+			writeCapabilityError(w, http.StatusBadRequest, "candidate_ids contains a duplicate")
+			return
+		}
+		seen[candidateID] = struct{}{}
+		output, selectErr := g.config.Stickers.Select(
+			request.Context(), stickerScope(run), candidateID,
+		)
+		if selectErr != nil {
+			slog.Warn("[hermes] sticker batch selection failed", "run_id", run.request.RunID, "err", selectErr)
+			writeCapabilityError(w, http.StatusBadRequest, "sticker candidate is unavailable")
+			return
+		}
+		payload, marshalErr := json.Marshal(output)
+		if marshalErr != nil {
+			writeCapabilityError(w, http.StatusInternalServerError, "could not stage sticker")
+			return
+		}
+		payloads = append(payloads, payload)
+		descriptions = append(descriptions, output.Description)
+	}
+	for _, payload := range payloads {
+		if err := run.stageEffect(OutputProposal{Kind: "emoji", Payload: payload}); err != nil {
+			writeCapabilityError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	writeCapabilityJSON(w, http.StatusOK, map[string]any{
+		"staged":            true,
+		"staged_count":      len(payloads),
+		"effect_only_token": relayEffectOnlyToken,
+		"descriptions":      descriptions,
 	})
 }
 

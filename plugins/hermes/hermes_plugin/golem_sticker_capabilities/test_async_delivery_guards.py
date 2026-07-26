@@ -16,6 +16,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
                 "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_select",
+                "golem_sticker_select_many",
             ):
                 directive = shared.runtime.pre_tool_call(tool_name=tool_name)
                 self.assertEqual(directive["action"], "block")
@@ -40,6 +41,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
                 "golem_sticker_inspect",
                 "golem_sticker_attach",
                 "golem_sticker_select",
+                "golem_sticker_select_many",
                 "golem_video_search",
                 "golem_video_select",
                 "golem_video_attach",
@@ -58,6 +60,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
                 "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_select",
+                "golem_sticker_select_many",
                 "golem_video_fetch",
             ):
                 self.assertIsNone(shared.runtime.pre_tool_call(tool_name=tool_name))

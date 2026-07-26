@@ -51,7 +51,10 @@ LIBRARY_INVENTORY_SCHEMA = {
         "List and count the global collected sticker library shared by all WeChat "
         "group chats and direct messages. Use this for inventory questions such as "
         "which stickers are collected or how many exist. This is not semantic search: "
-        "never infer the library size from golem_sticker_library_search results."
+        "never infer the library size from golem_sticker_library_search results. "
+        "Each returned item includes a current-Run candidate id. To preview several "
+        "inventory items, pass those ids directly to golem_sticker_select_many in one "
+        "call; do not search their descriptions again."
     ),
     "parameters": {
         "type": "object",
@@ -123,8 +126,8 @@ SELECT_SCHEMA = {
             "candidate_id": {
                 "type": "string",
                 "description": (
-                    "Opaque candidate id returned by golem_sticker_library_search "
-                    "or golem_sticker_search. Do "
+                    "Opaque candidate id returned by golem_sticker_library_search, "
+                    "golem_sticker_library_inventory, or golem_sticker_search. Do "
                     "not construct, alter, or reuse it in another conversation."
                 ),
                 "minLength": 1,
@@ -132,6 +135,31 @@ SELECT_SCHEMA = {
             }
         },
         "required": ["candidate_id"],
+        "additionalProperties": False,
+    },
+}
+
+SELECT_MANY_SCHEMA = {
+    "name": "golem_sticker_select_many",
+    "description": (
+        "Stage several already discovered stickers for one WeChat reply in a single "
+        "tool call. Use this when the user asks to preview multiple global inventory "
+        "items. Prefer it over repeated golem_sticker_select calls. Candidate ids must "
+        "come from the current Run; at most 5 stickers may be staged at once."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "candidate_ids": {
+                "type": "array",
+                "description": "Distinct current-Run candidate ids to stage in order.",
+                "items": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "minItems": 1,
+                "maxItems": 5,
+                "uniqueItems": True,
+            }
+        },
+        "required": ["candidate_ids"],
         "additionalProperties": False,
     },
 }

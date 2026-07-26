@@ -26,6 +26,7 @@ from .tool_schemas import (
     LIBRARY_SEARCH_SCHEMA,
     SEARCH_SCHEMA,
     SELECT_SCHEMA,
+    SELECT_MANY_SCHEMA,
 )
 
 
@@ -144,11 +145,14 @@ def _handle_library_inventory(args: Dict[str, Any], **_: Any) -> str:
         raise CapabilityError("Golem sticker inventory returned an invalid result")
     items = []
     for item in raw_items[:limit]:
-        if not isinstance(item, dict):
-            continue
-        description = _text(item.get("description"), 2400)
-        if description:
-            items.append({"description": description})
+        candidate = _candidate_result(item)
+        if candidate is not None:
+            items.append(
+                {
+                    "id": candidate["id"],
+                    "description": candidate["description"],
+                }
+            )
     return _json_result(
         {
             "scope": "global",
@@ -157,6 +161,7 @@ def _handle_library_inventory(args: Dict[str, Any], **_: Any) -> str:
             "limit": limit,
             "offset": offset,
             "has_more": bool(result.get("has_more", False)),
+            "expires_in": result.get("expires_in"),
         }
     )
 
@@ -248,6 +253,54 @@ def _handle_select(args: Dict[str, Any], **_: Any) -> str:
             "staged": True,
             "effect_only_token": effect_only_token,
             "description": _text(result.get("description"), 300),
+        }
+    )
+
+
+def _candidate_ids(args: Dict[str, Any]) -> list[str]:
+    if not isinstance(args, dict):
+        raise CapabilityError("Batch selection arguments must be an object")
+    if set(args) - {"candidate_ids"}:
+        raise CapabilityError("Batch selection contains unsupported arguments")
+    raw_ids = args.get("candidate_ids")
+    if not isinstance(raw_ids, list) or len(raw_ids) < 1 or len(raw_ids) > 5:
+        raise CapabilityError("candidate_ids must contain between 1 and 5 items")
+    candidate_ids = []
+    for raw_id in raw_ids:
+        if not isinstance(raw_id, str):
+            raise CapabilityError("candidate_ids must contain strings")
+        candidate_id = raw_id.strip()
+        if not candidate_id or len(candidate_id) > 2048:
+            raise CapabilityError("candidate_ids contains an invalid id")
+        candidate_ids.append(candidate_id)
+    if len(set(candidate_ids)) != len(candidate_ids):
+        raise CapabilityError("candidate_ids must be distinct")
+    return candidate_ids
+
+
+def _handle_select_many(args: Dict[str, Any], **_: Any) -> str:
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Batch sticker selection is unavailable in an async completion turn"
+        )
+    candidate_ids = _candidate_ids(args)
+    result = _client.select_stickers(candidate_ids, _current_context())
+    if result.get("staged") is not True or result.get("staged_count") != len(
+        candidate_ids
+    ):
+        raise CapabilityError("Golem did not stage all selected stickers")
+    raw_descriptions = result.get("descriptions")
+    descriptions = []
+    if isinstance(raw_descriptions, list):
+        descriptions = [
+            _text(value, 300) for value in raw_descriptions[: len(candidate_ids)]
+        ]
+    return _json_result(
+        {
+            "staged": True,
+            "staged_count": len(candidate_ids),
+            "effect_only_token": _effect_only_token(result),
+            "descriptions": descriptions,
         }
     )
 
@@ -369,6 +422,13 @@ def register(ctx) -> None:
         schema=LIBRARY_INVENTORY_SCHEMA,
         handler=_handle_library_inventory,
         emoji="library-inventory",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_select_many",
+        schema=SELECT_MANY_SCHEMA,
+        handler=_handle_select_many,
+        emoji="select-many",
         **common,
     )
     ctx.register_tool(

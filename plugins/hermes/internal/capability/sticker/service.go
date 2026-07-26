@@ -146,6 +146,28 @@ func (s *service) Search(ctx context.Context, request SearchRequest) ([]Candidat
 	if len(values) > request.Limit {
 		values = values[:request.Limit]
 	}
+	return s.Bind(ctx, request.Scope, providerID, values)
+}
+
+func (s *service) Bind(
+	ctx context.Context,
+	scope Scope,
+	providerID string,
+	values []ProviderCandidate,
+) ([]Candidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	providerID = strings.TrimSpace(providerID)
+	if s.providers[providerID] == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
+	}
+	if len(values) > 100 {
+		return nil, errors.New("too many sticker candidates to bind")
+	}
 	now := s.now()
 	expires := now.Add(s.ttl)
 	result := make([]Candidate, 0, len(values))
@@ -168,7 +190,7 @@ func (s *service) Search(ctx context.Context, request SearchRequest) ([]Candidat
 		}
 		s.records[id] = &candidateRecord{
 			public:     candidate,
-			scope:      request.Scope,
+			scope:      scope,
 			provider:   providerID,
 			value:      item,
 			created:    now,

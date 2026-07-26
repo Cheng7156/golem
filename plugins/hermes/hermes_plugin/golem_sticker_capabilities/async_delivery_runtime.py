@@ -49,6 +49,7 @@ _BLOCKED_ASYNC_TOOLS = {
     "golem_sticker_library_inventory",
     "golem_sticker_library_search",
     "golem_sticker_select",
+    "golem_sticker_select_many",
     "golem_video_fetch",
 }
 _AMBIENT_MEDIA_PREFIXES = ("golem_sticker_", "golem_video_")

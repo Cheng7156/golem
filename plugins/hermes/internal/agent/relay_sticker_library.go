@@ -41,15 +41,17 @@ type StickerLibraryCollectionResult struct {
 }
 
 type StickerLibraryInventoryItem struct {
+	ID          string `json:"id"`
 	Description string `json:"description"`
 }
 
 type StickerLibraryInventoryResult struct {
-	Items   []StickerLibraryInventoryItem `json:"items"`
-	Total   int                           `json:"total"`
-	Limit   int                           `json:"limit"`
-	Offset  int                           `json:"offset"`
-	HasMore bool                          `json:"has_more"`
+	Items            []StickerLibraryInventoryItem `json:"items"`
+	Total            int                           `json:"total"`
+	Limit            int                           `json:"limit"`
+	Offset           int                           `json:"offset"`
+	HasMore          bool                          `json:"has_more"`
+	ExpiresInSeconds int                           `json:"expires_in"`
 }
 
 type StickerLibraryCapability interface {

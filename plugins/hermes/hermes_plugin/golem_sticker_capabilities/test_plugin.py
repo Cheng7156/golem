@@ -176,13 +176,18 @@ class PluginTests(unittest.TestCase):
         response = _Response(
             {
                 "items": [
-                    {"description": "群聊收藏", "path": "/must/not/leak.png"},
-                    {"description": "私聊收藏"},
+                    {
+                        "id": "stc_group",
+                        "description": "群聊收藏",
+                        "path": "/must/not/leak.png",
+                    },
+                    {"id": "stc_direct", "description": "私聊收藏"},
                 ],
                 "total": 14,
                 "limit": 20,
                 "offset": 0,
                 "has_more": False,
+                "expires_in": 300,
             }
         )
         with mock.patch.object(plugin._opener, "open", return_value=response) as opened:
@@ -191,8 +196,13 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(result["total"], 14)
         self.assertEqual(
             result["items"],
-            [{"description": "群聊收藏"}, {"description": "私聊收藏"}],
+            [
+                {"id": "stc_group", "description": "群聊收藏"},
+                {"id": "stc_direct", "description": "私聊收藏"},
+            ],
         )
+        self.assertEqual(result["expires_in"], 300)
+        self.assertNotIn("path", json.dumps(result))
         body = json.loads(opened.call_args.args[0].data.decode())
         self.assertEqual(set(body), {"limit", "offset", "context"})
         self.assertNotIn("query", body)
@@ -237,6 +247,33 @@ class PluginTests(unittest.TestCase):
                 "/capabilities/v1/stickers/library/collect"
             )
         )
+
+    def test_select_many_posts_once_and_requires_every_sticker_to_be_staged(self):
+        staged = {
+            "staged": True,
+            "staged_count": 4,
+            "effect_only_token": "effect-token",
+            "descriptions": ["一", "二", "三", "四"],
+        }
+        candidate_ids = ["stc_1", "stc_2", "stc_3", "stc_4"]
+        with mock.patch.object(
+            plugin._client, "select_stickers", return_value=staged
+        ) as selected:
+            result = json.loads(
+                plugin._handle_select_many({"candidate_ids": candidate_ids})
+            )
+
+        selected.assert_called_once_with(candidate_ids, mock.ANY)
+        self.assertEqual(
+            selected.call_args.args[1]["message_id"], SESSION["HERMES_SESSION_MESSAGE_ID"]
+        )
+        self.assertEqual(result["staged_count"], 4)
+        self.assertEqual(result["descriptions"], ["一", "二", "三", "四"])
+
+        for invalid in ([], ["stc_1", "stc_1"], [f"stc_{i}" for i in range(6)]):
+            with self.subTest(candidate_ids=invalid):
+                with self.assertRaises(plugin.CapabilityError):
+                    plugin._handle_select_many({"candidate_ids": invalid})
 
     def test_image_read_keeps_native_multimodal_result(self):
         envelope = {
@@ -610,6 +647,7 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_attach",
                 "golem_sticker_inspect",
                 "golem_sticker_select",
+                "golem_sticker_select_many",
                 "golem_image_search_current_session",
                 "golem_image_inspect_current_session",
                 "golem_image_read_current_session",
@@ -651,6 +689,7 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_collect_current_session",
                 "golem_sticker_attach",
                 "golem_sticker_select",
+                "golem_sticker_select_many",
                 "golem_image_search_current_session",
                 "golem_image_inspect_current_session",
                 "golem_image_read_current_session",

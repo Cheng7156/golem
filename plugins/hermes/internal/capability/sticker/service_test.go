@@ -85,3 +85,45 @@ func TestSearchServiceOpaqueScopeBoundSelection(t *testing.T) {
 		t.Fatalf("expired error=%v", err)
 	}
 }
+
+func TestSearchServiceBindCreatesOpaqueScopeBoundCandidates(t *testing.T) {
+	provider := &fakeProvider{
+		id: "local",
+		materialize: func(_ context.Context, candidate ProviderCandidate) (domain.EmojiOutput, error) {
+			return domain.EmojiOutput{
+				Data: []byte("GIF89a"), MIMEType: "image/gif", Description: candidate.Description,
+			}, nil
+		},
+	}
+	service, err := NewSearchService(ServiceConfig{
+		CandidateTTL: 2 * time.Minute, MaxCandidates: 10,
+	}, []Provider{provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{RunID: "run-inventory", ChatID: "chat-inventory"}
+	candidates, err := service.Bind(context.Background(), scope, provider.id, []ProviderCandidate{{
+		Reference: "stable-library-id", Description: "群聊收藏",
+	}})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if len(candidates) != 1 || !strings.HasPrefix(candidates[0].ID, "stc_") ||
+		strings.Contains(candidates[0].ID, "stable-library-id") {
+		t.Fatalf("bound candidates=%#v", candidates)
+	}
+	if _, err := service.Materialize(
+		context.Background(), Scope{RunID: "other-run", ChatID: scope.ChatID}, candidates[0].ID,
+	); !errors.Is(err, ErrCandidateScope) {
+		t.Fatalf("cross-run error=%v", err)
+	}
+	if _, err := service.Materialize(
+		context.Background(), Scope{RunID: scope.RunID, ChatID: "other-chat"}, candidates[0].ID,
+	); !errors.Is(err, ErrCandidateScope) {
+		t.Fatalf("cross-chat error=%v", err)
+	}
+	output, err := service.Materialize(context.Background(), scope, candidates[0].ID)
+	if err != nil || output.Description != "群聊收藏" {
+		t.Fatalf("Materialize=%#v err=%v", output, err)
+	}
+}

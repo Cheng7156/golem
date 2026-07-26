@@ -222,6 +222,7 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 		mux.HandleFunc(stickerSearchPath, g.serveStickerSearch)
 		mux.HandleFunc(stickerMaterializePath, g.serveStickerMaterialize)
 		mux.HandleFunc(stickerSelectPath, g.serveStickerSelect)
+		mux.HandleFunc(stickerSelectManyPath, g.serveStickerSelectMany)
 	}
 	if g.config.StickerLibrary != nil && g.config.Stickers != nil {
 		mux.HandleFunc(stickerLibraryInventoryPath, g.serveStickerLibraryInventory)

@@ -18,6 +18,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8789"
 SEARCH_PATH = "capabilities/v1/stickers/search"
 MATERIALIZE_PATH = "capabilities/v1/stickers/materialize"
 SELECT_PATH = "capabilities/v1/stickers/select"
+SELECT_MANY_PATH = "capabilities/v1/stickers/select-many"
 STICKER_LIBRARY_SEARCH_PATH = "capabilities/v1/stickers/library/search"
 STICKER_LIBRARY_INVENTORY_PATH = "capabilities/v1/stickers/library/inventory"
 STICKER_LIBRARY_COLLECT_PATH = "capabilities/v1/stickers/library/collect"
@@ -277,6 +278,17 @@ def materialize(candidate_id: str, context: Dict[str, str]) -> Tuple[bytes, str]
     if not raw:
         raise CapabilityError("Golem capability API returned empty sticker media")
     return raw, content_type
+
+
+def select_stickers(
+    candidate_ids: list[str],
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        SELECT_MANY_PATH,
+        {"candidate_ids": candidate_ids, "context": context},
+        MAX_RESPONSE_BYTES,
+    )
 
 
 def search_current_images(

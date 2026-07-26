@@ -78,6 +78,7 @@ type Provider interface {
 
 type SearchService interface {
 	Search(context.Context, SearchRequest) ([]Candidate, error)
+	Bind(context.Context, Scope, string, []ProviderCandidate) ([]Candidate, error)
 	Materialize(context.Context, Scope, string) (domain.EmojiOutput, error)
 }
 
