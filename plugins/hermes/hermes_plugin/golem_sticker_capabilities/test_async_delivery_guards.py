@@ -13,6 +13,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_select",
             ):
@@ -33,6 +34,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_search",
                 "golem_sticker_inspect",
@@ -53,6 +55,7 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_select",
                 "golem_video_fetch",

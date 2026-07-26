@@ -116,15 +116,16 @@ The flow is:
    `golem_image_search_current_session`, then call
    `golem_sticker_collect_current_session(candidate_id, description)`. Collection
    persists verified bytes without invoking vision; Golem defaults writes to the owner.
-2. For conversational replies, call `golem_sticker_library_search(query, limit)`
+2. For inventory questions, call `golem_sticker_library_inventory(limit, offset)`; it reports the global library shared across group chats and direct messages.
+3. For conversational replies, call `golem_sticker_library_search(query, limit)`
    first. Closely relevant local matches are randomized. If it returns no
    candidates, fall back to `golem_sticker_search(query, limit)`.
-3. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
+4. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
    candidate bytes to Hermes `auxiliary.vision` and returns a short textual
    analysis. When disabled, Hermes selects from the search descriptions alone.
-4. `golem_sticker_select(candidate_id)` stages either a local or external
+5. `golem_sticker_select(candidate_id)` stages either a local or external
    candidate using the same Run-bound effect path.
-5. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
+6. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
    the selection result. For text plus sticker, it returns ordinary final text.
 
 Provider API keys, provider response parsing, downloads, media validation, and

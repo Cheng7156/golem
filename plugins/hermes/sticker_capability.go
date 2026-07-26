@@ -122,6 +122,32 @@ func (b *stickerCapabilityBridge) SearchLibrary(
 	return b.search(ctx, scope, query, limit, sticker.LocalLibraryProviderID)
 }
 
+func (b *stickerCapabilityBridge) InventoryLibrary(
+	ctx context.Context,
+	_ agent.StickerScope,
+	limit int,
+	offset int,
+) (agent.StickerLibraryInventoryResult, error) {
+	if b.library == nil {
+		return agent.StickerLibraryInventoryResult{}, errors.New("sticker library is unavailable")
+	}
+	inventory, err := b.library.Inventory(ctx, limit, offset)
+	if err != nil {
+		return agent.StickerLibraryInventoryResult{}, err
+	}
+	result := agent.StickerLibraryInventoryResult{
+		Items: make([]agent.StickerLibraryInventoryItem, 0, len(inventory.Items)),
+		Total: inventory.Total, Limit: inventory.Limit, Offset: inventory.Offset,
+		HasMore: inventory.Offset+len(inventory.Items) < inventory.Total,
+	}
+	for _, item := range inventory.Items {
+		result.Items = append(result.Items, agent.StickerLibraryInventoryItem{
+			Description: item.Description,
+		})
+	}
+	return result, nil
+}
+
 func (b *stickerCapabilityBridge) search(
 	ctx context.Context,
 	scope agent.StickerScope,

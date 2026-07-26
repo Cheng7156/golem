@@ -46,6 +46,7 @@ _BLOCKED_ASYNC_TOOLS = {
     "delegate_task",
     "golem_sticker_collect_current_session",
     "golem_sticker_inspect",
+    "golem_sticker_library_inventory",
     "golem_sticker_library_search",
     "golem_sticker_select",
     "golem_video_fetch",

@@ -43,6 +43,11 @@ type LibraryRepository interface {
 		[]domain.StickerSearchTerm,
 		int,
 	) ([]domain.StickerLibraryMatch, error)
+	StickerLibraryInventory(
+		context.Context,
+		int,
+		int,
+	) ([]domain.StickerLibraryInventoryItem, int, error)
 }
 
 type LibraryConfig struct {
@@ -69,6 +74,13 @@ type LibraryCollectResult struct {
 	Description  string
 	AssetCreated bool
 	LabelCreated bool
+}
+
+type LibraryInventory struct {
+	Items  []domain.StickerLibraryInventoryItem
+	Total  int
+	Limit  int
+	Offset int
 }
 
 type LocalLibrary struct {
@@ -232,6 +244,24 @@ func (l *LocalLibrary) Search(
 		})
 	}
 	return result, nil
+}
+
+func (l *LocalLibrary) Inventory(
+	ctx context.Context,
+	limit int,
+	offset int,
+) (LibraryInventory, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 || offset < 0 {
+		return LibraryInventory{}, errors.New("sticker library inventory range is invalid")
+	}
+	items, total, err := l.repository.StickerLibraryInventory(ctx, limit, offset)
+	if err != nil {
+		return LibraryInventory{}, err
+	}
+	return LibraryInventory{Items: items, Total: total, Limit: limit, Offset: offset}, nil
 }
 
 func relevantLibraryMatches(

@@ -19,6 +19,7 @@ SEARCH_PATH = "capabilities/v1/stickers/search"
 MATERIALIZE_PATH = "capabilities/v1/stickers/materialize"
 SELECT_PATH = "capabilities/v1/stickers/select"
 STICKER_LIBRARY_SEARCH_PATH = "capabilities/v1/stickers/library/search"
+STICKER_LIBRARY_INVENTORY_PATH = "capabilities/v1/stickers/library/inventory"
 STICKER_LIBRARY_COLLECT_PATH = "capabilities/v1/stickers/library/collect"
 IMAGE_SEARCH_PATH = "capabilities/v1/images/search"
 IMAGE_READ_PATH = "capabilities/v1/images/read"
@@ -305,6 +306,18 @@ def search_sticker_library(
     return post_json_limited(
         STICKER_LIBRARY_SEARCH_PATH,
         {"query": query, "limit": limit, "context": context},
+        MAX_RESPONSE_BYTES,
+    )
+
+
+def sticker_library_inventory(
+    limit: int,
+    offset: int,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        STICKER_LIBRARY_INVENTORY_PATH,
+        {"limit": limit, "offset": offset, "context": context},
         MAX_RESPONSE_BYTES,
     )
 

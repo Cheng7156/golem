@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	stickerLibrarySearchPath   = "/capabilities/v1/stickers/library/search"
-	stickerLibraryCollectPath  = "/capabilities/v1/stickers/library/collect"
-	maxStickerDescriptionRunes = 300
+	stickerLibraryInventoryPath = "/capabilities/v1/stickers/library/inventory"
+	stickerLibrarySearchPath    = "/capabilities/v1/stickers/library/search"
+	stickerLibraryCollectPath   = "/capabilities/v1/stickers/library/collect"
+	maxStickerDescriptionRunes  = 300
 )
 
 var (
@@ -39,16 +40,70 @@ type StickerLibraryCollectionResult struct {
 	LabelCreated bool   `json:"label_created"`
 }
 
+type StickerLibraryInventoryItem struct {
+	Description string `json:"description"`
+}
+
+type StickerLibraryInventoryResult struct {
+	Items   []StickerLibraryInventoryItem `json:"items"`
+	Total   int                           `json:"total"`
+	Limit   int                           `json:"limit"`
+	Offset  int                           `json:"offset"`
+	HasMore bool                          `json:"has_more"`
+}
+
 type StickerLibraryCapability interface {
 	AuthorizeCollection(context.Context, StickerScope) error
+	InventoryLibrary(context.Context, StickerScope, int, int) (StickerLibraryInventoryResult, error)
 	SearchLibrary(context.Context, StickerScope, string, int) (StickerSearchResult, error)
 	Collect(context.Context, StickerScope, StickerLibraryCollection) (StickerLibraryCollectionResult, error)
+}
+
+type stickerLibraryInventoryRequest struct {
+	Limit   int                      `json:"limit"`
+	Offset  int                      `json:"offset"`
+	Context capabilitySessionContext `json:"context"`
 }
 
 type stickerLibraryCollectRequest struct {
 	CandidateID string                   `json:"candidate_id"`
 	Description string                   `json:"description"`
 	Context     capabilitySessionContext `json:"context"`
+}
+
+func (g *RelayGateway) serveStickerLibraryInventory(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input stickerLibraryInventoryRequest
+	if err := decodeCapabilityRequest(w, request, &input); err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid sticker library inventory request")
+		return
+	}
+	run, err := g.capabilityRun(input.Context)
+	if err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
+	if input.Limit <= 0 {
+		input.Limit = 20
+	}
+	if input.Limit > 100 || input.Offset < 0 {
+		writeCapabilityError(w, http.StatusBadRequest, "sticker library inventory range is invalid")
+		return
+	}
+	result, err := g.config.StickerLibrary.InventoryLibrary(
+		request.Context(), stickerScope(run), input.Limit, input.Offset,
+	)
+	if err != nil {
+		slog.Warn("[hermes] sticker library inventory failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusServiceUnavailable, "sticker library inventory is temporarily unavailable")
+		return
+	}
+	writeCapabilityJSON(w, http.StatusOK, result)
 }
 
 func (g *RelayGateway) serveStickerLibrarySearch(w http.ResponseWriter, request *http.Request) {

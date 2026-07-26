@@ -68,6 +68,34 @@ func TestLocalLibraryCollectsDeduplicatesSearchesAndMaterializes(t *testing.T) {
 	}
 }
 
+func TestLocalLibraryInventoryIsGlobalAcrossSourceSessions(t *testing.T) {
+	library, _ := openStickerLibrary(t, 2048, "owner")
+	group := libraryCollectRequest("群聊收藏", libraryTestPNG, true)
+	group.SourceSessionID = "chatroom:room-a"
+	if _, err := library.Collect(context.Background(), group); err != nil {
+		t.Fatalf("Collect group sticker: %v", err)
+	}
+	privateData := append([]byte(nil), libraryTestPNG...)
+	privateData[len(privateData)-1]++
+	private := libraryCollectRequest("私聊收藏", privateData, true)
+	private.SourceSessionID = "private:wxid-owner"
+	if _, err := library.Collect(context.Background(), private); err != nil {
+		t.Fatalf("Collect private sticker: %v", err)
+	}
+
+	inventory, err := library.Inventory(context.Background(), 20, 0)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if inventory.Total != 2 || len(inventory.Items) != 2 {
+		t.Fatalf("global inventory=%#v", inventory)
+	}
+	descriptions := inventory.Items[0].Description + "；" + inventory.Items[1].Description
+	if !strings.Contains(descriptions, "群聊收藏") || !strings.Contains(descriptions, "私聊收藏") {
+		t.Fatalf("global inventory descriptions=%q", descriptions)
+	}
+}
+
 func TestLocalLibraryEnforcesCollectionPolicyAndStorageBudget(t *testing.T) {
 	library, _ := openStickerLibrary(t, int64(len(libraryTestPNG)), "owner")
 	ctx := context.Background()

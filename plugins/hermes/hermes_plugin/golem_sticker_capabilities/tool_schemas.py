@@ -45,6 +45,36 @@ LIBRARY_SEARCH_SCHEMA = {
     "parameters": SEARCH_SCHEMA["parameters"],
 }
 
+LIBRARY_INVENTORY_SCHEMA = {
+    "name": "golem_sticker_library_inventory",
+    "description": (
+        "List and count the global collected sticker library shared by all WeChat "
+        "group chats and direct messages. Use this for inventory questions such as "
+        "which stickers are collected or how many exist. This is not semantic search: "
+        "never infer the library size from golem_sticker_library_search results."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum inventory entries to return (1-100).",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Zero-based offset for the next inventory page.",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 0,
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
 COLLECT_SCHEMA = {
     "name": "golem_sticker_collect_current_session",
     "description": (

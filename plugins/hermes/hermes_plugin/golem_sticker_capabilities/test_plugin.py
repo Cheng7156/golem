@@ -172,6 +172,37 @@ class PluginTests(unittest.TestCase):
             request.full_url.endswith("/capabilities/v1/stickers/library/search")
         )
 
+    def test_library_inventory_reports_global_total_without_keyword_search(self):
+        response = _Response(
+            {
+                "items": [
+                    {"description": "群聊收藏", "path": "/must/not/leak.png"},
+                    {"description": "私聊收藏"},
+                ],
+                "total": 14,
+                "limit": 20,
+                "offset": 0,
+                "has_more": False,
+            }
+        )
+        with mock.patch.object(plugin._opener, "open", return_value=response) as opened:
+            result = json.loads(plugin._handle_library_inventory({}))
+        self.assertEqual(result["scope"], "global")
+        self.assertEqual(result["total"], 14)
+        self.assertEqual(
+            result["items"],
+            [{"description": "群聊收藏"}, {"description": "私聊收藏"}],
+        )
+        body = json.loads(opened.call_args.args[0].data.decode())
+        self.assertEqual(set(body), {"limit", "offset", "context"})
+        self.assertNotIn("query", body)
+        self.assertEqual(body["context"]["message_id"], "msg-1")
+        self.assertTrue(
+            opened.call_args.args[0].full_url.endswith(
+                "/capabilities/v1/stickers/library/inventory"
+            )
+        )
+
     def test_collect_posts_exact_image_candidate_and_user_description(self):
         response = _Response(
             {
@@ -573,6 +604,7 @@ class PluginTests(unittest.TestCase):
             set(registrations),
             {
                 "golem_sticker_search",
+                "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
                 "golem_sticker_attach",
@@ -614,6 +646,7 @@ class PluginTests(unittest.TestCase):
             set(registrations),
             {
                 "golem_sticker_search",
+                "golem_sticker_library_inventory",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
                 "golem_sticker_attach",

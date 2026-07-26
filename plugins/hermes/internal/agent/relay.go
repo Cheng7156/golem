@@ -224,6 +224,7 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 		mux.HandleFunc(stickerSelectPath, g.serveStickerSelect)
 	}
 	if g.config.StickerLibrary != nil && g.config.Stickers != nil {
+		mux.HandleFunc(stickerLibraryInventoryPath, g.serveStickerLibraryInventory)
 		mux.HandleFunc(stickerLibrarySearchPath, g.serveStickerLibrarySearch)
 		if g.config.ImageContext != nil && g.config.ImageResolver != nil {
 			mux.HandleFunc(stickerLibraryCollectPath, g.serveStickerLibraryCollect)

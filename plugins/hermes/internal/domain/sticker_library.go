@@ -61,6 +61,12 @@ type StickerLibraryMatch struct {
 	Score       int
 }
 
+type StickerLibraryInventoryItem struct {
+	StickerID   string
+	Description string
+	CreatedAt   time.Time
+}
+
 type StickerCollectionResult struct {
 	Asset        StickerAsset
 	AssetCreated bool

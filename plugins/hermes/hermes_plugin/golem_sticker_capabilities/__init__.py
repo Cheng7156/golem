@@ -22,6 +22,7 @@ from .errors import CapabilityError
 from .tool_schemas import (
     ATTACH_SCHEMA,
     COLLECT_SCHEMA,
+    LIBRARY_INVENTORY_SCHEMA,
     LIBRARY_SEARCH_SCHEMA,
     SEARCH_SCHEMA,
     SELECT_SCHEMA,
@@ -109,6 +110,55 @@ def _handle_library_search(args: Dict[str, Any], **_: Any) -> str:
         )
     result = _client.search_sticker_library(query, limit, _current_context())
     return _sticker_search_result(result, limit)
+
+
+def _inventory_args(args: Dict[str, Any]) -> tuple[int, int]:
+    if not isinstance(args, dict):
+        raise CapabilityError("Inventory arguments must be an object")
+    if set(args) - {"limit", "offset"}:
+        raise CapabilityError("Inventory contains unsupported arguments")
+    limit = args.get("limit", 20)
+    offset = args.get("offset", 0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 100:
+        raise CapabilityError("limit must be an integer between 1 and 100")
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+        or offset > 1000000
+    ):
+        raise CapabilityError("offset must be an integer between 0 and 1000000")
+    return limit, offset
+
+
+def _handle_library_inventory(args: Dict[str, Any], **_: Any) -> str:
+    limit, offset = _inventory_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "The local sticker library is unavailable in an async completion turn"
+        )
+    result = _client.sticker_library_inventory(limit, offset, _current_context())
+    raw_items = result.get("items")
+    total = result.get("total")
+    if not isinstance(raw_items, list) or not isinstance(total, int) or isinstance(total, bool):
+        raise CapabilityError("Golem sticker inventory returned an invalid result")
+    items = []
+    for item in raw_items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        description = _text(item.get("description"), 2400)
+        if description:
+            items.append({"description": description})
+    return _json_result(
+        {
+            "scope": "global",
+            "total": max(total, 0),
+            "items": items,
+            "limit": limit,
+            "offset": offset,
+            "has_more": bool(result.get("has_more", False)),
+        }
+    )
 
 
 def _collect_args(args: Dict[str, Any]) -> tuple[str, str]:
@@ -312,6 +362,13 @@ def register(ctx) -> None:
         schema=LIBRARY_SEARCH_SCHEMA,
         handler=_handle_library_search,
         emoji="library-search",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_library_inventory",
+        schema=LIBRARY_INVENTORY_SCHEMA,
+        handler=_handle_library_inventory,
+        emoji="library-inventory",
         **common,
     )
     ctx.register_tool(

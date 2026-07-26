@@ -202,6 +202,50 @@ func (s *Store) SearchStickerLibrary(
 	return result, rows.Err()
 }
 
+func (s *Store) StickerLibraryInventory(
+	ctx context.Context,
+	limit int,
+	offset int,
+) ([]domain.StickerLibraryInventoryItem, int, error) {
+	if limit < 1 || limit > 100 || offset < 0 {
+		return nil, 0, storeport.ErrInvalid
+	}
+	db, err := s.readable()
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sticker_assets`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT a.id,
+			COALESCE((SELECT group_concat(description,'；') FROM (
+				SELECT description FROM sticker_labels
+				WHERE sticker_id=a.id ORDER BY created_at DESC LIMIT 8
+			)),'') AS description,
+			a.created_at
+		FROM sticker_assets a
+		ORDER BY a.created_at DESC,a.id
+		LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	result := make([]domain.StickerLibraryInventoryItem, 0, min(limit, total))
+	for rows.Next() {
+		var value domain.StickerLibraryInventoryItem
+		var createdAt int64
+		if err := rows.Scan(&value.StickerID, &value.Description, &createdAt); err != nil {
+			return nil, 0, err
+		}
+		value.CreatedAt = fromUnixMillis(createdAt)
+		result = append(result, value)
+	}
+	return result, total, rows.Err()
+}
+
 func scanStickerAsset(row scanner) (domain.StickerAsset, error) {
 	var value domain.StickerAsset
 	var createdAt int64
