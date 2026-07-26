@@ -345,6 +345,14 @@ def register(ctx) -> None:
         **common,
     )
     ctx.register_tool(
+        name="golem_image_inspect_current_session",
+        schema=_image_tools.INSPECT_SCHEMA,
+        handler=_image_tools._handle_inspect,
+        emoji="image-inspect",
+        is_async=True,
+        **common,
+    )
+    ctx.register_tool(
         name="golem_image_read_current_session",
         schema=_image_tools.READ_SCHEMA,
         handler=_image_tools._handle_read,

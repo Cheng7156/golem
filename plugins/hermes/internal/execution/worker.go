@@ -757,7 +757,7 @@ func (w *Worker) finishFailure(ctx context.Context, run domain.Run, cause error)
 	} else if cancelErr != nil {
 		return errors.Join(cause, cancelErr)
 	}
-	retryable := shouldRetryRun(w.config(), run, w.now())
+	retryable := shouldRetryRun(w.config(), run, w.now(), cause)
 	if retryable {
 		delay := time.Duration(1<<min(run.Attempt, 6)) * time.Second
 		nextAttempt := w.now().Add(delay)
@@ -787,12 +787,21 @@ func (w *Worker) finishFailure(ctx context.Context, run domain.Run, cause error)
 	if err := w.store.FailRun(ctx, run.ID, run.LeaseToken, cause.Error(), false, time.Time{}); err != nil {
 		return errors.Join(cause, err)
 	}
-	slog.Error("[hermes] Run 已达到自动重试上限，未生成微信兜底回复",
-		"run_id", run.ID,
-		"session_id", run.SessionID,
-		"attempt", run.Attempt,
-		"err", cause,
-	)
+	if errors.Is(cause, agent.ErrInvalidRequiredObserve) {
+		slog.Warn("[hermes] Run 因不可重试的回复协议错误结束",
+			"run_id", run.ID,
+			"session_id", run.SessionID,
+			"attempt", run.Attempt,
+			"err", cause,
+		)
+	} else {
+		slog.Error("[hermes] Run 已达到自动重试上限，未生成微信兜底回复",
+			"run_id", run.ID,
+			"session_id", run.SessionID,
+			"attempt", run.Attempt,
+			"err", cause,
+		)
+	}
 	return cause
 }
 
@@ -823,7 +832,10 @@ func executionContext(
 	return ctx, cancel, deadline
 }
 
-func shouldRetryRun(cfg *config.Snapshot, run domain.Run, now time.Time) bool {
+func shouldRetryRun(cfg *config.Snapshot, run domain.Run, now time.Time, cause error) bool {
+	if errors.Is(cause, agent.ErrInvalidRequiredObserve) {
+		return false
+	}
 	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Agent.Mode), "relay") {
 		// Legacy Relay Runs may carry an already-expired route-time deadline.
 		// Relay no longer uses that deadline, so keep the ordinary attempt

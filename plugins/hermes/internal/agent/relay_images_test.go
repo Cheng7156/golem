@@ -20,8 +20,25 @@ func TestImageCapabilityDescriptorExplainsLazyToolFlow(t *testing.T) {
 	hint, _ := descriptor["platform_hint"].(string)
 	for _, value := range []string{
 		"never sent to vision automatically",
+		"golem_image_inspect_current_session",
 		"golem_image_search_current_session",
 		"golem_image_read_current_session",
+		"image, emoji, and sticker",
+		"never collects or persists",
+	} {
+		if !strings.Contains(hint, value) {
+			t.Fatalf("platform_hint missing %q: %s", value, hint)
+		}
+	}
+}
+
+func TestRelayDescriptorMakesCurrentDisplayNameAuthoritative(t *testing.T) {
+	descriptor := relayDescriptor(relayDescriptorOptions{observationV2: true})
+	hint, _ := descriptor["platform_hint"].(string)
+	for _, value := range []string{
+		"display_name",
+		"current speaker",
+		"nickname inferred from message text, older turns, or other participants",
 	} {
 		if !strings.Contains(hint, value) {
 			t.Fatalf("platform_hint missing %q: %s", value, hint)

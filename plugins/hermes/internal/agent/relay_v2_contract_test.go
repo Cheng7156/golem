@@ -331,6 +331,9 @@ func TestV2InvalidRequiredObserveFailsRunAndReleasesChatSlot(t *testing.T) {
 		!strings.Contains(failed.Err.Error(), "invalid observe result") {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
+	if !errors.Is(failed.Err, ErrInvalidRequiredObserve) {
+		t.Fatalf("invalid required observe error is not typed: %v", failed.Err)
+	}
 	result := readRelayFrame(t, connection)
 	body := result["result"].(map[string]any)
 	if result["type"] != "outbound_result" || body["success"] != false ||

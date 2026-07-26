@@ -247,6 +247,83 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(json.loads(result), {"candidate_id": "img_opaque", "analysis": "一只猫"})
         self.assertNotIn("data:", result)
 
+    def test_image_inspect_atomically_reads_latest_readable_emoji(self):
+        candidates = {
+            "candidates": [
+                {
+                    "id": "img_unreadable",
+                    "speaker_id": "wxid-owner",
+                    "kind": "image",
+                    "readable": False,
+                    "is_current_sender": True,
+                },
+                {
+                    "id": "img_static_emoji",
+                    "speaker_id": "wxid-owner",
+                    "kind": "emoji",
+                    "readable": True,
+                    "is_current_sender": True,
+                },
+            ]
+        }
+        with mock.patch.object(
+            plugin._client, "search_current_images", return_value=candidates
+        ) as search:
+            with mock.patch.object(
+                plugin._client,
+                "read_current_image",
+                return_value=(b"\x89PNG\r\n\x1a\n", "image/png"),
+            ) as read:
+                with mock.patch.object(
+                    plugin._image_tools,
+                    "_vision",
+                    new=mock.AsyncMock(
+                        return_value=json.dumps(
+                            {"success": True, "analysis": "一个静态表情"}
+                        )
+                    ),
+                ):
+                    result = __import__("asyncio").run(
+                        plugin._image_tools._handle_inspect(
+                            {
+                                "speaker_id": "wxid-owner",
+                                "question": "这是什么？",
+                            },
+                            task_id="task-inspect",
+                        )
+                    )
+
+        self.assertEqual(
+            json.loads(result),
+            {"candidate_id": "img_static_emoji", "analysis": "一个静态表情"},
+        )
+        self.assertEqual(search.call_args.kwargs["speaker_id"], "wxid-owner")
+        self.assertEqual(search.call_args.kwargs["limit"], 16)
+        read.assert_called_once()
+        self.assertEqual(read.call_args.args[0], "img_static_emoji")
+
+    def test_collect_does_not_invoke_image_vision(self):
+        response = _Response(
+            {
+                "stored": True,
+                "description": "无语",
+                "asset_created": True,
+                "label_created": True,
+            }
+        )
+        with mock.patch.object(plugin._opener, "open", return_value=response):
+            with mock.patch.object(
+                plugin._image_tools, "_vision", new=mock.AsyncMock()
+            ) as vision:
+                result = json.loads(
+                    plugin._handle_collect(
+                        {"candidate_id": "img_static_emoji", "description": "无语"}
+                    )
+                )
+
+        self.assertTrue(result["stored"])
+        vision.assert_not_awaited()
+
     def test_select_uses_only_candidate_and_current_context(self):
         response = _Response(
             {
@@ -473,6 +550,7 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_inspect",
                 "golem_sticker_select",
                 "golem_image_search_current_session",
+                "golem_image_inspect_current_session",
                 "golem_image_read_current_session",
                 "golem_video_search",
                 "golem_video_attach",
@@ -482,6 +560,7 @@ class PluginTests(unittest.TestCase):
         )
         self.assertTrue(registrations["golem_sticker_inspect"]["is_async"])
         self.assertTrue(registrations["golem_image_read_current_session"]["is_async"])
+        self.assertTrue(registrations["golem_image_inspect_current_session"]["is_async"])
         self.assertNotIn("is_async", registrations["golem_sticker_search"])
         self.assertNotIn("is_async", registrations["golem_image_search_current_session"])
         context.register_hook.assert_any_call(
@@ -511,6 +590,7 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_attach",
                 "golem_sticker_select",
                 "golem_image_search_current_session",
+                "golem_image_inspect_current_session",
                 "golem_image_read_current_session",
                 "golem_video_search",
                 "golem_video_attach",
