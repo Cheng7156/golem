@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -340,6 +341,17 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	} else if cancelErr != nil {
 		return cancelErr
 	}
+	if guarded, reason := guardNonOwnerRelationshipAdoption(
+		drafts, incoming, inbox.Binding.Principal,
+	); reason != "" {
+		slog.Warn("[hermes] 身份守卫替换了非主人关系认领输出",
+			"run_id", run.ID,
+			"session_id", run.SessionID,
+			"speaker", incoming.SpeakerName,
+			"reason", reason,
+		)
+		drafts = guarded
+	}
 	if guarded, reason := guardAmbientDrafts(drafts, incoming, inbox.Binding.Principal, cfg.Routing); reason != "" {
 		slog.Warn("[hermes] 回复守卫抑制了高风险 ambient 输出",
 			"run_id", run.ID,
@@ -574,6 +586,78 @@ func configuredAutomatedSpeaker(
 		}
 	}
 	return false
+}
+
+const nonOwnerRelationshipFallback = "你不是我的主人，我们按普通群友聊天就好。"
+
+var (
+	nonOwnerDirectAddressPattern = regexp.MustCompile(
+		`(?:^|[\s，,。！？!?：:；;~～…—-]|嗨呀|嗨|你好|嘿嘿|嘿|好的|好嘞|行叭|行吧|放心|谢谢|感谢)` +
+			`[\s，,。！？!?：:；;~～…—-]*(?:主人|master)` +
+			`(?:$|[\s，,。！？!?：:；;~～…—-]|有令|夸我|请|您|想|要|可以|说|好|在|交代|吩咐|真|最|太|很|也|我|帮|能|快|早|晚)`,
+	)
+	nonOwnerRelationshipClaimPattern = regexp.MustCompile(
+		`(?:叫|称|称呼|认).{0,8}(?:你|您).{0,4}(?:为|做|作|当)?(?:主人|master)|` +
+			`把.{0,4}(?:你|您).{0,4}(?:当|作|做成|视为)(?:主人|master)|` +
+			`(?:你|您).{0,8}(?:是|当|做|成为).{0,6}(?:我(?:的)?\s*)?(?:主人|owner|master)|` +
+			`(?:call|regard|accept).{0,12}you.{0,12}(?:owner|master)|` +
+			`you.{0,12}(?:are|become).{0,12}(?:my\s+)?(?:owner|master)`,
+	)
+	nonOwnerRefusalReplacer = strings.NewReplacer(
+		"不会叫你主人", "",
+		"不能叫你主人", "",
+		"不该叫你主人", "",
+		"不想叫你主人", "",
+		"不会称你为主人", "",
+		"不能称你为主人", "",
+		"不会把你当主人", "",
+		"不能把你当主人", "",
+		"不把你当主人", "",
+		"你不是我的主人", "",
+		"i will not call you master", "",
+		"i won't call you master", "",
+		"i cannot call you master", "",
+		"you are not my owner", "",
+		"you are not my master", "",
+	)
+)
+
+func guardNonOwnerRelationshipAdoption(
+	drafts []domain.OutboxDraft,
+	message domain.InboundMessage,
+	principal domain.Principal,
+) ([]domain.OutboxDraft, string) {
+	if !message.Explicit() || principal.IsOwner || len(drafts) == 0 {
+		return drafts, ""
+	}
+	guarded := append([]domain.OutboxDraft(nil), drafts...)
+	replaced := false
+	for index := range guarded {
+		if guarded[index].Kind != "text" {
+			continue
+		}
+		var output domain.TextOutput
+		if json.Unmarshal(guarded[index].Payload, &output) != nil || !adoptsCurrentSpeakerAsOwner(output.Content) {
+			continue
+		}
+		output.Content = nonOwnerRelationshipFallback
+		payload, err := json.Marshal(output)
+		if err != nil {
+			continue
+		}
+		guarded[index].Payload = payload
+		replaced = true
+	}
+	if !replaced {
+		return drafts, ""
+	}
+	return guarded, "已验证的当前发送者不是主人，但回复将其称为主人"
+}
+
+func adoptsCurrentSpeakerAsOwner(content string) bool {
+	candidate := nonOwnerRefusalReplacer.Replace(strings.ToLower(strings.TrimSpace(content)))
+	return nonOwnerDirectAddressPattern.MatchString(candidate) ||
+		nonOwnerRelationshipClaimPattern.MatchString(candidate)
 }
 
 func textDraftContents(drafts []domain.OutboxDraft) []string {

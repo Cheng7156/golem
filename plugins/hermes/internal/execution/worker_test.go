@@ -99,6 +99,7 @@ func (echoTool) Invoke(_ context.Context, invocation tool.Invocation) (tool.Resu
 type completingEngine struct {
 	requests chan agent.RunRequest
 	delay    time.Duration
+	reply    string
 }
 
 func (e *completingEngine) Start(_ context.Context, request agent.RunRequest) (agent.Stream, error) {
@@ -111,9 +112,13 @@ func (e *completingEngine) Start(_ context.Context, request agent.RunRequest) (a
 			defer timer.Stop()
 			<-timer.C
 		}
-		proposal, _ := agent.NewTextProposal("completed")
+		reply := e.reply
+		if reply == "" {
+			reply = "completed"
+		}
+		proposal, _ := agent.NewTextProposal(reply)
 		events <- agent.Event{Kind: agent.EventRunAccepted, RunID: request.RunID, Sequence: 1}
-		events <- agent.Event{Kind: agent.EventReplyProposed, RunID: request.RunID, Sequence: 2, Text: "completed", Proposal: &proposal}
+		events <- agent.Event{Kind: agent.EventReplyProposed, RunID: request.RunID, Sequence: 2, Text: reply, Proposal: &proposal}
 		events <- agent.Event{Kind: agent.EventRunCompleted, RunID: request.RunID, Sequence: 3}
 	}()
 	return agent.NewChannelStream(func() {}, events), nil
@@ -436,6 +441,60 @@ func TestRelayWorkerIgnoresLegacyAbsoluteDeadline(t *testing.T) {
 	}
 	if string(item.Payload) != `{"content":"completed"}` {
 		t.Fatalf("outbox payload=%s", item.Payload)
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Worker.Run: %v", err)
+	}
+}
+
+func TestWorkerReplacesNonOwnerRelationshipAdoptionBeforeOutboxCommit(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	manager, err := config.NewManager(config.Default())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	broker, _ := tool.NewBroker(1, 1024, nil)
+	engine := &completingEngine{
+		requests: make(chan agent.RunRequest, 1),
+		reply:    "嗨呀主人～ 有啥事儿吗？",
+	}
+	runWake := make(chan struct{}, 1)
+	worker, err := execution.NewWorker(
+		1, store, engine, broker, nil, domain.LaneInteractive,
+		manager.Current, runWake, make(chan struct{}, 1),
+	)
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	run := createRun(t, store, time.Now().Add(time.Minute))
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(workerCtx) }()
+	runWake <- struct{}{}
+	select {
+	case <-engine.requests:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Relay engine was not started")
+	}
+	waitRunState(t, store, run.ID, domain.RunSucceeded)
+	item, err := store.LeaseNextOutbox(ctx, time.Now().Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("LeaseNextOutbox: %v", err)
+	}
+	var output domain.TextOutput
+	if err := json.Unmarshal(item.Payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Content != "你不是我的主人，我们按普通群友聊天就好。" {
+		t.Fatalf("outbox content=%q", output.Content)
 	}
 
 	cancel()
