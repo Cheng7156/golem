@@ -363,8 +363,11 @@ async def _handle_inspect(args: Dict[str, Any], **kwargs: Any) -> Any:
         raise CapabilityError("No readable image or sticker matched the request")
     if not speaker_id and not speaker_name and not message_id:
         current_sender = [item for item in candidates if item["is_current_sender"]]
-        if current_sender:
-            candidates = current_sender
+        if not current_sender:
+            raise CapabilityError(
+                "No readable image or sticker matched the current sender"
+            )
+        candidates = current_sender
     return await _read_candidate(
         candidates[0]["id"],
         question,

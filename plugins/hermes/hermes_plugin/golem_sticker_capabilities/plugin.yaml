@@ -33,6 +33,7 @@ provides_tools:
   - golem_sticker_attach
   - golem_sticker_select
   - golem_image_search_current_session
+  - golem_image_inspect_current_session
   - golem_image_read_current_session
   - golem_video_search
   - golem_video_attach

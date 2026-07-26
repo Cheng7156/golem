@@ -302,6 +302,35 @@ class PluginTests(unittest.TestCase):
         read.assert_called_once()
         self.assertEqual(read.call_args.args[0], "img_static_emoji")
 
+    def test_image_inspect_without_filter_never_falls_back_to_other_sender(self):
+        candidates = {
+            "candidates": [
+                {
+                    "id": "img_other_member",
+                    "speaker_id": "wxid-other",
+                    "kind": "image",
+                    "readable": True,
+                    "is_current_sender": False,
+                }
+            ]
+        }
+        with mock.patch.object(
+            plugin._client, "search_current_images", return_value=candidates
+        ):
+            with mock.patch.object(plugin._client, "read_current_image") as read:
+                with mock.patch.object(
+                    plugin._image_tools, "_vision", new=mock.AsyncMock()
+                ) as vision:
+                    with self.assertRaisesRegex(
+                        plugin.CapabilityError, "current sender"
+                    ):
+                        __import__("asyncio").run(
+                            plugin._image_tools._handle_inspect({})
+                        )
+
+        read.assert_not_called()
+        vision.assert_not_awaited()
+
     def test_collect_does_not_invoke_image_vision(self):
         response = _Response(
             {
