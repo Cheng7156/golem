@@ -116,15 +116,15 @@ The flow is:
    `golem_image_search_current_session`, then call
    `golem_sticker_collect_current_session(candidate_id, description)`. Collection
    persists verified bytes without invoking vision; Golem defaults writes to the owner.
-2. For inventory questions, call `golem_sticker_library_inventory(limit, offset)`;
-   it reports the global library shared across group chats and direct messages.
-   Each item includes a candidate ID bound to the current Run. When the user
-   asks to preview several inventory items, pass up to five of those IDs to one
-   `golem_sticker_select_many(candidate_ids)` call. Do not search each inventory
-   description again.
-3. For conversational replies, call `golem_sticker_library_search(query, limit)`
-   first. Closely relevant local matches are randomized. If it returns no
-   candidates, fall back to `golem_sticker_search(query, limit)`.
+2. For count/list-only inventory questions, call
+   `golem_sticker_library_inventory(limit, offset)`. When the user also asks to
+   send several previews, call `golem_sticker_library_preview(limit, offset)`
+   directly; it atomically stages up to five and returns exact pagination counts.
+3. When the user explicitly asks to send one local sticker matching a reaction,
+   call `golem_sticker_library_pick(query, limit)`. It atomically searches and
+   stages the first randomized close match. Use `golem_sticker_library_search`
+   only when candidate comparison is needed. If no local candidate exists, fall
+   back to `golem_sticker_search(query, limit)`.
 4. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
    candidate bytes to Hermes `auxiliary.vision` and returns a short textual
    analysis. When disabled, Hermes selects from the search descriptions alone.

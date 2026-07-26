@@ -13,6 +13,8 @@ import (
 const (
 	stickerLibraryInventoryPath = "/capabilities/v1/stickers/library/inventory"
 	stickerLibrarySearchPath    = "/capabilities/v1/stickers/library/search"
+	stickerLibraryPreviewPath   = "/capabilities/v1/stickers/library/preview"
+	stickerLibraryPickPath      = "/capabilities/v1/stickers/library/pick"
 	stickerLibraryCollectPath   = "/capabilities/v1/stickers/library/collect"
 	maxStickerDescriptionRunes  = 300
 )
@@ -62,6 +64,12 @@ type StickerLibraryCapability interface {
 }
 
 type stickerLibraryInventoryRequest struct {
+	Limit   int                      `json:"limit"`
+	Offset  int                      `json:"offset"`
+	Context capabilitySessionContext `json:"context"`
+}
+
+type stickerLibraryPreviewRequest struct {
 	Limit   int                      `json:"limit"`
 	Offset  int                      `json:"offset"`
 	Context capabilitySessionContext `json:"context"`
@@ -139,6 +147,134 @@ func (g *RelayGateway) serveStickerLibrarySearch(w http.ResponseWriter, request 
 		return
 	}
 	writeCapabilityJSON(w, http.StatusOK, result)
+}
+
+func (g *RelayGateway) serveStickerLibraryPreview(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input stickerLibraryPreviewRequest
+	if err := decodeCapabilityRequest(w, request, &input); err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid sticker library preview request")
+		return
+	}
+	run, err := g.capabilityRun(input.Context)
+	if err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
+	if input.Limit <= 0 {
+		input.Limit = maxStickerSelections
+	}
+	if input.Limit > maxStickerSelections || input.Offset < 0 {
+		writeCapabilityError(w, http.StatusBadRequest, "sticker library preview range is invalid")
+		return
+	}
+	result, err := g.config.StickerLibrary.InventoryLibrary(
+		request.Context(), stickerScope(run), input.Limit, input.Offset,
+	)
+	if err != nil {
+		slog.Warn("[hermes] sticker library preview failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusServiceUnavailable, "sticker library preview is temporarily unavailable")
+		return
+	}
+	if len(result.Items) > input.Limit {
+		writeCapabilityError(w, http.StatusInternalServerError, "sticker library preview returned too many items")
+		return
+	}
+	response := map[string]any{
+		"staged": false, "staged_count": 0, "total": result.Total,
+		"offset": input.Offset, "next_offset": input.Offset,
+		"remaining_count": max(result.Total-input.Offset, 0),
+		"has_more":        result.HasMore, "descriptions": []string{},
+	}
+	if len(result.Items) == 0 {
+		writeCapabilityJSON(w, http.StatusOK, response)
+		return
+	}
+	candidateIDs := make([]string, 0, len(result.Items))
+	for _, item := range result.Items {
+		candidateIDs = append(candidateIDs, item.ID)
+	}
+	proposals, descriptions, err := g.prepareStickerEffects(request.Context(), run, candidateIDs)
+	if err != nil {
+		slog.Warn("[hermes] sticker library preview selection failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusBadRequest, "sticker candidate is unavailable")
+		return
+	}
+	if err := run.stageEffects(proposals); err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	nextOffset := input.Offset + len(proposals)
+	response["staged"] = true
+	response["staged_count"] = len(proposals)
+	response["next_offset"] = nextOffset
+	response["remaining_count"] = max(result.Total-nextOffset, 0)
+	response["has_more"] = nextOffset < result.Total
+	response["descriptions"] = descriptions
+	response["effect_only_token"] = relayEffectOnlyToken
+	writeCapabilityJSON(w, http.StatusOK, response)
+}
+
+func (g *RelayGateway) serveStickerLibraryPick(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input stickerSearchRequest
+	if err := decodeCapabilityRequest(w, request, &input); err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid sticker library pick request")
+		return
+	}
+	run, err := g.capabilityRun(input.Context)
+	if err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
+	query := strings.TrimSpace(input.Query)
+	if query == "" {
+		writeCapabilityError(w, http.StatusBadRequest, "sticker library query is empty")
+		return
+	}
+	if input.Limit <= 0 {
+		input.Limit = 5
+	}
+	result, err := g.config.StickerLibrary.SearchLibrary(
+		request.Context(), stickerScope(run), query, input.Limit,
+	)
+	if err != nil {
+		slog.Warn("[hermes] sticker library pick failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusServiceUnavailable, "sticker library pick is temporarily unavailable")
+		return
+	}
+	if len(result.Candidates) == 0 {
+		writeCapabilityJSON(w, http.StatusOK, map[string]any{
+			"staged": false, "match_count": 0,
+		})
+		return
+	}
+	proposals, descriptions, err := g.prepareStickerEffects(
+		request.Context(), run, []string{result.Candidates[0].ID},
+	)
+	if err != nil {
+		slog.Warn("[hermes] sticker library pick selection failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusBadRequest, "sticker candidate is unavailable")
+		return
+	}
+	if err := run.stageEffects(proposals); err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeCapabilityJSON(w, http.StatusOK, map[string]any{
+		"staged": true, "match_count": len(result.Candidates),
+		"description": descriptions[0], "effect_only_token": relayEffectOnlyToken,
+	})
 }
 
 func (g *RelayGateway) serveStickerLibraryCollect(w http.ResponseWriter, request *http.Request) {

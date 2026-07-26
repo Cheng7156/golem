@@ -35,9 +35,10 @@ SEARCH_SCHEMA = {
 LIBRARY_SEARCH_SCHEMA = {
     "name": "golem_sticker_library_search",
     "description": (
-        "Fuzzily search stickers previously collected by the user. Use this before "
-        "golem_sticker_search whenever a sticker could make the current reply more "
-        "natural or expressive. Closely relevant matches are randomized to avoid "
+        "Fuzzily search stickers previously collected by the user when you need to "
+        "inspect or compare candidates before choosing. When the user explicitly asks "
+        "to send one matching local sticker, use golem_sticker_library_pick instead. "
+        "Closely relevant matches are randomized to avoid "
         "repetitive replies; when several fit equally well, normally select the first "
         "returned candidate. If no candidate is suitable, fall back to "
         "golem_sticker_search."
@@ -52,9 +53,9 @@ LIBRARY_INVENTORY_SCHEMA = {
         "group chats and direct messages. Use this for inventory questions such as "
         "which stickers are collected or how many exist. This is not semantic search: "
         "never infer the library size from golem_sticker_library_search results. "
-        "Each returned item includes a current-Run candidate id. To preview several "
-        "inventory items, pass those ids directly to golem_sticker_select_many in one "
-        "call; do not search their descriptions again."
+        "Each returned item includes a current-Run candidate id. Use this read-only tool "
+        "when the user only wants the count or list. When the user also asks to send or "
+        "preview several inventory items, call golem_sticker_library_preview directly."
     ),
     "parameters": {
         "type": "object",
@@ -76,6 +77,52 @@ LIBRARY_INVENTORY_SCHEMA = {
         },
         "additionalProperties": False,
     },
+}
+
+LIBRARY_PREVIEW_SCHEMA = {
+    "name": "golem_sticker_library_preview",
+    "description": (
+        "Atomically list and stage one sequential page of the global collected sticker "
+        "library. You must use this single tool every time the user asks which stickers "
+        "exist and also wants several sent for preview; do not call inventory or "
+        "select_many first. Stickers sent in an earlier turn do not satisfy a new request. "
+        "At most five are staged. The result reports exact total, remaining_count, and "
+        "next_offset; use the previous next_offset when the user asks for the rest."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Number of sequential inventory stickers to stage (1-5).",
+                "minimum": 1,
+                "maximum": 5,
+                "default": 5,
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Zero-based inventory offset, normally a prior next_offset.",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 0,
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+LIBRARY_PICK_SCHEMA = {
+    "name": "golem_sticker_library_pick",
+    "description": (
+        "Atomically search the local collected sticker library and stage its first "
+        "relevant match. You must call this single tool for every explicit request to send "
+        "one sticker matching a meaning or reaction, even if a matching sticker was sent "
+        "earlier in the conversation. A previous send never satisfies the current request; "
+        "do not answer from memory instead of calling this tool, and do not call "
+        "library_search or select first. If staged is false, no local match exists and "
+        "external search may be used."
+    ),
+    "parameters": SEARCH_SCHEMA["parameters"],
 }
 
 COLLECT_SCHEMA = {

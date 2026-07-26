@@ -47,6 +47,8 @@ _BLOCKED_ASYNC_TOOLS = {
     "golem_sticker_collect_current_session",
     "golem_sticker_inspect",
     "golem_sticker_library_inventory",
+    "golem_sticker_library_pick",
+    "golem_sticker_library_preview",
     "golem_sticker_library_search",
     "golem_sticker_select",
     "golem_sticker_select_many",

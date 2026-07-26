@@ -227,6 +227,8 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 	if g.config.StickerLibrary != nil && g.config.Stickers != nil {
 		mux.HandleFunc(stickerLibraryInventoryPath, g.serveStickerLibraryInventory)
 		mux.HandleFunc(stickerLibrarySearchPath, g.serveStickerLibrarySearch)
+		mux.HandleFunc(stickerLibraryPreviewPath, g.serveStickerLibraryPreview)
+		mux.HandleFunc(stickerLibraryPickPath, g.serveStickerLibraryPick)
 		if g.config.ImageContext != nil && g.config.ImageResolver != nil {
 			mux.HandleFunc(stickerLibraryCollectPath, g.serveStickerLibraryCollect)
 		}
@@ -1611,16 +1613,24 @@ func (r *relayRun) isAmbientGroup() bool {
 }
 
 func (r *relayRun) stageEffect(proposal OutputProposal) error {
-	if err := proposal.Validate(); err != nil {
-		return err
+	return r.stageEffects([]OutputProposal{proposal})
+}
+
+func (r *relayRun) stageEffects(proposals []OutputProposal) error {
+	staged := make([]OutputProposal, len(proposals))
+	for index := range proposals {
+		if err := proposals[index].Validate(); err != nil {
+			return err
+		}
+		staged[index] = proposals[index]
+		staged[index].Payload = append(json.RawMessage(nil), proposals[index].Payload...)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.finished {
 		return errors.New("relay run already finished")
 	}
-	proposal.Payload = append(json.RawMessage(nil), proposal.Payload...)
-	r.effects = append(r.effects, proposal)
+	r.effects = append(r.effects, staged...)
 	return nil
 }
 

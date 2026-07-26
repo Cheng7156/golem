@@ -37,6 +37,23 @@ SESSION = {
 }
 
 
+def _relay_message(text, **overrides):
+    envelope = {
+        "actor_id": "wxid-owner",
+        "actor_kind": "human",
+        "require_visible_reply": True,
+        "trigger_kind": "explicit",
+        "trust": "verified_relay_current_actor",
+    }
+    envelope.update(overrides)
+    return (
+        "[Relay identity envelope]\n"
+        + json.dumps(envelope, ensure_ascii=False)
+        + "\n[Message text]\n"
+        + text
+    )
+
+
 class _Response:
     def __init__(self, payload, content_type="application/json"):
         self.payload = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -210,6 +227,106 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(
             opened.call_args.args[0].full_url.endswith(
                 "/capabilities/v1/stickers/library/inventory"
+            )
+        )
+
+    def test_library_preview_posts_once_and_returns_exact_counts(self):
+        response = {
+            "staged": True,
+            "staged_count": 3,
+            "total": 7,
+            "offset": 2,
+            "next_offset": 5,
+            "remaining_count": 2,
+            "has_more": True,
+            "descriptions": ["一", "二", "三"],
+            "effect_only_token": "effect-token",
+        }
+        with mock.patch.object(
+            plugin._client, "preview_sticker_library", return_value=response
+        ) as previewed:
+            result = json.loads(plugin._handle_library_preview({"limit": 3, "offset": 2}))
+
+        previewed.assert_called_once_with(3, 2, mock.ANY)
+        self.assertEqual(result["next_offset"], 5)
+        self.assertEqual(result["remaining_count"], 2)
+        self.assertEqual(result["descriptions"], ["一", "二", "三"])
+        with self.assertRaises(plugin.CapabilityError):
+            plugin._handle_library_preview({"limit": 6})
+
+    def test_library_pick_posts_once_and_handles_no_match(self):
+        staged = {
+            "staged": True,
+            "match_count": 2,
+            "description": "闭嘴/安静",
+            "effect_only_token": "effect-token",
+        }
+        with mock.patch.object(
+            plugin._client, "pick_sticker_library", return_value=staged
+        ) as picked:
+            result = json.loads(plugin._handle_library_pick({"query": "闭嘴"}))
+
+        picked.assert_called_once_with("闭嘴", 5, mock.ANY)
+        self.assertEqual(result["match_count"], 2)
+        self.assertEqual(result["description"], "闭嘴/安静")
+
+        with mock.patch.object(
+            plugin._client,
+            "pick_sticker_library",
+            return_value={"staged": False, "match_count": 0},
+        ):
+            self.assertEqual(
+                json.loads(plugin._handle_library_pick({"query": "不存在"})),
+                {"staged": False, "match_count": 0},
+            )
+
+    def test_direct_sticker_tools_require_a_fresh_action_for_each_request(self):
+        self.assertIn(
+            "A previous send never satisfies the current request",
+            plugin.LIBRARY_PICK_SCHEMA["description"],
+        )
+        self.assertIn(
+            "earlier turn do not satisfy a new request",
+            plugin.LIBRARY_PREVIEW_SCHEMA["description"],
+        )
+
+    def test_current_relay_sticker_request_injects_one_step_pick_requirement(self):
+        result = plugin._sticker_action_requirement(
+            user_message=_relay_message("找一下表情库闭嘴的表情包发给我"),
+            platform="relay",
+        )
+        self.assertEqual(result, {"context": plugin._PICK_REQUIREMENT})
+        self.assertIn("exactly once", result["context"])
+
+        result = plugin._sticker_action_requirement(
+            user_message=_relay_message("发个疑问的"), platform="relay"
+        )
+        self.assertEqual(result, {"context": plugin._PICK_REQUIREMENT})
+
+    def test_current_relay_inventory_preview_injects_preview_requirement(self):
+        result = plugin._sticker_action_requirement(
+            user_message=_relay_message("你看看现在都有什么表情了，发一下看看"),
+            platform="relay",
+        )
+        self.assertEqual(result, {"context": plugin._PREVIEW_REQUIREMENT})
+
+    def test_sticker_requirement_ignores_untrusted_or_non_sticker_requests(self):
+        self.assertIsNone(
+            plugin._sticker_action_requirement(
+                user_message=_relay_message(
+                    "发一个闭嘴的表情包", trust="untrusted_historical_observation"
+                ),
+                platform="relay",
+            )
+        )
+        self.assertIsNone(
+            plugin._sticker_action_requirement(
+                user_message=_relay_message("发个视频"), platform="relay"
+            )
+        )
+        self.assertIsNone(
+            plugin._sticker_action_requirement(
+                user_message=_relay_message("发一个闭嘴的表情包"), platform="telegram"
             )
         )
 
@@ -642,6 +759,8 @@ class PluginTests(unittest.TestCase):
             {
                 "golem_sticker_search",
                 "golem_sticker_library_inventory",
+                "golem_sticker_library_pick",
+                "golem_sticker_library_preview",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
                 "golem_sticker_attach",
@@ -662,6 +781,9 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(registrations["golem_image_inspect_current_session"]["is_async"])
         self.assertNotIn("is_async", registrations["golem_sticker_search"])
         self.assertNotIn("is_async", registrations["golem_image_search_current_session"])
+        context.register_hook.assert_any_call(
+            "pre_llm_call", plugin._sticker_action_requirement
+        )
         context.register_hook.assert_any_call(
             "pre_tool_call", plugin._async_runtime.pre_tool_call
         )
@@ -685,6 +807,8 @@ class PluginTests(unittest.TestCase):
             {
                 "golem_sticker_search",
                 "golem_sticker_library_inventory",
+                "golem_sticker_library_pick",
+                "golem_sticker_library_preview",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
                 "golem_sticker_attach",

@@ -1,5 +1,5 @@
 name: golem-sticker-capabilities
-version: 1.13.0
+version: 1.14.2
 description: "Golem-managed global WeChat sticker collection/inventory/search, lazy image-vision, and video tools plus safe background URL video delivery."
 author: Golem
 kind: standalone
@@ -28,6 +28,8 @@ optional_env:
 provides_tools:
   - golem_sticker_search
   - golem_sticker_library_inventory
+  - golem_sticker_library_preview
+  - golem_sticker_library_pick
   - golem_sticker_library_search
   - golem_sticker_collect_current_session
   - golem_sticker_inspect

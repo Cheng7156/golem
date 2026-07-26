@@ -179,8 +179,6 @@ func (g *RelayGateway) serveStickerSelectMany(w http.ResponseWriter, request *ht
 		return
 	}
 	seen := make(map[string]struct{}, len(input.CandidateIDs))
-	payloads := make([]json.RawMessage, 0, len(input.CandidateIDs))
-	descriptions := make([]string, 0, len(input.CandidateIDs))
 	for _, rawID := range input.CandidateIDs {
 		candidateID := strings.TrimSpace(rawID)
 		if candidateID == "" {
@@ -192,34 +190,47 @@ func (g *RelayGateway) serveStickerSelectMany(w http.ResponseWriter, request *ht
 			return
 		}
 		seen[candidateID] = struct{}{}
-		output, selectErr := g.config.Stickers.Select(
-			request.Context(), stickerScope(run), candidateID,
-		)
-		if selectErr != nil {
-			slog.Warn("[hermes] sticker batch selection failed", "run_id", run.request.RunID, "err", selectErr)
-			writeCapabilityError(w, http.StatusBadRequest, "sticker candidate is unavailable")
-			return
-		}
-		payload, marshalErr := json.Marshal(output)
-		if marshalErr != nil {
-			writeCapabilityError(w, http.StatusInternalServerError, "could not stage sticker")
-			return
-		}
-		payloads = append(payloads, payload)
-		descriptions = append(descriptions, output.Description)
 	}
-	for _, payload := range payloads {
-		if err := run.stageEffect(OutputProposal{Kind: "emoji", Payload: payload}); err != nil {
-			writeCapabilityError(w, http.StatusConflict, err.Error())
-			return
-		}
+	proposals, descriptions, err := g.prepareStickerEffects(
+		request.Context(), run, input.CandidateIDs,
+	)
+	if err != nil {
+		slog.Warn("[hermes] sticker batch selection failed", "run_id", run.request.RunID, "err", err)
+		writeCapabilityError(w, http.StatusBadRequest, "sticker candidate is unavailable")
+		return
+	}
+	if err := run.stageEffects(proposals); err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
 	}
 	writeCapabilityJSON(w, http.StatusOK, map[string]any{
 		"staged":            true,
-		"staged_count":      len(payloads),
+		"staged_count":      len(proposals),
 		"effect_only_token": relayEffectOnlyToken,
 		"descriptions":      descriptions,
 	})
+}
+
+func (g *RelayGateway) prepareStickerEffects(
+	ctx context.Context,
+	run *relayRun,
+	candidateIDs []string,
+) ([]OutputProposal, []string, error) {
+	proposals := make([]OutputProposal, 0, len(candidateIDs))
+	descriptions := make([]string, 0, len(candidateIDs))
+	for _, candidateID := range candidateIDs {
+		output, err := g.config.Stickers.Select(ctx, stickerScope(run), strings.TrimSpace(candidateID))
+		if err != nil {
+			return nil, nil, err
+		}
+		payload, err := json.Marshal(output)
+		if err != nil {
+			return nil, nil, err
+		}
+		proposals = append(proposals, OutputProposal{Kind: "emoji", Payload: payload})
+		descriptions = append(descriptions, output.Description)
+	}
+	return proposals, descriptions, nil
 }
 
 func (g *RelayGateway) prepareCapabilityRequest(w http.ResponseWriter, request *http.Request) bool {

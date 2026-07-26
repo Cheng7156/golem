@@ -21,6 +21,8 @@ SELECT_PATH = "capabilities/v1/stickers/select"
 SELECT_MANY_PATH = "capabilities/v1/stickers/select-many"
 STICKER_LIBRARY_SEARCH_PATH = "capabilities/v1/stickers/library/search"
 STICKER_LIBRARY_INVENTORY_PATH = "capabilities/v1/stickers/library/inventory"
+STICKER_LIBRARY_PREVIEW_PATH = "capabilities/v1/stickers/library/preview"
+STICKER_LIBRARY_PICK_PATH = "capabilities/v1/stickers/library/pick"
 STICKER_LIBRARY_COLLECT_PATH = "capabilities/v1/stickers/library/collect"
 IMAGE_SEARCH_PATH = "capabilities/v1/images/search"
 IMAGE_READ_PATH = "capabilities/v1/images/read"
@@ -330,6 +332,30 @@ def sticker_library_inventory(
     return post_json_limited(
         STICKER_LIBRARY_INVENTORY_PATH,
         {"limit": limit, "offset": offset, "context": context},
+        MAX_RESPONSE_BYTES,
+    )
+
+
+def preview_sticker_library(
+    limit: int,
+    offset: int,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        STICKER_LIBRARY_PREVIEW_PATH,
+        {"limit": limit, "offset": offset, "context": context},
+        MAX_RESPONSE_BYTES,
+    )
+
+
+def pick_sticker_library(
+    query: str,
+    limit: int,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        STICKER_LIBRARY_PICK_PATH,
+        {"query": query, "limit": limit, "context": context},
         MAX_RESPONSE_BYTES,
     )
 

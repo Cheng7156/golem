@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict
 
 from . import async_delivery_api as _async_api
@@ -23,6 +24,8 @@ from .tool_schemas import (
     ATTACH_SCHEMA,
     COLLECT_SCHEMA,
     LIBRARY_INVENTORY_SCHEMA,
+    LIBRARY_PICK_SCHEMA,
+    LIBRARY_PREVIEW_SCHEMA,
     LIBRARY_SEARCH_SCHEMA,
     SEARCH_SCHEMA,
     SELECT_SCHEMA,
@@ -42,6 +45,24 @@ _post = _client.post_json
 _materialize = _client.materialize
 _opener = _client._opener
 
+_RELAY_ENVELOPE = "[Relay identity envelope]\n"
+_MESSAGE_TEXT_MARKER = "\n[Message text]\n"
+_NON_STICKER_MEDIA = ("视频", "图片", "照片", "文件", "链接", "语音", "歌曲", "音乐", "红包", "位置")
+_PREVIEW_REQUIREMENT = (
+    "[Current-turn Golem sticker action]\n"
+    "The verified current Relay message requests a fresh sticker-library preview. "
+    "You must call golem_sticker_library_preview exactly once in this turn. Stickers "
+    "sent in earlier turns do not satisfy this request. Do not call inventory, "
+    "library_search, select, or select_many first, and do not answer from memory."
+)
+_PICK_REQUIREMENT = (
+    "[Current-turn Golem sticker action]\n"
+    "The verified current Relay message requests a fresh sticker send. You must call "
+    "golem_sticker_library_pick exactly once in this turn. A matching sticker sent in "
+    "an earlier turn does not satisfy this request. Do not call library_search or "
+    "select first, and do not answer from memory."
+)
+
 
 def _text(value: Any, maximum: int) -> str:
     if not isinstance(value, str):
@@ -51,6 +72,60 @@ def _text(value: Any, maximum: int) -> str:
 
 def _json_result(value: Dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _verified_relay_message_text(user_message: Any, platform: Any) -> str:
+    if str(platform or "").strip().lower() != "relay" or not isinstance(
+        user_message, str
+    ):
+        return ""
+    if not user_message.startswith(_RELAY_ENVELOPE):
+        return ""
+    envelope_text, marker, message_text = user_message[len(_RELAY_ENVELOPE) :].partition(
+        _MESSAGE_TEXT_MARKER
+    )
+    if not marker:
+        return ""
+    try:
+        envelope = json.loads(envelope_text.splitlines()[0])
+    except (IndexError, json.JSONDecodeError):
+        return ""
+    if not isinstance(envelope, dict):
+        return ""
+    if (
+        envelope.get("trust") != "verified_relay_current_actor"
+        or envelope.get("trigger_kind") != "explicit"
+        or envelope.get("require_visible_reply") is not True
+    ):
+        return ""
+    return message_text.strip()
+
+
+def _sticker_action_requirement(
+    user_message: Any = "", platform: Any = "", **_: Any
+) -> Dict[str, str] | None:
+    message = _verified_relay_message_text(user_message, platform)
+    if not message:
+        return None
+    preview_request = "表情" in message and any(
+        phrase in message
+        for phrase in ("都有什么", "有哪些", "全部", "清单", "列表", "库存", "剩下", "其余")
+    ) and any(phrase in message for phrase in ("发", "发送", "看看", "预览"))
+    if preview_request:
+        return {"context": _PREVIEW_REQUIREMENT}
+    explicit_send = "表情" in message and (
+        message.startswith(("发", "再发", "请发", "麻烦发"))
+        or any(
+            phrase in message
+            for phrase in ("发给我", "给我发", "帮我发", "来一个", "来个", "整一个")
+        )
+    )
+    elliptical_send = re.match(r"^(?:再)?(?:给我)?(?:发|来|整|甩)(?:一?个|张)?", message)
+    if (explicit_send or elliptical_send) and not any(
+        media in message for media in _NON_STICKER_MEDIA
+    ):
+        return {"context": _PICK_REQUIREMENT}
+    return None
 
 
 def _search_args(args: Dict[str, Any]) -> tuple[str, int]:
@@ -162,6 +237,72 @@ def _handle_library_inventory(args: Dict[str, Any], **_: Any) -> str:
             "offset": offset,
             "has_more": bool(result.get("has_more", False)),
             "expires_in": result.get("expires_in"),
+        }
+    )
+
+
+def _preview_args(args: Dict[str, Any]) -> tuple[int, int]:
+    limit, offset = _inventory_args(args)
+    if limit > 5:
+        raise CapabilityError("limit must be an integer between 1 and 5")
+    return limit, offset
+
+
+def _handle_library_preview(args: Dict[str, Any], **_: Any) -> str:
+    limit, offset = _preview_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Sticker library preview is unavailable in an async completion turn"
+        )
+    result = _client.preview_sticker_library(limit, offset, _current_context())
+    integer_fields = ("staged_count", "total", "next_offset", "remaining_count")
+    if any(
+        not isinstance(result.get(field), int) or isinstance(result.get(field), bool)
+        for field in integer_fields
+    ):
+        raise CapabilityError("Golem sticker library preview returned invalid counts")
+    staged = result.get("staged") is True
+    staged_count = result["staged_count"]
+    if staged != (staged_count > 0) or staged_count > limit:
+        raise CapabilityError("Golem sticker library preview returned an invalid result")
+    raw_descriptions = result.get("descriptions")
+    if not isinstance(raw_descriptions, list) or len(raw_descriptions) != staged_count:
+        raise CapabilityError("Golem sticker library preview returned invalid descriptions")
+    output = {
+        "staged": staged,
+        "staged_count": staged_count,
+        "total": max(result["total"], 0),
+        "offset": offset,
+        "next_offset": max(result["next_offset"], 0),
+        "remaining_count": max(result["remaining_count"], 0),
+        "has_more": bool(result.get("has_more", False)),
+        "descriptions": [_text(value, 300) for value in raw_descriptions],
+    }
+    if staged:
+        output["effect_only_token"] = _effect_only_token(result)
+    return _json_result(output)
+
+
+def _handle_library_pick(args: Dict[str, Any], **_: Any) -> str:
+    query, limit = _search_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Sticker library pick is unavailable in an async completion turn"
+        )
+    result = _client.pick_sticker_library(query, limit, _current_context())
+    match_count = result.get("match_count")
+    if not isinstance(match_count, int) or isinstance(match_count, bool) or match_count < 0:
+        raise CapabilityError("Golem sticker library pick returned an invalid match count")
+    if result.get("staged") is not True:
+        if match_count != 0:
+            raise CapabilityError("Golem sticker library pick returned an invalid result")
+        return _json_result({"staged": False, "match_count": 0})
+    return _json_result(
+        {
+            "staged": True,
+            "match_count": match_count,
+            "effect_only_token": _effect_only_token(result),
+            "description": _text(result.get("description"), 300),
         }
     )
 
@@ -396,6 +537,7 @@ def register(ctx) -> None:
         ctx.register_hook("on_session_reset", _async_runtime.session_reset)
     # Ambient authorization is required even when detached async delivery is
     # disabled, so keep these hooks independent of that feature.
+    ctx.register_hook("pre_llm_call", _sticker_action_requirement)
     ctx.register_hook("pre_tool_call", _async_runtime.pre_tool_call)
     ctx.register_hook("transform_llm_output", _async_text.normalize_text)
     common = {
@@ -422,6 +564,20 @@ def register(ctx) -> None:
         schema=LIBRARY_INVENTORY_SCHEMA,
         handler=_handle_library_inventory,
         emoji="library-inventory",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_library_preview",
+        schema=LIBRARY_PREVIEW_SCHEMA,
+        handler=_handle_library_preview,
+        emoji="library-preview",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_library_pick",
+        schema=LIBRARY_PICK_SCHEMA,
+        handler=_handle_library_pick,
+        emoji="library-pick",
         **common,
     )
     ctx.register_tool(
