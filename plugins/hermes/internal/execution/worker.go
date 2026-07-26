@@ -342,7 +342,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		return cancelErr
 	}
 	if guarded, reason := guardNonOwnerRelationshipAdoption(
-		drafts, incoming, inbox.Binding.Principal,
+		drafts, inbox.Binding.Principal,
 	); reason != "" {
 		slog.Warn("[hermes] 身份守卫替换了非主人关系认领输出",
 			"run_id", run.ID,
@@ -352,7 +352,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		)
 		drafts = guarded
 	}
-	if guarded, reason := guardAmbientDrafts(drafts, incoming, inbox.Binding.Principal); reason != "" {
+	if guarded, reason := guardAmbientDrafts(drafts, incoming); reason != "" {
 		slog.Warn("[hermes] 回复守卫抑制了高风险 ambient 输出",
 			"run_id", run.ID,
 			"session_id", run.SessionID,
@@ -536,7 +536,6 @@ func (w *Worker) shadowContext(
 func guardAmbientDrafts(
 	drafts []domain.OutboxDraft,
 	message domain.InboundMessage,
-	principal domain.Principal,
 ) ([]domain.OutboxDraft, string) {
 	if !message.IsChatroom || message.Explicit() || len(drafts) == 0 {
 		return drafts, ""
@@ -546,14 +545,6 @@ func guardAmbientDrafts(
 	}
 	if message.VisualMediaOnly {
 		return nil, "未点名的独立图片或表情不得产生可见回复"
-	}
-	if !principal.IsOwner {
-		for _, content := range textDraftContents(drafts) {
-			lower := strings.ToLower(content)
-			if strings.Contains(content, "主人") || strings.Contains(lower, "my owner") || strings.Contains(lower, "my master") {
-				return nil, "非主人 ambient 输入触发了主人关系认领风险"
-			}
-		}
 	}
 	return drafts, ""
 }
@@ -599,6 +590,9 @@ var (
 			`(?:call|regard|accept).{0,12}you.{0,12}(?:owner|master)|` +
 			`you.{0,12}(?:are|become).{0,12}(?:my\s+)?(?:owner|master)`,
 	)
+	nonOwnerRelationshipDenialPattern = regexp.MustCompile(
+		`(?:我)?(?:啥|什么)时候.{0,4}(?:叫|称|称呼|认).{0,8}(?:你|您).{0,4}(?:为|做|作|当)?(?:主人|owner|master)`,
+	)
 	nonOwnerRefusalReplacer = strings.NewReplacer(
 		"不会叫你主人", "",
 		"不能叫你主人", "",
@@ -620,10 +614,9 @@ var (
 
 func guardNonOwnerRelationshipAdoption(
 	drafts []domain.OutboxDraft,
-	message domain.InboundMessage,
 	principal domain.Principal,
 ) ([]domain.OutboxDraft, string) {
-	if !message.Explicit() || principal.IsOwner || len(drafts) == 0 {
+	if principal.IsOwner || len(drafts) == 0 {
 		return drafts, ""
 	}
 	guarded := append([]domain.OutboxDraft(nil), drafts...)
@@ -652,22 +645,9 @@ func guardNonOwnerRelationshipAdoption(
 
 func adoptsCurrentSpeakerAsOwner(content string) bool {
 	candidate := nonOwnerRefusalReplacer.Replace(strings.ToLower(strings.TrimSpace(content)))
+	candidate = nonOwnerRelationshipDenialPattern.ReplaceAllString(candidate, "")
 	return nonOwnerDirectAddressPattern.MatchString(candidate) ||
 		nonOwnerRelationshipClaimPattern.MatchString(candidate)
-}
-
-func textDraftContents(drafts []domain.OutboxDraft) []string {
-	var result []string
-	for _, draft := range drafts {
-		if draft.Kind != "text" {
-			continue
-		}
-		var output domain.TextOutput
-		if json.Unmarshal(draft.Payload, &output) == nil {
-			result = append(result, output.Content)
-		}
-	}
-	return result
 }
 
 func (w *Worker) cancelIfRequested(ctx context.Context, run domain.Run) (bool, error) {

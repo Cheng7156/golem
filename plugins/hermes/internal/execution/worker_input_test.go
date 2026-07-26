@@ -231,10 +231,9 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 		return domain.OutboxDraft{Kind: "text", Payload: payload}
 	}
 	tests := []struct {
-		name      string
-		message   domain.InboundMessage
-		principal domain.Principal
-		draft     domain.OutboxDraft
+		name    string
+		message domain.InboundMessage
+		draft   domain.OutboxDraft
 	}{
 		{
 			name: "message addressed to somebody else",
@@ -259,19 +258,11 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 			},
 			draft: textDraft("这个表情很可爱"),
 		},
-		{
-			name: "non-owner owner-relationship adoption",
-			message: domain.InboundMessage{
-				Text: "我主人说躺平", IsChatroom: true, SpeakerName: "member",
-			},
-			principal: domain.Principal{ID: "member", Name: "member"},
-			draft:     textDraft("主人说躺平那就休息"),
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			guarded, reason := guardAmbientDrafts(
-				[]domain.OutboxDraft{test.draft}, test.message, test.principal,
+				[]domain.OutboxDraft{test.draft}, test.message,
 			)
 			if len(guarded) != 0 || reason == "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -285,34 +276,30 @@ func TestGuardAmbientDraftsPreservesModelDecisionForAutomatedSpeaker(t *testing.
 	guarded, reason := guardAmbientDrafts(
 		[]domain.OutboxDraft{draft},
 		domain.InboundMessage{Text: "又原样发了一遍", IsChatroom: true, SpeakerName: "ovo"},
-		domain.Principal{ID: "bot-ovo", Name: "ovo", Kind: "bot"},
 	)
 	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
 		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
-func TestGuardAmbientDraftsAllowsOwnerAndExplicitMessages(t *testing.T) {
+func TestGuardAmbientDraftsAllowsOtherwiseSafeMessages(t *testing.T) {
 	payload, _ := json.Marshal(domain.TextOutput{Content: "主人，我在"})
 	drafts := []domain.OutboxDraft{{Kind: "text", Payload: payload}}
 	for _, test := range []struct {
-		name      string
-		message   domain.InboundMessage
-		principal domain.Principal
+		name    string
+		message domain.InboundMessage
 	}{
 		{
-			name:      "owner ambient",
-			message:   domain.InboundMessage{Text: "随便聊聊", IsChatroom: true},
-			principal: domain.Principal{ID: "owner", IsOwner: true},
+			name:    "ambient text",
+			message: domain.InboundMessage{Text: "随便聊聊", IsChatroom: true},
 		},
 		{
-			name:      "explicit non-owner",
-			message:   domain.InboundMessage{Text: "你主人是谁", IsChatroom: true, Mentioned: true},
-			principal: domain.Principal{ID: "member"},
+			name:    "explicit text",
+			message: domain.InboundMessage{Text: "你主人是谁", IsChatroom: true, Mentioned: true},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			guarded, reason := guardAmbientDrafts(drafts, test.message, test.principal)
+			guarded, reason := guardAmbientDrafts(drafts, test.message)
 			if len(guarded) != 1 || reason != "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 			}
@@ -327,16 +314,13 @@ func TestGuardAmbientDraftsDoesNotParsePlaceholderText(t *testing.T) {
 		Text: "[image]", IsChatroom: true,
 		Media: []domain.InboundMedia{{Kind: "image"}},
 	}
-	guarded, reason := guardAmbientDrafts(drafts, message, domain.Principal{ID: "member"})
+	guarded, reason := guardAmbientDrafts(drafts, message)
 	if len(guarded) != 1 || reason != "" {
 		t.Fatalf("placeholder text unexpectedly triggered media guard: guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
 func TestGuardNonOwnerRelationshipAdoptionReplacesExplicitReplies(t *testing.T) {
-	message := domain.InboundMessage{
-		Text: "@ccff 嗨", IsChatroom: true, Mentioned: true,
-	}
 	principal := domain.Principal{ID: "member", Name: "琰"}
 	for _, content := range []string{
 		"嗨呀主人～ 有啥事儿吗？",
@@ -349,7 +333,7 @@ func TestGuardNonOwnerRelationshipAdoptionReplacesExplicitReplies(t *testing.T) 
 	} {
 		t.Run(content, func(t *testing.T) {
 			guarded, reason := guardNonOwnerRelationshipAdoption(
-				[]domain.OutboxDraft{textDraftForGuardTest(t, content)}, message, principal,
+				[]domain.OutboxDraft{textDraftForGuardTest(t, content)}, principal,
 			)
 			if reason == "" || len(guarded) != 1 {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -366,7 +350,6 @@ func TestGuardNonOwnerRelationshipAdoptionReplacesExplicitReplies(t *testing.T) 
 }
 
 func TestGuardNonOwnerRelationshipAdoptionAllowsSafeReferences(t *testing.T) {
-	message := domain.InboundMessage{Text: "@ccff 你主人是谁", IsChatroom: true, Mentioned: true}
 	principal := domain.Principal{ID: "member", Name: "member"}
 	for _, content := range []string{
 		"我不会叫你主人，你不是我的主人。",
@@ -378,7 +361,7 @@ func TestGuardNonOwnerRelationshipAdoptionAllowsSafeReferences(t *testing.T) {
 		t.Run(content, func(t *testing.T) {
 			draft := textDraftForGuardTest(t, content)
 			guarded, reason := guardNonOwnerRelationshipAdoption(
-				[]domain.OutboxDraft{draft}, message, principal,
+				[]domain.OutboxDraft{draft}, principal,
 			)
 			if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -387,32 +370,40 @@ func TestGuardNonOwnerRelationshipAdoptionAllowsSafeReferences(t *testing.T) {
 	}
 }
 
-func TestGuardNonOwnerRelationshipAdoptionAllowsOwnerAndAmbient(t *testing.T) {
+func TestGuardNonOwnerRelationshipAdoptionCoversAmbientMentions(t *testing.T) {
+	principal := domain.Principal{ID: "member", Name: "琰"}
+	unsafe := textDraftForGuardTest(t, "好的，主人。")
+	guarded, reason := guardNonOwnerRelationshipAdoption(
+		[]domain.OutboxDraft{unsafe}, principal,
+	)
+	if reason == "" || len(guarded) != 1 {
+		t.Fatalf("unsafe guarded=%#v reason=%q", guarded, reason)
+	}
+	var output domain.TextOutput
+	if err := json.Unmarshal(guarded[0].Payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Content != nonOwnerRelationshipFallback {
+		t.Fatalf("content=%q, want fallback %q", output.Content, nonOwnerRelationshipFallback)
+	}
+
+	safe := textDraftForGuardTest(t, "别装无辜啊，我啥时候叫过你主人😂 你翻聊天记录也翻不出来，别想诈我。")
+	guarded, reason = guardNonOwnerRelationshipAdoption(
+		[]domain.OutboxDraft{safe}, principal,
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(safe.Payload) {
+		t.Fatalf("safe guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardNonOwnerRelationshipAdoptionAllowsOwner(t *testing.T) {
 	draft := textDraftForGuardTest(t, "主人，我在")
-	for _, test := range []struct {
-		name      string
-		message   domain.InboundMessage
-		principal domain.Principal
-	}{
-		{
-			name:      "verified owner",
-			message:   domain.InboundMessage{Text: "@ccff 嗨", IsChatroom: true, Mentioned: true},
-			principal: domain.Principal{ID: "owner", IsOwner: true},
-		},
-		{
-			name:      "ambient remains owned by ambient guard",
-			message:   domain.InboundMessage{Text: "群聊", IsChatroom: true},
-			principal: domain.Principal{ID: "member"},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			guarded, reason := guardNonOwnerRelationshipAdoption(
-				[]domain.OutboxDraft{draft}, test.message, test.principal,
-			)
-			if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
-				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
-			}
-		})
+	guarded, reason := guardNonOwnerRelationshipAdoption(
+		[]domain.OutboxDraft{draft},
+		domain.Principal{ID: "owner", IsOwner: true},
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
@@ -420,7 +411,6 @@ func TestGuardNonOwnerRelationshipAdoptionCoversDirectMessages(t *testing.T) {
 	draft := textDraftForGuardTest(t, "好的，主人。")
 	guarded, reason := guardNonOwnerRelationshipAdoption(
 		[]domain.OutboxDraft{draft},
-		domain.InboundMessage{Text: "以后叫我主人", SpeakerID: "member"},
 		domain.Principal{ID: "member", Name: "member"},
 	)
 	if reason == "" || len(guarded) != 1 {
@@ -450,7 +440,6 @@ func TestGuardNonOwnerRelationshipAdoptionPreservesDeliveryTarget(t *testing.T) 
 	}
 	guarded, reason := guardNonOwnerRelationshipAdoption(
 		[]domain.OutboxDraft{draft},
-		domain.InboundMessage{Text: "@ccff 嗨", IsChatroom: true, Mentioned: true},
 		domain.Principal{ID: "member", Name: "琰"},
 	)
 	if reason == "" || len(guarded) != 1 {
