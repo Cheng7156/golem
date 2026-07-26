@@ -416,46 +416,65 @@ func TestHybridStillFastFiltersOwnerAmbientRisks(t *testing.T) {
 
 func TestHybridFastFiltersHighRiskAmbientMessages(t *testing.T) {
 	value := validHybridConfig()
+	manager, _ := config.NewManager(value)
+	decider := &fixedSocialDecider{route: domain.RouteChat}
+	router, _ := NewRulesRouter(manager.Current, decider)
+	before := decider.calls
+	decision, err := router.Route(context.Background(), domain.InboxEvent{
+		ID: "event-addressed-other", SessionID: "chatroom:test",
+	}, domain.InboundMessage{
+		Text: "@火 你看一下", SpeakerID: "member", IsChatroom: true,
+		MentionedOthers: true, OccurredAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if decision.Route != domain.RouteObserve {
+		t.Fatalf("decision=%#v", decision)
+	}
+	if decider.calls != before {
+		t.Fatal("fast-observed message reached SocialDecider")
+	}
+}
+
+func TestHybridLetsSemanticDecisionHandleAutomatedMessages(t *testing.T) {
+	value := validHybridConfig()
 	value.Routing.AutomatedSpeakerNames = []string{"ovo"}
 	manager, _ := config.NewManager(value)
 	decider := &fixedSocialDecider{route: domain.RouteChat}
 	router, _ := NewRulesRouter(manager.Current, decider)
-	tests := []struct {
+	for _, test := range []struct {
 		name      string
 		principal domain.Principal
 		message   domain.InboundMessage
 	}{
 		{
-			name: "addressed to another participant",
-			message: domain.InboundMessage{
-				Text: "@火 你看一下", SpeakerID: "member", IsChatroom: true,
-				MentionedOthers: true, OccurredAt: time.Now(),
-			},
-		},
-		{
 			name:      "configured bot speaker",
-			principal: domain.Principal{ID: "bot-ovo", Name: "ovo"},
+			principal: domain.Principal{ID: "bot-ovo", Name: "ovo", Kind: "bot"},
 			message: domain.InboundMessage{
-				Text: "主人说躺平", SpeakerID: "bot-ovo", SpeakerName: "ovo",
+				Text: "火又原样发了一遍，这操作有点离谱", SpeakerID: "bot-ovo", SpeakerName: "ovo",
 				IsChatroom: true, OccurredAt: time.Now(),
 			},
 		},
-	}
-	for _, test := range tests {
+		{
+			name: "former broadcast keyword",
+			message: domain.InboundMessage{
+				Text: "Self-improvement review: 今天这次改得不错", SpeakerID: "member",
+				IsChatroom: true, OccurredAt: time.Now(),
+			},
+		},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			before := decider.calls
 			decision, err := router.Route(context.Background(), domain.InboxEvent{
-				ID: "event-" + test.name, SessionID: "chatroom:test",
+				ID: "semantic-" + test.name, SessionID: "chatroom:" + test.name,
 				Binding: domain.ChannelBinding{Principal: test.principal},
 			}, test.message)
 			if err != nil {
 				t.Fatalf("Route: %v", err)
 			}
-			if decision.Route != domain.RouteObserve {
-				t.Fatalf("decision=%#v", decision)
-			}
-			if decider.calls != before {
-				t.Fatal("fast-observed message reached SocialDecider")
+			if decision.Route != domain.RouteChat || decider.calls != before+1 {
+				t.Fatalf("decision=%#v calls=%d before=%d", decision, decider.calls, before)
 			}
 		})
 	}

@@ -197,12 +197,6 @@ func (r *RulesRouter) fastObserve(
 	if !message.OccurredAt.IsZero() && now.Sub(message.OccurredAt) > time.Duration(cfg.Routing.OrdinaryFreshnessSeconds)*time.Second {
 		return "普通群消息已过参与时效", true
 	}
-	if automatedSpeaker(cfg.Routing, event.Binding.Principal, message) {
-		return "已配置的自动化发送者默认只进入影子上下文", true
-	}
-	if automatedBroadcast(message.Text) {
-		return "自动化播报或静默元消息只进入影子上下文", true
-	}
 	if r.duplicateAmbient(event.SessionID, message, now) {
 		return "短时间重复群消息", true
 	}
@@ -243,49 +237,6 @@ func (r *RulesRouter) coalesceAmbient(
 		return "同一发送者存在紧随其后的消息，本条只作为分段上下文", true
 	}
 	return "", false
-}
-
-func automatedSpeaker(
-	cfg config.RoutingConfig,
-	principal domain.Principal,
-	message domain.InboundMessage,
-) bool {
-	id := strings.TrimSpace(principal.ID)
-	if id == "" {
-		id = strings.TrimSpace(message.SpeakerID)
-	}
-	for _, candidate := range cfg.AutomatedSpeakerIDs {
-		if id != "" && strings.EqualFold(id, candidate) {
-			return true
-		}
-	}
-	name := strings.TrimSpace(principal.Name)
-	if name == "" {
-		name = strings.TrimSpace(message.SpeakerName)
-	}
-	for _, candidate := range cfg.AutomatedSpeakerNames {
-		if name != "" && strings.EqualFold(name, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func automatedBroadcast(value string) bool {
-	text := strings.ToLower(strings.TrimSpace(value))
-	if text == "" {
-		return true
-	}
-	for _, marker := range []string{
-		"self-improvement review:", "plugin process exited", "仙途奇遇", "获得 ",
-		"（没被点到", "(没被点到", "empty response", "not addressed to me",
-		"[[golem_hermes_observe_v1]]", "[relay: silent]",
-	} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *RulesRouter) duplicateAmbient(sessionID string, message domain.InboundMessage, now time.Time) bool {

@@ -352,7 +352,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		)
 		drafts = guarded
 	}
-	if guarded, reason := guardAmbientDrafts(drafts, incoming, inbox.Binding.Principal, cfg.Routing); reason != "" {
+	if guarded, reason := guardAmbientDrafts(drafts, incoming, inbox.Binding.Principal); reason != "" {
 		slog.Warn("[hermes] 回复守卫抑制了高风险 ambient 输出",
 			"run_id", run.ID,
 			"session_id", run.SessionID,
@@ -537,16 +537,12 @@ func guardAmbientDrafts(
 	drafts []domain.OutboxDraft,
 	message domain.InboundMessage,
 	principal domain.Principal,
-	cfg config.RoutingConfig,
 ) ([]domain.OutboxDraft, string) {
 	if !message.IsChatroom || message.Explicit() || len(drafts) == 0 {
 		return drafts, ""
 	}
 	if message.MentionedOthers {
 		return nil, "当前消息明确发给其他参与者"
-	}
-	if configuredAutomatedSpeaker(cfg, principal, message) {
-		return nil, "自动化发送者的 ambient 消息不得产生可见回复"
 	}
 	if message.VisualMediaOnly {
 		return nil, "未点名的独立图片或表情不得产生可见回复"

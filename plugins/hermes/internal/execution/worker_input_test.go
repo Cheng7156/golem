@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"golem_plugin_hermes/internal/config"
 	"golem_plugin_hermes/internal/domain"
 )
 
@@ -235,7 +234,6 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 		name      string
 		message   domain.InboundMessage
 		principal domain.Principal
-		cfg       config.RoutingConfig
 		draft     domain.OutboxDraft
 	}{
 		{
@@ -244,15 +242,6 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 				Text: "@火 看一下", IsChatroom: true, MentionedOthers: true,
 			},
 			draft: textDraft("我来处理"),
-		},
-		{
-			name: "automated speaker",
-			message: domain.InboundMessage{
-				Text: "系统播报", IsChatroom: true, SpeakerName: "ovo",
-			},
-			principal: domain.Principal{Name: "ovo"},
-			cfg:       config.RoutingConfig{AutomatedSpeakerNames: []string{"ovo"}},
-			draft:     textDraft("收到"),
 		},
 		{
 			name: "standalone image",
@@ -282,12 +271,24 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			guarded, reason := guardAmbientDrafts(
-				[]domain.OutboxDraft{test.draft}, test.message, test.principal, test.cfg,
+				[]domain.OutboxDraft{test.draft}, test.message, test.principal,
 			)
 			if len(guarded) != 0 || reason == "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 			}
 		})
+	}
+}
+
+func TestGuardAmbientDraftsPreservesModelDecisionForAutomatedSpeaker(t *testing.T) {
+	draft := textDraftForGuardTest(t, "这操作确实有点离谱")
+	guarded, reason := guardAmbientDrafts(
+		[]domain.OutboxDraft{draft},
+		domain.InboundMessage{Text: "又原样发了一遍", IsChatroom: true, SpeakerName: "ovo"},
+		domain.Principal{ID: "bot-ovo", Name: "ovo", Kind: "bot"},
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
@@ -311,7 +312,7 @@ func TestGuardAmbientDraftsAllowsOwnerAndExplicitMessages(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			guarded, reason := guardAmbientDrafts(drafts, test.message, test.principal, config.RoutingConfig{})
+			guarded, reason := guardAmbientDrafts(drafts, test.message, test.principal)
 			if len(guarded) != 1 || reason != "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 			}
@@ -326,7 +327,7 @@ func TestGuardAmbientDraftsDoesNotParsePlaceholderText(t *testing.T) {
 		Text: "[image]", IsChatroom: true,
 		Media: []domain.InboundMedia{{Kind: "image"}},
 	}
-	guarded, reason := guardAmbientDrafts(drafts, message, domain.Principal{ID: "member"}, config.RoutingConfig{})
+	guarded, reason := guardAmbientDrafts(drafts, message, domain.Principal{ID: "member"})
 	if len(guarded) != 1 || reason != "" {
 		t.Fatalf("placeholder text unexpectedly triggered media guard: guarded=%#v reason=%q", guarded, reason)
 	}
