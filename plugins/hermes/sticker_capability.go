@@ -246,6 +246,34 @@ func (b *stickerCapabilityBridge) AuthorizeCollection(
 	return nil
 }
 
+func (b *stickerCapabilityBridge) ManageRecentLibrarySticker(
+	ctx context.Context,
+	scope agent.StickerScope,
+	action string,
+	description string,
+) (agent.StickerLibraryManageResult, error) {
+	if b.library == nil {
+		return agent.StickerLibraryManageResult{}, errors.New("sticker library is unavailable")
+	}
+	result, err := b.library.ManageRecent(ctx, sticker.LibraryManageRequest{
+		Action: action, Description: description, SessionID: scope.SessionID,
+		Principal: scope.Principal,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, sticker.ErrManagementForbidden):
+			return agent.StickerLibraryManageResult{}, fmt.Errorf("%w: %v", agent.ErrStickerManagementForbidden, err)
+		case errors.Is(err, sticker.ErrRecentStickerNotFound):
+			return agent.StickerLibraryManageResult{}, fmt.Errorf("%w: %v", agent.ErrRecentStickerUnavailable, err)
+		default:
+			return agent.StickerLibraryManageResult{}, err
+		}
+	}
+	return agent.StickerLibraryManageResult{
+		Action: result.Action, Description: result.Description,
+	}, nil
+}
+
 func (b *stickerCapabilityBridge) Select(
 	ctx context.Context,
 	scope agent.StickerScope,

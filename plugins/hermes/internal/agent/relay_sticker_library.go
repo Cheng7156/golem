@@ -16,12 +16,15 @@ const (
 	stickerLibraryPreviewPath   = "/capabilities/v1/stickers/library/preview"
 	stickerLibraryPickPath      = "/capabilities/v1/stickers/library/pick"
 	stickerLibraryCollectPath   = "/capabilities/v1/stickers/library/collect"
+	stickerLibraryManagePath    = "/capabilities/v1/stickers/library/manage-recent"
 	maxStickerDescriptionRunes  = 300
 )
 
 var (
 	ErrStickerLibraryStorageFull  = errors.New("sticker library storage budget is exhausted")
 	ErrStickerCollectionForbidden = errors.New("sticker collection is forbidden")
+	ErrStickerManagementForbidden = errors.New("sticker library management is forbidden")
+	ErrRecentStickerUnavailable   = errors.New("recent sent sticker is unavailable")
 )
 
 type StickerLibraryCollection struct {
@@ -56,11 +59,22 @@ type StickerLibraryInventoryResult struct {
 	ExpiresInSeconds int                           `json:"expires_in"`
 }
 
+type StickerLibraryManageResult struct {
+	Action      string `json:"action"`
+	Description string `json:"description,omitempty"`
+}
+
 type StickerLibraryCapability interface {
 	AuthorizeCollection(context.Context, StickerScope) error
 	InventoryLibrary(context.Context, StickerScope, int, int) (StickerLibraryInventoryResult, error)
 	SearchLibrary(context.Context, StickerScope, string, int) (StickerSearchResult, error)
 	Collect(context.Context, StickerScope, StickerLibraryCollection) (StickerLibraryCollectionResult, error)
+	ManageRecentLibrarySticker(
+		context.Context,
+		StickerScope,
+		string,
+		string,
+	) (StickerLibraryManageResult, error)
 }
 
 type stickerLibraryInventoryRequest struct {
@@ -78,6 +92,12 @@ type stickerLibraryPreviewRequest struct {
 type stickerLibraryCollectRequest struct {
 	CandidateID string                   `json:"candidate_id"`
 	Description string                   `json:"description"`
+	Context     capabilitySessionContext `json:"context"`
+}
+
+type stickerLibraryManageRequest struct {
+	Action      string                   `json:"action"`
+	Description string                   `json:"description,omitempty"`
 	Context     capabilitySessionContext `json:"context"`
 }
 
@@ -345,5 +365,59 @@ func (g *RelayGateway) serveStickerLibraryCollect(w http.ResponseWriter, request
 		"description":   result.Description,
 		"asset_created": result.AssetCreated,
 		"label_created": result.LabelCreated,
+	})
+}
+
+func (g *RelayGateway) serveStickerLibraryManageRecent(w http.ResponseWriter, request *http.Request) {
+	if !g.prepareCapabilityRequest(w, request) {
+		return
+	}
+	var input stickerLibraryManageRequest
+	if err := decodeCapabilityRequest(w, request, &input); err != nil {
+		writeCapabilityError(w, http.StatusBadRequest, "invalid sticker library management request")
+		return
+	}
+	run, err := g.capabilityRun(input.Context)
+	if err != nil {
+		writeCapabilityError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !authorizeInteractiveMedia(w, run) {
+		return
+	}
+	input.Action = strings.TrimSpace(input.Action)
+	input.Description = strings.TrimSpace(input.Description)
+	if input.Action != "update_description" && input.Action != "delete" {
+		writeCapabilityError(w, http.StatusBadRequest, "sticker library management action is invalid")
+		return
+	}
+	if input.Action == "update_description" && (input.Description == "" ||
+		len([]rune(input.Description)) > maxStickerDescriptionRunes) {
+		writeCapabilityError(w, http.StatusBadRequest, "description is empty or too long")
+		return
+	}
+	if input.Action == "delete" && input.Description != "" {
+		writeCapabilityError(w, http.StatusBadRequest, "delete does not accept a description")
+		return
+	}
+	result, err := g.config.StickerLibrary.ManageRecentLibrarySticker(
+		request.Context(), stickerScope(run), input.Action, input.Description,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrStickerManagementForbidden):
+			writeCapabilityError(w, http.StatusForbidden, "only the owner may manage stickers")
+		case errors.Is(err, ErrRecentStickerUnavailable):
+			writeCapabilityJSON(w, http.StatusOK, map[string]any{
+				"found": false, "action": input.Action,
+			})
+		default:
+			slog.Warn("[hermes] sticker library management failed", "run_id", run.request.RunID, "err", err)
+			writeCapabilityError(w, http.StatusInternalServerError, "could not manage recent sticker")
+		}
+		return
+	}
+	writeCapabilityJSON(w, http.StatusOK, map[string]any{
+		"found": true, "action": result.Action, "description": result.Description,
 	})
 }

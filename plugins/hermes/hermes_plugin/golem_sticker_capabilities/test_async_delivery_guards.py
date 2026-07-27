@@ -13,6 +13,8 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_manage_recent",
+                "golem_silence_rule_add",
                 "golem_sticker_library_inventory",
                 "golem_sticker_library_pick",
                 "golem_sticker_library_preview",
@@ -37,6 +39,8 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_manage_recent",
+                "golem_silence_rule_add",
                 "golem_sticker_library_inventory",
                 "golem_sticker_library_pick",
                 "golem_sticker_library_preview",
@@ -61,6 +65,8 @@ class AsyncDeliveryGuardTests(unittest.TestCase):
             for tool_name in (
                 "delegate_task",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_manage_recent",
+                "golem_silence_rule_add",
                 "golem_sticker_library_inventory",
                 "golem_sticker_library_pick",
                 "golem_sticker_library_preview",

@@ -47,6 +47,8 @@ _BLOCKED_ASYNC_TOOLS = {
     "golem_sticker_collect_current_session",
     "golem_sticker_inspect",
     "golem_sticker_library_inventory",
+    "golem_sticker_library_manage_recent",
+    "golem_silence_rule_add",
     "golem_sticker_library_pick",
     "golem_sticker_library_preview",
     "golem_sticker_library_search",
@@ -55,6 +57,7 @@ _BLOCKED_ASYNC_TOOLS = {
     "golem_video_fetch",
 }
 _AMBIENT_MEDIA_PREFIXES = ("golem_sticker_", "golem_video_")
+_AMBIENT_BLOCKED_TOOLS = {"golem_silence_rule_add"}
 logger = logging.getLogger(__name__)
 _REQUEUE_DELAY_SECONDS = 2.0
 
@@ -158,7 +161,9 @@ def pre_tool_call(tool_name: str = "", **_: Any) -> Dict[str, str] | None:
             "message": f"Tool {tool_name} is unavailable in an async completion turn",
         }
     if _session_trigger_kind() == "ambient" and (
-        tool_name == "delegate_task" or tool_name.startswith(_AMBIENT_MEDIA_PREFIXES)
+        tool_name == "delegate_task"
+        or tool_name in _AMBIENT_BLOCKED_TOOLS
+        or tool_name.startswith(_AMBIENT_MEDIA_PREFIXES)
     ):
         return {
             "action": "block",

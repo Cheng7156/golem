@@ -2,7 +2,10 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -244,6 +247,110 @@ func (s *Store) StickerLibraryInventory(
 		result = append(result, value)
 	}
 	return result, total, rows.Err()
+}
+
+func (s *Store) FindRecentSentStickerAsset(
+	ctx context.Context,
+	sessionID string,
+) (domain.StickerAsset, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return domain.StickerAsset{}, storeport.ErrInvalid
+	}
+	db, err := s.readable()
+	if err != nil {
+		return domain.StickerAsset{}, err
+	}
+	var payload []byte
+	if err := db.QueryRowContext(ctx, `
+		SELECT payload_json FROM outbox
+		WHERE session_id=? AND kind='emoji' AND state=?
+		ORDER BY receipt_time DESC,sequence DESC
+		LIMIT 1
+	`, sessionID, domain.OutboxSent).Scan(&payload); err != nil {
+		return domain.StickerAsset{}, mapScanError(err)
+	}
+	var output domain.EmojiOutput
+	if err := json.Unmarshal(payload, &output); err != nil || len(output.Data) == 0 {
+		return domain.StickerAsset{}, storeport.ErrNotFound
+	}
+	digestBytes := sha256.Sum256(output.Data)
+	digest := hex.EncodeToString(digestBytes[:])
+	return scanStickerAsset(db.QueryRowContext(ctx,
+		`SELECT `+stickerAssetColumns+` FROM sticker_assets WHERE sha256=?`, digest))
+}
+
+func (s *Store) ReplaceStickerDescription(
+	ctx context.Context,
+	label domain.StickerLabel,
+	terms []domain.StickerSearchTerm,
+) error {
+	if err := label.Validate(); err != nil {
+		return errors.Join(storeport.ErrInvalid, err)
+	}
+	terms = validStickerTerms(terms)
+	if len(terms) == 0 {
+		return storeport.ErrInvalid
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sticker_assets WHERE id=?`, label.StickerID,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return storeport.ErrNotFound
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sticker_labels WHERE sticker_id=?`, label.StickerID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sticker_terms WHERE sticker_id=?`, label.StickerID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sticker_labels(
+				sticker_id,description,description_norm,source_session_id,
+				source_event_id,source_message_id,source_speaker_id,
+				source_speaker_name,collected_by_id,collected_by_name,created_at
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		`, label.StickerID, label.Description, label.DescriptionNorm,
+			label.SourceSessionID, label.SourceEventID, label.SourceMessageID,
+			label.SourceSpeakerID, label.SourceSpeakerName, label.CollectedByID,
+			label.CollectedByName, unixMillis(label.CreatedAt)); err != nil {
+			return err
+		}
+		for _, term := range terms {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO sticker_terms(sticker_id,term,weight) VALUES(?,?,?)`,
+				label.StickerID, term.Value, term.Weight,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) DeleteStickerAsset(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return storeport.ErrInvalid
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `DELETE FROM sticker_assets WHERE id=?`, id)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return storeport.ErrNotFound
+		}
+		return nil
+	})
 }
 
 func scanStickerAsset(row scanner) (domain.StickerAsset, error) {

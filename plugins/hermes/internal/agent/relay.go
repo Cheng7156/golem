@@ -93,6 +93,9 @@ func (c RelayConfig) normalize() (RelayConfig, error) {
 	c.SharedSecret = strings.TrimSpace(c.SharedSecret)
 	c.SilenceRulesFile = strings.TrimSpace(c.SilenceRulesFile)
 	c.CapabilityToken = strings.TrimSpace(c.CapabilityToken)
+	hasCapabilityEndpoints := c.Stickers != nil || c.StickerLibrary != nil || c.Videos != nil ||
+		c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil ||
+		c.CronDelivery != nil || (c.SilenceRulesFile != "" && c.CapabilityToken != "")
 	if (c.GatewayID == "") != (c.SharedSecret == "") {
 		return RelayConfig{}, errors.New("relay gateway_id and shared_secret must be configured together")
 	}
@@ -102,10 +105,10 @@ func (c RelayConfig) normalize() (RelayConfig, error) {
 	if c.SharedSecret == "" && !isLoopbackListener(c.ListenAddress) {
 		return RelayConfig{}, errors.New("unauthenticated relay must listen on a loopback address")
 	}
-	if (c.Stickers != nil || c.StickerLibrary != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && len(c.CapabilityToken) < 16 {
+	if hasCapabilityEndpoints && len(c.CapabilityToken) < 16 {
 		return RelayConfig{}, errors.New("Hermes capabilities require a shared token of at least 16 characters")
 	}
-	if (c.Stickers != nil || c.StickerLibrary != nil || c.Videos != nil || c.ImageContext != nil || c.ImageResolver != nil || c.AsyncDelivery != nil || c.CronDelivery != nil) && capabilityPath(c.Path) {
+	if hasCapabilityEndpoints && capabilityPath(c.Path) {
 		return RelayConfig{}, errors.New("relay path conflicts with a capability endpoint")
 	}
 	if c.MaxFrameBytes <= 0 {
@@ -148,6 +151,7 @@ type RelayGateway struct {
 	listener          net.Listener
 	runtimeCtx        context.Context
 	videoMu           sync.Mutex
+	silenceRulesMu    sync.Mutex
 	videoJobs         map[string]videoJob
 	asyncVideoJobs    map[string]asyncVideoJob
 	asyncVideoURLs    map[string]map[string]struct{}
@@ -218,6 +222,9 @@ func NewRelayGateway(config RelayConfig) (*RelayGateway, error) {
 func (g *RelayGateway) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(g.config.Path, g.serveRelay)
+	if g.config.SilenceRulesFile != "" && len(g.config.CapabilityToken) >= 16 {
+		mux.HandleFunc(silenceRuleAddPath, g.serveSilenceRuleAdd)
+	}
 	if g.config.Stickers != nil {
 		mux.HandleFunc(stickerSearchPath, g.serveStickerSearch)
 		mux.HandleFunc(stickerMaterializePath, g.serveStickerMaterialize)
@@ -229,6 +236,7 @@ func (g *RelayGateway) Run(ctx context.Context) error {
 		mux.HandleFunc(stickerLibrarySearchPath, g.serveStickerLibrarySearch)
 		mux.HandleFunc(stickerLibraryPreviewPath, g.serveStickerLibraryPreview)
 		mux.HandleFunc(stickerLibraryPickPath, g.serveStickerLibraryPick)
+		mux.HandleFunc(stickerLibraryManagePath, g.serveStickerLibraryManageRecent)
 		if g.config.ImageContext != nil && g.config.ImageResolver != nil {
 			mux.HandleFunc(stickerLibraryCollectPath, g.serveStickerLibraryCollect)
 		}
@@ -1170,7 +1178,8 @@ func relayDescriptor(options relayDescriptorOptions) map[string]any {
 	}
 	if options.silenceRulesFile != "" {
 		hint += " The operator-maintained Golem silence rules file is " + strconv.Quote(options.silenceRulesFile) + ". " +
-			"Only when the owner explicitly asks, use file tools to add one exact:, prefix:, or suffix: rule per line; do not edit it proactively."
+			"Only when the owner explicitly asks to add a rule, call golem_silence_rule_add exactly once with match_type exact, prefix, or suffix. " +
+			"Never use skill_view, skill_manage, or a Skill rules JSON for Golem silence rules, and do not edit the file proactively."
 	}
 	return map[string]any{
 		"contract_version":               relayContractVersion,

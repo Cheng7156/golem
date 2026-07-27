@@ -24,12 +24,14 @@ from .tool_schemas import (
     ATTACH_SCHEMA,
     COLLECT_SCHEMA,
     LIBRARY_INVENTORY_SCHEMA,
+    MANAGE_RECENT_SCHEMA,
     LIBRARY_PICK_SCHEMA,
     LIBRARY_PREVIEW_SCHEMA,
     LIBRARY_SEARCH_SCHEMA,
     SEARCH_SCHEMA,
     SELECT_SCHEMA,
     SELECT_MANY_SCHEMA,
+    SILENCE_RULE_ADD_SCHEMA,
 )
 
 
@@ -61,6 +63,27 @@ _PICK_REQUIREMENT = (
     "golem_sticker_library_pick exactly once in this turn. A matching sticker sent in "
     "an earlier turn does not satisfy this request. Do not call library_search or "
     "select first, and do not answer from memory."
+)
+_UPDATE_RECENT_REQUIREMENT = (
+    "[Current-turn Golem sticker action]\n"
+    "The verified current Relay message explicitly replaces the description of the "
+    "sticker just sent. You must call golem_sticker_library_manage_recent exactly once "
+    "with action=update_description and the complete new description supplied by the "
+    "user. Do not call inventory, search, image, collect, or selection tools first."
+)
+_DELETE_RECENT_REQUIREMENT = (
+    "[Current-turn Golem sticker action]\n"
+    "The verified current Relay message explicitly deletes the sticker just sent. You "
+    "must call golem_sticker_library_manage_recent exactly once with action=delete and "
+    "no description. Do not call inventory, search, image, collect, or selection tools first."
+)
+_ADD_SILENCE_RULE_REQUIREMENT = (
+    "[Current-turn Golem silence-rule action]\n"
+    "The verified current Relay message explicitly asks to add a Golem silence rule. "
+    "You must call golem_silence_rule_add exactly once, using exact for whole/full "
+    "matches, prefix for starts-with matches, or suffix for ends-with matches. Pass "
+    "only the literal target text as value. Do not call skill_view, skill_manage, "
+    "terminal, or file tools, and do not write any Skill rules JSON."
 )
 
 
@@ -107,6 +130,24 @@ def _sticker_action_requirement(
     message = _verified_relay_message_text(user_message, platform)
     if not message:
         return None
+    if "静默规则" in message and any(
+        phrase in message for phrase in ("添加", "加入", "加到", "加进", "新增")
+    ) and not message.startswith(("怎么", "如何")):
+        return {"context": _ADD_SILENCE_RULE_REQUIREMENT}
+    recent_reference = any(
+        phrase in message
+        for phrase in ("刚才", "刚刚", "刚发", "这个表情", "那个表情", "上一个表情", "上一张表情")
+    )
+    if recent_reference and "表情" in message and not message.startswith(("怎么", "如何")):
+        if any(phrase in message for phrase in ("删掉", "删除掉", "移除掉", "不要了")) or re.search(
+            r"(?:^|请|把|帮我)(?:删除|移除).{0,40}表情", message
+        ):
+            return {"context": _DELETE_RECENT_REQUIREMENT}
+        if re.search(
+            r"(?:改成|改为|修改成|修改为|描述为|标签为|标记为|叫做)\s*[^，。！？?]{1,300}$",
+            message,
+        ):
+            return {"context": _UPDATE_RECENT_REQUIREMENT}
     preview_request = "表情" in message and any(
         phrase in message
         for phrase in ("都有什么", "有哪些", "全部", "清单", "列表", "库存", "剩下", "其余")
@@ -344,6 +385,93 @@ def _handle_collect(args: Dict[str, Any], **_: Any) -> str:
             "description": _text(result.get("description"), 300),
             "asset_created": bool(result.get("asset_created", False)),
             "label_created": bool(result.get("label_created", False)),
+        }
+    )
+
+
+def _manage_recent_args(args: Dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(args, dict):
+        raise CapabilityError("Sticker management arguments must be an object")
+    if set(args) - {"action", "description"}:
+        raise CapabilityError("Sticker management contains unsupported arguments")
+    action = args.get("action")
+    description = args.get("description", "")
+    if action not in {"update_description", "delete"}:
+        raise CapabilityError("action must be update_description or delete")
+    if not isinstance(description, str):
+        raise CapabilityError("description must be a string")
+    description = description.strip()
+    if action == "update_description" and not description:
+        raise CapabilityError("description is required for update_description")
+    if action == "delete" and description:
+        raise CapabilityError("description must be omitted for delete")
+    if len(description) > 300:
+        raise CapabilityError("description must be at most 300 characters")
+    return action, description
+
+
+def _handle_manage_recent(args: Dict[str, Any], **_: Any) -> str:
+    action, description = _manage_recent_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Sticker library management is unavailable in an async completion turn"
+        )
+    result = _client.manage_recent_sticker(
+        action, description, _current_context()
+    )
+    found = result.get("found")
+    if not isinstance(found, bool) or result.get("action") != action:
+        raise CapabilityError("Golem sticker management returned an invalid result")
+    output = {"found": found, "action": action}
+    if found and action == "update_description":
+        returned_description = _text(result.get("description"), 300)
+        if returned_description != description:
+            raise CapabilityError("Golem returned a different sticker description")
+        output["description"] = returned_description
+    return _json_result(output)
+
+
+def _silence_rule_args(args: Dict[str, Any]) -> tuple[str, str]:
+    if not isinstance(args, dict):
+        raise CapabilityError("Silence rule arguments must be an object")
+    if set(args) - {"match_type", "value"}:
+        raise CapabilityError("Silence rule contains unsupported arguments")
+    match_type = args.get("match_type")
+    value = args.get("value")
+    if match_type not in {"exact", "prefix", "suffix"}:
+        raise CapabilityError("match_type must be exact, prefix, or suffix")
+    if not isinstance(value, str):
+        raise CapabilityError("value is required")
+    value = value.strip()
+    if not value:
+        raise CapabilityError("value is required")
+    if "\r" in value or "\n" in value:
+        raise CapabilityError("value must be one line")
+    if len(value) > 1000:
+        raise CapabilityError("value must be at most 1000 characters")
+    return match_type, value
+
+
+def _handle_silence_rule_add(args: Dict[str, Any], **_: Any) -> str:
+    match_type, value = _silence_rule_args(args)
+    if _async_binding() is not None:
+        raise CapabilityError(
+            "Silence rule management is unavailable in an async completion turn"
+        )
+    result = _client.add_silence_rule(match_type, value, _current_context())
+    if result.get("applied") is not True:
+        raise CapabilityError("Golem did not apply the silence rule")
+    if result.get("match_type") != match_type or result.get("value") != value:
+        raise CapabilityError("Golem confirmed a different silence rule")
+    created = result.get("created")
+    if not isinstance(created, bool):
+        raise CapabilityError("Golem returned an invalid silence rule result")
+    return _json_result(
+        {
+            "applied": True,
+            "created": created,
+            "match_type": match_type,
+            "value": value,
         }
     )
 
@@ -592,6 +720,20 @@ def register(ctx) -> None:
         schema=COLLECT_SCHEMA,
         handler=_handle_collect,
         emoji="collect",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_sticker_library_manage_recent",
+        schema=MANAGE_RECENT_SCHEMA,
+        handler=_handle_manage_recent,
+        emoji="library-manage",
+        **common,
+    )
+    ctx.register_tool(
+        name="golem_silence_rule_add",
+        schema=SILENCE_RULE_ADD_SCHEMA,
+        handler=_handle_silence_rule_add,
+        emoji="silence-rule-add",
         **common,
     )
     ctx.register_tool(

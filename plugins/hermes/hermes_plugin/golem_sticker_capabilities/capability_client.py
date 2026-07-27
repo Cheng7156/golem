@@ -24,6 +24,8 @@ STICKER_LIBRARY_INVENTORY_PATH = "capabilities/v1/stickers/library/inventory"
 STICKER_LIBRARY_PREVIEW_PATH = "capabilities/v1/stickers/library/preview"
 STICKER_LIBRARY_PICK_PATH = "capabilities/v1/stickers/library/pick"
 STICKER_LIBRARY_COLLECT_PATH = "capabilities/v1/stickers/library/collect"
+STICKER_LIBRARY_MANAGE_PATH = "capabilities/v1/stickers/library/manage-recent"
+SILENCE_RULE_ADD_PATH = "capabilities/v1/silence-rules/add"
 IMAGE_SEARCH_PATH = "capabilities/v1/images/search"
 IMAGE_READ_PATH = "capabilities/v1/images/read"
 VIDEO_SEARCH_PATH = "capabilities/v1/videos/search"
@@ -372,6 +374,29 @@ def collect_current_sticker(
             "description": description,
             "context": context,
         },
+        MAX_RESPONSE_BYTES,
+    )
+
+
+def manage_recent_sticker(
+    action: str,
+    description: str,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"action": action, "context": context}
+    if description:
+        payload["description"] = description
+    return post_json_limited(STICKER_LIBRARY_MANAGE_PATH, payload, MAX_RESPONSE_BYTES)
+
+
+def add_silence_rule(
+    match_type: str,
+    value: str,
+    context: Dict[str, str],
+) -> Dict[str, Any]:
+    return post_json_limited(
+        SILENCE_RULE_ADD_PATH,
+        {"match_type": match_type, "value": value, "context": context},
         MAX_RESPONSE_BYTES,
     )
 

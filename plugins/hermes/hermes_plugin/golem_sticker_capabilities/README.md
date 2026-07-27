@@ -1,7 +1,8 @@
 # Golem Sticker Capabilities for Hermes
 
-This is a Hermes Agent v0.18.2 user plugin. It provides optional sticker and
-video tools plus a durable completion rail for `delegate_task(background=true)`.
+This is a Hermes Agent v0.18.2 user plugin. It provides optional sticker,
+silence-rule, and video tools plus a durable completion rail for
+`delegate_task(background=true)`.
 Async results still enter Golem's Transactional Outbox and are sent by
 `message.send`.
 
@@ -125,13 +126,22 @@ The flow is:
    stages the first randomized close match. Use `golem_sticker_library_search`
    only when candidate comparison is needed. If no local candidate exists, fall
    back to `golem_sticker_search(query, limit)`.
-4. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
+4. To correct or delete the local sticker just sent, call
+   `golem_sticker_library_manage_recent(action, description)` directly. Golem
+   resolves only the latest successfully sent sticker in the same chat from the
+   durable outbox; it never searches for or guesses the target. Management is
+   owner-only, and `description` is used only with `update_description`.
+5. When the owner explicitly asks to add a silence rule, call
+   `golem_silence_rule_add(match_type, value)` exactly once. The tool writes only
+   Golem's configured active rules file, atomically replaces it, and parses it
+   again before returning success. Do not use Skill JSON or generic file tools.
+6. When enabled, `golem_sticker_inspect(candidate_id)` sends Golem-validated
    candidate bytes to Hermes `auxiliary.vision` and returns a short textual
    analysis. When disabled, Hermes selects from the search descriptions alone.
-5. `golem_sticker_select(candidate_id)` stages one local or external candidate;
+7. `golem_sticker_select(candidate_id)` stages one local or external candidate;
    `golem_sticker_select_many(candidate_ids)` stages up to five already-discovered
    candidates in one call. Both use the same Run-bound effect path.
-6. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
+8. For a sticker-only reply, Hermes returns the exact `effect_only_token` from
    the selection result. For text plus sticker, it returns ordinary final text.
 
 Provider API keys, provider response parsing, downloads, media validation, and

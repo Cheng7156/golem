@@ -24,8 +24,10 @@ const (
 )
 
 var (
-	ErrLibraryStorageFull  = errors.New("sticker library storage budget is exhausted")
-	ErrCollectionForbidden = errors.New("sticker collection is not allowed for this principal")
+	ErrLibraryStorageFull    = errors.New("sticker library storage budget is exhausted")
+	ErrCollectionForbidden   = errors.New("sticker collection is not allowed for this principal")
+	ErrManagementForbidden   = errors.New("sticker library management is not allowed for this principal")
+	ErrRecentStickerNotFound = errors.New("recent sent sticker is not in the local library")
 )
 
 type LibraryRepository interface {
@@ -48,6 +50,13 @@ type LibraryRepository interface {
 		int,
 		int,
 	) ([]domain.StickerLibraryInventoryItem, int, error)
+	FindRecentSentStickerAsset(context.Context, string) (domain.StickerAsset, error)
+	ReplaceStickerDescription(
+		context.Context,
+		domain.StickerLabel,
+		[]domain.StickerSearchTerm,
+	) error
+	DeleteStickerAsset(context.Context, string) error
 }
 
 type LibraryConfig struct {
@@ -83,6 +92,18 @@ type LibraryInventory struct {
 	Offset int
 }
 
+type LibraryManageRequest struct {
+	Action      string
+	Description string
+	SessionID   string
+	Principal   domain.Principal
+}
+
+type LibraryManageResult struct {
+	Action      string
+	Description string
+}
+
 type LocalLibrary struct {
 	config     LibraryConfig
 	repository LibraryRepository
@@ -116,6 +137,13 @@ func (l *LocalLibrary) ID() string { return LocalLibraryProviderID }
 func (l *LocalLibrary) AuthorizeCollection(principal domain.Principal) error {
 	if l.config.CollectionPolicy == "owner" && !principal.IsOwner {
 		return ErrCollectionForbidden
+	}
+	return nil
+}
+
+func (l *LocalLibrary) AuthorizeManagement(principal domain.Principal) error {
+	if !principal.IsOwner {
+		return ErrManagementForbidden
 	}
 	return nil
 }
@@ -262,6 +290,67 @@ func (l *LocalLibrary) Inventory(
 		return LibraryInventory{}, err
 	}
 	return LibraryInventory{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+}
+
+func (l *LocalLibrary) ManageRecent(
+	ctx context.Context,
+	request LibraryManageRequest,
+) (LibraryManageResult, error) {
+	if err := ctx.Err(); err != nil {
+		return LibraryManageResult{}, err
+	}
+	if err := l.AuthorizeManagement(request.Principal); err != nil {
+		return LibraryManageResult{}, err
+	}
+	action := strings.TrimSpace(request.Action)
+	description := strings.TrimSpace(request.Description)
+	if strings.TrimSpace(request.SessionID) == "" {
+		return LibraryManageResult{}, errors.New("sticker management session is empty")
+	}
+	if action != "update_description" && action != "delete" {
+		return LibraryManageResult{}, errors.New("sticker management action is invalid")
+	}
+	if action == "delete" && description != "" {
+		return LibraryManageResult{}, errors.New("delete does not accept a description")
+	}
+	normalized := normalizeLibraryText(description)
+	if action == "update_description" && (description == "" ||
+		len([]rune(description)) > maxLibraryDescriptionRunes || normalized == "") {
+		return LibraryManageResult{}, errors.New("sticker description is empty or too long")
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	asset, err := l.repository.FindRecentSentStickerAsset(ctx, strings.TrimSpace(request.SessionID))
+	if errors.Is(err, storeport.ErrNotFound) {
+		return LibraryManageResult{}, ErrRecentStickerNotFound
+	}
+	if err != nil {
+		return LibraryManageResult{}, err
+	}
+	if action == "update_description" {
+		label := domain.StickerLabel{
+			StickerID: asset.ID, Description: description, DescriptionNorm: normalized,
+			SourceSessionID: request.SessionID, CollectedByID: request.Principal.ID,
+			CollectedByName: request.Principal.Name, CreatedAt: l.now().UTC(),
+		}
+		if err := l.repository.ReplaceStickerDescription(
+			ctx, label, librarySearchTerms(description),
+		); err != nil {
+			if errors.Is(err, storeport.ErrNotFound) {
+				return LibraryManageResult{}, ErrRecentStickerNotFound
+			}
+			return LibraryManageResult{}, err
+		}
+		return LibraryManageResult{Action: action, Description: description}, nil
+	}
+	if err := l.deleteAsset(ctx, asset); err != nil {
+		if errors.Is(err, storeport.ErrNotFound) {
+			return LibraryManageResult{}, ErrRecentStickerNotFound
+		}
+		return LibraryManageResult{}, err
+	}
+	return LibraryManageResult{Action: action}, nil
 }
 
 func relevantLibraryMatches(

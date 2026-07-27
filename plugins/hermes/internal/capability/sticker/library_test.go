@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"golem_plugin_hermes/internal/domain"
+	storeport "golem_plugin_hermes/internal/store"
 	"golem_plugin_hermes/internal/store/sqlite"
 )
 
@@ -147,6 +148,119 @@ func TestLocalLibraryConcurrentDuplicateCollectionIsIdempotent(t *testing.T) {
 	if err != nil || total != int64(len(libraryTestPNG)) {
 		t.Fatalf("storage=%d err=%v", total, err)
 	}
+}
+
+type recentLibraryRepository struct {
+	*sqlite.Store
+	recent    domain.StickerAsset
+	recentErr error
+	deleteErr error
+}
+
+func (r *recentLibraryRepository) FindRecentSentStickerAsset(
+	context.Context,
+	string,
+) (domain.StickerAsset, error) {
+	if r.recentErr != nil {
+		return domain.StickerAsset{}, r.recentErr
+	}
+	return r.recent, nil
+}
+
+func (r *recentLibraryRepository) DeleteStickerAsset(ctx context.Context, id string) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	return r.Store.DeleteStickerAsset(ctx, id)
+}
+
+func TestLocalLibraryManagesRecentStickerWithoutSearch(t *testing.T) {
+	ctx := context.Background()
+	library, repository := openManagedStickerLibrary(t, "any")
+	collected, err := library.Collect(ctx, libraryCollectRequest("欢天喜地", libraryTestPNG, true))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	repository.recent, err = repository.GetStickerAsset(ctx, collected.StickerID)
+	if err != nil {
+		t.Fatalf("GetStickerAsset: %v", err)
+	}
+	assetPath := repository.recent.Path
+
+	if _, err := library.ManageRecent(ctx, LibraryManageRequest{
+		Action: "update_description", Description: "冷眼闭嘴",
+		SessionID: "private:owner", Principal: domain.Principal{ID: "owner", IsOwner: false},
+	}); !errors.Is(err, ErrManagementForbidden) {
+		t.Fatalf("non-owner management error=%v", err)
+	}
+	updated, err := library.ManageRecent(ctx, LibraryManageRequest{
+		Action: "update_description", Description: "冷眼闭嘴",
+		SessionID: "private:owner", Principal: domain.Principal{ID: "owner", Name: "主人", IsOwner: true},
+	})
+	if err != nil || updated.Description != "冷眼闭嘴" {
+		t.Fatalf("ManageRecent update=%#v err=%v", updated, err)
+	}
+	oldMatches, err := library.Search(ctx, ProviderSearchRequest{Query: "欢天喜地", Limit: 5, Page: 1})
+	if err != nil || len(oldMatches) != 0 {
+		t.Fatalf("old Search=%#v err=%v", oldMatches, err)
+	}
+	newMatches, err := library.Search(ctx, ProviderSearchRequest{Query: "闭嘴", Limit: 5, Page: 1})
+	if err != nil || len(newMatches) != 1 || newMatches[0].Description != "冷眼闭嘴" {
+		t.Fatalf("new Search=%#v err=%v", newMatches, err)
+	}
+
+	repository.deleteErr = errors.New("database unavailable")
+	if _, err := library.ManageRecent(ctx, LibraryManageRequest{
+		Action: "delete", SessionID: "private:owner",
+		Principal: domain.Principal{ID: "owner", IsOwner: true},
+	}); err == nil {
+		t.Fatal("delete unexpectedly succeeded")
+	}
+	if _, err := os.Stat(assetPath); err != nil {
+		t.Fatalf("failed delete did not restore file: %v", err)
+	}
+	repository.deleteErr = nil
+	deleted, err := library.ManageRecent(ctx, LibraryManageRequest{
+		Action: "delete", SessionID: "private:owner",
+		Principal: domain.Principal{ID: "owner", IsOwner: true},
+	})
+	if err != nil || deleted.Action != "delete" {
+		t.Fatalf("ManageRecent delete=%#v err=%v", deleted, err)
+	}
+	if _, err := os.Stat(assetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted file error=%v", err)
+	}
+	if _, err := repository.GetStickerAsset(ctx, collected.StickerID); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("deleted repository asset error=%v", err)
+	}
+	repository.recentErr = storeport.ErrNotFound
+	if _, err := library.ManageRecent(ctx, LibraryManageRequest{
+		Action: "delete", SessionID: "private:owner",
+		Principal: domain.Principal{ID: "owner", IsOwner: true},
+	}); !errors.Is(err, ErrRecentStickerNotFound) {
+		t.Fatalf("repeated delete error=%v", err)
+	}
+}
+
+func openManagedStickerLibrary(
+	t *testing.T,
+	policy string,
+) (*LocalLibrary, *recentLibraryRepository) {
+	t.Helper()
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "hermes.db"))
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	managed := &recentLibraryRepository{Store: repository}
+	library, err := NewLocalLibrary(LibraryConfig{
+		Directory: filepath.Join(t.TempDir(), "stickers"), MaxStorageBytes: 1024,
+		MaxMediaBytes: int64(len(libraryTestPNG)), CollectionPolicy: policy,
+	}, managed)
+	if err != nil {
+		t.Fatalf("NewLocalLibrary: %v", err)
+	}
+	return library, managed
 }
 
 func TestLocalLibraryRejectsSymlinkedAsset(t *testing.T) {

@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 const (
 	maxSilenceRulesFileBytes = 64 << 10
 	maxSilenceRules          = 256
+	maxSilenceRuleRunes      = 1000
 )
 
 type silenceRule struct {
@@ -128,4 +130,110 @@ func (r silenceRule) matches(value string) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeManagedSilenceRule(kind string, value string) (silenceRule, string, error) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return silenceRule{}, "", errors.New("silence rule value is empty")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return silenceRule{}, "", errors.New("silence rule value must be one line")
+	}
+	if len([]rune(value)) > maxSilenceRuleRunes {
+		return silenceRule{}, "", fmt.Errorf("silence rule value exceeds %d characters", maxSilenceRuleRunes)
+	}
+	rule, ok, err := parseSilenceRule(kind + ":" + value)
+	if err != nil {
+		return silenceRule{}, "", err
+	}
+	if !ok {
+		return silenceRule{}, "", errors.New("silence rule is empty")
+	}
+	return rule, kind + ":" + value, nil
+}
+
+func appendSilenceRule(path string, target silenceRule, line string) (bool, error) {
+	rules, err := loadSilenceRules(path)
+	if err != nil {
+		return false, err
+	}
+	for _, rule := range rules {
+		if rule == target {
+			return false, nil
+		}
+	}
+	if len(rules) >= maxSilenceRules {
+		return false, fmt.Errorf("rules file exceeds %d entries", maxSilenceRules)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	if len(data) != 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	data = append(data, line...)
+	data = append(data, '\n')
+	if len(data) > maxSilenceRulesFileBytes {
+		return false, fmt.Errorf("rules file exceeds %d bytes", maxSilenceRulesFileBytes)
+	}
+	if err := writeSilenceRulesAtomic(path, data, info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	verified, err := loadSilenceRules(path)
+	if err != nil {
+		return false, err
+	}
+	for _, rule := range verified {
+		if rule == target {
+			return true, nil
+		}
+	}
+	return false, errors.New("silence rule verification failed")
+}
+
+func writeSilenceRulesAtomic(path string, data []byte, mode os.FileMode) (err error) {
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".silence-rules-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		if err != nil {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err = temporary.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err = temporary.Write(data); err != nil {
+		return err
+	}
+	if err = temporary.Sync(); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	dir, openErr := os.Open(directory)
+	if openErr != nil {
+		return openErr
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }

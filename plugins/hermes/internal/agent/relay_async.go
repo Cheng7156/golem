@@ -97,6 +97,7 @@ func capabilityPath(path string) bool {
 	case stickerSearchPath, stickerMaterializePath, stickerSelectPath, stickerSelectManyPath,
 		imageSearchPath, imageReadPath, stickerLibraryInventoryPath, stickerLibrarySearchPath,
 		stickerLibraryPreviewPath, stickerLibraryPickPath, stickerLibraryCollectPath,
+		stickerLibraryManagePath, silenceRuleAddPath,
 		videoSearchPath, videoResolvePath, videoSelectPath, videoStatusPath,
 		inlineVideoFetchPath,
 		asyncDeliveryRegisterPath, asyncDeliveryStatusPath,

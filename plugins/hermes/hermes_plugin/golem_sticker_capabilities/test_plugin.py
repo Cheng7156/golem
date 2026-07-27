@@ -310,6 +310,41 @@ class PluginTests(unittest.TestCase):
         )
         self.assertEqual(result, {"context": plugin._PREVIEW_REQUIREMENT})
 
+    def test_current_relay_recent_management_injects_one_step_requirement(self):
+        updated = plugin._sticker_action_requirement(
+            user_message=_relay_message("把刚才发的表情标签改成无语嫌弃"),
+            platform="relay",
+        )
+        self.assertEqual(updated, {"context": plugin._UPDATE_RECENT_REQUIREMENT})
+        self.assertIn("exactly once", updated["context"])
+
+        deleted = plugin._sticker_action_requirement(
+            user_message=_relay_message("刚才那个表情不对，删掉"),
+            platform="relay",
+        )
+        self.assertEqual(deleted, {"context": plugin._DELETE_RECENT_REQUIREMENT})
+        self.assertIsNone(
+            plugin._sticker_action_requirement(
+                user_message=_relay_message("怎么删除刚才那个表情？"), platform="relay"
+            )
+        )
+
+    def test_current_relay_silence_rule_injects_one_step_requirement(self):
+        result = plugin._sticker_action_requirement(
+            user_message=_relay_message(
+                '把“我插嘴没必要。”结尾的添加到静默规则'
+            ),
+            platform="relay",
+        )
+        self.assertEqual(result, {"context": plugin._ADD_SILENCE_RULE_REQUIREMENT})
+        self.assertIn("golem_silence_rule_add exactly once", result["context"])
+        self.assertIn("Do not call skill_view", result["context"])
+        self.assertIsNone(
+            plugin._sticker_action_requirement(
+                user_message=_relay_message("怎么添加静默规则？"), platform="relay"
+            )
+        )
+
     def test_sticker_requirement_ignores_untrusted_or_non_sticker_requests(self):
         self.assertIsNone(
             plugin._sticker_action_requirement(
@@ -364,6 +399,87 @@ class PluginTests(unittest.TestCase):
                 "/capabilities/v1/stickers/library/collect"
             )
         )
+
+    def test_manage_recent_posts_once_for_update_and_delete(self):
+        with mock.patch.object(
+            plugin._client,
+            "manage_recent_sticker",
+            return_value={
+                "found": True,
+                "action": "update_description",
+                "description": "无语嫌弃",
+            },
+        ) as managed:
+            result = json.loads(
+                plugin._handle_manage_recent(
+                    {"action": "update_description", "description": "无语嫌弃"}
+                )
+            )
+        managed.assert_called_once_with("update_description", "无语嫌弃", mock.ANY)
+        self.assertEqual(
+            result,
+            {
+                "found": True,
+                "action": "update_description",
+                "description": "无语嫌弃",
+            },
+        )
+
+        with mock.patch.object(
+            plugin._client,
+            "manage_recent_sticker",
+            return_value={"found": False, "action": "delete"},
+        ) as managed:
+            result = json.loads(plugin._handle_manage_recent({"action": "delete"}))
+        managed.assert_called_once_with("delete", "", mock.ANY)
+        self.assertEqual(result, {"found": False, "action": "delete"})
+        with self.assertRaises(plugin.CapabilityError):
+            plugin._handle_manage_recent({"action": "delete", "description": "x"})
+
+    def test_silence_rule_add_posts_once_and_requires_exact_confirmation(self):
+        with mock.patch.object(
+            plugin._client,
+            "add_silence_rule",
+            return_value={
+                "applied": True,
+                "created": True,
+                "match_type": "suffix",
+                "value": "我插嘴没必要。",
+            },
+        ) as added:
+            result = json.loads(
+                plugin._handle_silence_rule_add(
+                    {"match_type": "suffix", "value": "我插嘴没必要。"}
+                )
+            )
+        added.assert_called_once_with("suffix", "我插嘴没必要。", mock.ANY)
+        self.assertEqual(
+            result,
+            {
+                "applied": True,
+                "created": True,
+                "match_type": "suffix",
+                "value": "我插嘴没必要。",
+            },
+        )
+        with self.assertRaises(plugin.CapabilityError):
+            plugin._handle_silence_rule_add(
+                {"match_type": "regex", "value": "silent$"}
+            )
+        with mock.patch.object(
+            plugin._client,
+            "add_silence_rule",
+            return_value={
+                "applied": True,
+                "created": True,
+                "match_type": "exact",
+                "value": "different",
+            },
+        ):
+            with self.assertRaisesRegex(plugin.CapabilityError, "different"):
+                plugin._handle_silence_rule_add(
+                    {"match_type": "suffix", "value": "expected"}
+                )
 
     def test_select_many_posts_once_and_requires_every_sticker_to_be_staged(self):
         staged = {
@@ -763,6 +879,8 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_library_preview",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_manage_recent",
+                "golem_silence_rule_add",
                 "golem_sticker_attach",
                 "golem_sticker_inspect",
                 "golem_sticker_select",
@@ -811,6 +929,8 @@ class PluginTests(unittest.TestCase):
                 "golem_sticker_library_preview",
                 "golem_sticker_library_search",
                 "golem_sticker_collect_current_session",
+                "golem_sticker_library_manage_recent",
+                "golem_silence_rule_add",
                 "golem_sticker_attach",
                 "golem_sticker_select",
                 "golem_sticker_select_many",

@@ -1,6 +1,7 @@
 package sticker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -112,4 +113,39 @@ func readLibraryFile(
 		return nil, "", errors.New("sticker library file MIME changed")
 	}
 	return data, mimeType, nil
+}
+
+func (l *LocalLibrary) deleteAsset(ctx context.Context, asset domain.StickerAsset) error {
+	expectedPath, err := libraryAssetPath(l.config.Directory, asset.SHA256, asset.MIMEType)
+	if err != nil || filepath.Clean(asset.Path) != filepath.Clean(expectedPath) {
+		return errors.New("sticker library asset path is invalid")
+	}
+	if _, _, err := readLibraryFile(l.config.Directory, asset, l.config.MaxMediaBytes); err != nil {
+		return err
+	}
+	tombstone, err := os.CreateTemp(filepath.Dir(asset.Path), ".deleting-*")
+	if err != nil {
+		return fmt.Errorf("create sticker deletion tombstone: %w", err)
+	}
+	tombstonePath := tombstone.Name()
+	if err := tombstone.Close(); err != nil {
+		_ = os.Remove(tombstonePath)
+		return fmt.Errorf("close sticker deletion tombstone: %w", err)
+	}
+	if err := os.Remove(tombstonePath); err != nil {
+		return fmt.Errorf("prepare sticker deletion tombstone: %w", err)
+	}
+	if err := os.Rename(asset.Path, tombstonePath); err != nil {
+		return fmt.Errorf("stage sticker library deletion: %w", err)
+	}
+	if err := l.repository.DeleteStickerAsset(ctx, asset.ID); err != nil {
+		if restoreErr := os.Rename(tombstonePath, asset.Path); restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("restore sticker library asset: %w", restoreErr))
+		}
+		return err
+	}
+	if err := os.Remove(tombstonePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove sticker library tombstone: %w", err)
+	}
+	return nil
 }

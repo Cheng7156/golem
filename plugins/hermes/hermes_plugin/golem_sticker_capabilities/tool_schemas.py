@@ -159,6 +159,68 @@ COLLECT_SCHEMA = {
     },
 }
 
+MANAGE_RECENT_SCHEMA = {
+    "name": "golem_sticker_library_manage_recent",
+    "description": (
+        "Update or delete the local-library sticker most recently sent successfully "
+        "in this exact WeChat chat. Use this single tool when the user refers to the "
+        "sticker just sent as ‘这个/那个/刚才的’ and asks to replace its description "
+        "or delete it. Do not call inventory, search, or image tools first. The target "
+        "is resolved from the durable sent outbox and never guessed; found=false means "
+        "the latest sent sticker is not manageable local-library content."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["update_description", "delete"],
+                "description": "Replace all labels/search terms, or delete the sticker.",
+            },
+            "description": {
+                "type": "string",
+                "description": (
+                    "New complete description for update_description. Omit for delete."
+                ),
+                "minLength": 1,
+                "maxLength": 300,
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
+SILENCE_RULE_ADD_SCHEMA = {
+    "name": "golem_silence_rule_add",
+    "description": (
+        "Atomically add one rule to Golem's active WeChat silence-rules file. "
+        "Use this single owner-only tool when the current verified user explicitly "
+        "asks to add a silence rule. Do not call skill_view, skill_manage, or file "
+        "tools first; Skill rules JSON files are not used by Golem. Duplicate rules "
+        "are idempotent and success is returned only after the active file is parsed "
+        "again and the rule is confirmed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "match_type": {
+                "type": "string",
+                "enum": ["exact", "prefix", "suffix"],
+                "description": "Exact whole reply, starting prefix, or ending suffix match.",
+            },
+            "value": {
+                "type": "string",
+                "description": "Literal one-line text to match, without regex syntax.",
+                "minLength": 1,
+                "maxLength": 1000,
+            },
+        },
+        "required": ["match_type", "value"],
+        "additionalProperties": False,
+    },
+}
+
 SELECT_SCHEMA = {
     "name": "golem_sticker_select",
     "description": (

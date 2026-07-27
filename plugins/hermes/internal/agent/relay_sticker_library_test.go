@@ -10,21 +10,36 @@ import (
 )
 
 type fakeStickerLibraryCapability struct {
-	authorizeErr    error
-	inventoryScope  StickerScope
-	inventoryLimit  int
-	inventoryOffset int
-	inventoryResult StickerLibraryInventoryResult
-	inventoryErr    error
-	searchScope     StickerScope
-	searchQuery     string
-	searchLimit     int
-	searchResult    StickerSearchResult
-	searchErr       error
-	collectScope    StickerScope
-	collection      StickerLibraryCollection
-	collectResult   StickerLibraryCollectionResult
-	collectErr      error
+	authorizeErr      error
+	inventoryScope    StickerScope
+	inventoryLimit    int
+	inventoryOffset   int
+	inventoryResult   StickerLibraryInventoryResult
+	inventoryErr      error
+	searchScope       StickerScope
+	searchQuery       string
+	searchLimit       int
+	searchResult      StickerSearchResult
+	searchErr         error
+	collectScope      StickerScope
+	collection        StickerLibraryCollection
+	collectResult     StickerLibraryCollectionResult
+	collectErr        error
+	manageScope       StickerScope
+	manageAction      string
+	manageDescription string
+	manageResult      StickerLibraryManageResult
+	manageErr         error
+}
+
+func (f *fakeStickerLibraryCapability) ManageRecentLibrarySticker(
+	_ context.Context,
+	scope StickerScope,
+	action string,
+	description string,
+) (StickerLibraryManageResult, error) {
+	f.manageScope, f.manageAction, f.manageDescription = scope, action, description
+	return f.manageResult, f.manageErr
 }
 
 func (f *fakeStickerLibraryCapability) InventoryLibrary(
@@ -294,7 +309,63 @@ func newStickerLibraryCapabilityRun(
 	mux := http.NewServeMux()
 	mux.HandleFunc(stickerLibraryPreviewPath, gateway.serveStickerLibraryPreview)
 	mux.HandleFunc(stickerLibraryPickPath, gateway.serveStickerLibraryPick)
+	mux.HandleFunc(stickerLibraryManagePath, gateway.serveStickerLibraryManageRecent)
 	return gateway, run, httptest.NewServer(mux)
+}
+
+func TestStickerLibraryManageRecentUsesOneScopedOperation(t *testing.T) {
+	library := &fakeStickerLibraryCapability{manageResult: StickerLibraryManageResult{
+		Action: "update_description", Description: "新的标签",
+	}}
+	gateway, run, server := newStickerLibraryCapabilityRun(
+		t, &fakeStickerCapability{}, library,
+	)
+	defer server.Close()
+	defer gateway.removeRun(run)
+
+	status, response := postCapability(t, server.URL+stickerLibraryManagePath, stickerLibraryManageRequest{
+		Action: "update_description", Description: "新的标签",
+		Context: capabilityContext(run.request),
+	})
+	if status != http.StatusOK || response["found"] != true ||
+		response["description"] != "新的标签" {
+		t.Fatalf("manage status=%d response=%#v", status, response)
+	}
+	if library.manageAction != "update_description" || library.manageDescription != "新的标签" ||
+		library.manageScope.SessionID != run.request.SessionID ||
+		library.manageScope.Principal.ID != run.request.Principal.ID {
+		t.Fatalf("manage scope=%#v action=%q description=%q", library.manageScope, library.manageAction, library.manageDescription)
+	}
+
+	library.manageErr = ErrRecentStickerUnavailable
+	status, response = postCapability(t, server.URL+stickerLibraryManagePath, stickerLibraryManageRequest{
+		Action: "delete", Context: capabilityContext(run.request),
+	})
+	if status != http.StatusOK || response["found"] != false || response["action"] != "delete" {
+		t.Fatalf("missing recent status=%d response=%#v", status, response)
+	}
+}
+
+func TestStickerLibraryManageRecentRejectsNonOwnerAndInvalidInput(t *testing.T) {
+	library := &fakeStickerLibraryCapability{manageErr: ErrStickerManagementForbidden}
+	gateway, run, server := newStickerLibraryCapabilityRun(
+		t, &fakeStickerCapability{}, library,
+	)
+	defer server.Close()
+	defer gateway.removeRun(run)
+
+	status, _ := postCapability(t, server.URL+stickerLibraryManagePath, stickerLibraryManageRequest{
+		Action: "delete", Context: capabilityContext(run.request),
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("forbidden management status=%d", status)
+	}
+	status, _ = postCapability(t, server.URL+stickerLibraryManagePath, stickerLibraryManageRequest{
+		Action: "delete", Description: "unexpected", Context: capabilityContext(run.request),
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid delete status=%d", status)
+	}
 }
 
 func TestStickerLibraryRequiresTokenAndReservesPaths(t *testing.T) {
@@ -310,6 +381,7 @@ func TestStickerLibraryRequiresTokenAndReservesPaths(t *testing.T) {
 	for _, path := range []string{
 		stickerLibraryInventoryPath, stickerLibrarySearchPath,
 		stickerLibraryPreviewPath, stickerLibraryPickPath, stickerLibraryCollectPath,
+		stickerLibraryManagePath,
 	} {
 		if _, err := NewRelayGateway(RelayConfig{
 			Path: path, CapabilityToken: testCapabilityToken,
