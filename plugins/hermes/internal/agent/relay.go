@@ -1528,13 +1528,17 @@ func (g *RelayGateway) writeDurableResult(ctx context.Context, connection *relay
 }
 
 // Hermes should return relayObserveToken, but model providers can occasionally
-// render the same decision as a short natural-language answer. Treat only exact
-// standalone no-reply phrases as silence. The caller limits this completion
+// prepend their observation rationale. A standalone token on the final line is
+// still an unambiguous protocol decision. The caller limits this completion
 // boundary to group runs so a direct conversation still requires a reply.
 func isObserveResponse(content string) bool {
 	value := unwrapHermesPlainTextFallback(content)
 	value = strings.ToLower(strings.TrimSpace(value))
 	if isInternalTokenResponse(value, relayObserveToken) {
+		return true
+	}
+	if lineBreak := strings.LastIndexByte(value, '\n'); lineBreak >= 0 &&
+		isInternalTokenResponse(value[lineBreak+1:], relayObserveToken) {
 		return true
 	}
 	if isWrappedSilenceExplanation(value) {

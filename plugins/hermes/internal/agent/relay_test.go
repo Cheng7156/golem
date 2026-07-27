@@ -255,7 +255,8 @@ func TestRelayObserveTokenCompletesWithoutReplyProposal(t *testing.T) {
 	writeRelayFrame(t, connection, map[string]any{
 		"type": "outbound", "requestId": "request-observe",
 		"action": map[string]any{
-			"op": "send", "chat_id": "chatroom:room-1|interactive", "content": "不需要回复。",
+			"op": "send", "chat_id": "chatroom:room-1|interactive",
+			"content":  "ambient 消息，没 @ 我，不需要回复。\n\n" + relayObserveToken,
 			"metadata": map[string]any{"notify": true},
 		},
 	})
@@ -314,7 +315,8 @@ func TestRelayExplicitObserveTokenIsRejected(t *testing.T) {
 			writeRelayFrame(t, connection, map[string]any{
 				"type": "outbound", "requestId": "request-observe-explicit",
 				"action": map[string]any{
-					"op": "send", "chat_id": relayChatID(request), "content": relayObserveToken,
+					"op": "send", "chat_id": relayChatID(request),
+					"content":  "I should stay silent.\n\n" + relayObserveToken,
 					"metadata": map[string]any{"notify": true},
 				},
 			})
@@ -334,6 +336,7 @@ func TestRelayObserveResponseRecognition(t *testing.T) {
 	}{
 		{content: relayObserveToken, want: true},
 		{content: "`" + relayObserveToken + "`。", want: true},
+		{content: "ambient 消息，没 @ 我，不需要回复。\n\n" + relayObserveToken, want: true},
 		{content: " 不需要回复。 ", want: true},
 		{content: "**无需回复！**", want: true},
 		{content: "NO_REPLY", want: true},
@@ -353,6 +356,7 @@ func TestRelayObserveResponseRecognition(t *testing.T) {
 		{content: "[Everyone please stay silent]", want: false},
 		{content: "I don't need to respond to this. Staying silent.", want: false},
 		{content: "I don't need to respond with silence; I should explain the error.", want: false},
+		{content: "静默标记 " + relayObserveToken + " 只能单独放在最后一行。", want: false},
 		{content: "正常回复", want: false},
 	}
 	for _, test := range tests {
