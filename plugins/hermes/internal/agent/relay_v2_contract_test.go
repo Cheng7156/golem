@@ -67,9 +67,19 @@ func resultHash(t *testing.T, invocationID, proposalID, kind string, content any
 }
 
 func startV2Relay(t *testing.T, request RunRequest) (*RelayGateway, *relayResultMemoryStore, *websocket.Conn, Stream) {
+	return startV2RelayWithConfig(t, request, RelayConfig{})
+}
+
+func startV2RelayWithConfig(
+	t *testing.T,
+	request RunRequest,
+	config RelayConfig,
+) (*RelayGateway, *relayResultMemoryStore, *websocket.Conn, Stream) {
 	t.Helper()
 	results := &relayResultMemoryStore{values: make(map[string]domain.RelayRunResult)}
-	gateway, err := NewRelayGateway(RelayConfig{ObservationV2Enabled: true, RunResults: results})
+	config.ObservationV2Enabled = true
+	config.RunResults = results
+	gateway, err := NewRelayGateway(config)
 	if err != nil {
 		t.Fatal(err)
 	}

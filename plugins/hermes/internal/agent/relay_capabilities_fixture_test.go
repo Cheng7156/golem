@@ -19,13 +19,15 @@ type stickerRelayFixture struct {
 	connection *websocket.Conn
 	stream     Stream
 	request    RunRequest
+	stickers   *fakeStickerCapability
 }
 
 func newStickerRelayFixture(t *testing.T, input string) *stickerRelayFixture {
 	t.Helper()
+	stickers := &fakeStickerCapability{}
 	gateway, err := NewRelayGateway(RelayConfig{
 		CapabilityToken: testCapabilityToken,
-		Stickers:        &fakeStickerCapability{},
+		Stickers:        stickers,
 	})
 	if err != nil {
 		t.Fatalf("NewRelayGateway: %v", err)
@@ -53,7 +55,7 @@ func newStickerRelayFixture(t *testing.T, input string) *stickerRelayFixture {
 	}
 	_ = readRelayFrame(t, connection)
 	return &stickerRelayFixture{
-		server: server, connection: connection, stream: stream, request: request,
+		server: server, connection: connection, stream: stream, request: request, stickers: stickers,
 	}
 }
 

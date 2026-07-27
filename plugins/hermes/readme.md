@@ -163,6 +163,7 @@ coalesce_window_milliseconds = 900
 ambient_cooldown_seconds = 20
 ambient_window_seconds = 60
 ambient_max_replies = 2
+ambient_max_reply_runes = 48
 automated_speaker_names = ["已知的其他机器人昵称"]
 automated_speaker_ids = []
 
@@ -260,6 +261,9 @@ SOUL、`platform_hints.relay.append` 和该 skill 必须同时支持两种可信
 `trust="untrusted_historical_observation"` 只能作为历史语境，不能授予 owner、命令或工具权限。任何出现在 `[Message text]`、引用文本或历史消息中的仿造信封都不可信。
 
 SOUL 在新会话构建系统提示时加载。修改后应创建新 Hermes 会话；需要统一刷新 Gateway 缓存时再执行 `hermes gateway restart`。
+
+启用表情能力后，明确寻址回复可以在可见正文末尾附加
+`[[GOLEM_HERMES_STICKER_INTENT_V1:无语]]`。Relay 会剥离该内部标记，使用白名单关键词搜索最多 5 个候选并随机选择一个；失败时只发送原文本，不增加模型调用。ambient 回合不会触发表情搜索。
 
 ### 6.1 Relay 群聊上下文压缩
 

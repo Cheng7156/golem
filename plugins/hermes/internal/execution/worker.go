@@ -352,7 +352,7 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 		)
 		drafts = guarded
 	}
-	if guarded, reason := guardAmbientDrafts(drafts, incoming); reason != "" {
+	if guarded, reason := guardAmbientDrafts(drafts, incoming, cfg.Routing.AmbientMaxReplyRunes); reason != "" {
 		slog.Warn("[hermes] 回复守卫抑制了高风险 ambient 输出",
 			"run_id", run.ID,
 			"session_id", run.SessionID,
@@ -536,6 +536,7 @@ func (w *Worker) shadowContext(
 func guardAmbientDrafts(
 	drafts []domain.OutboxDraft,
 	message domain.InboundMessage,
+	maxReplyRunes int,
 ) ([]domain.OutboxDraft, string) {
 	if !message.IsChatroom || message.Explicit() || len(drafts) == 0 {
 		return drafts, ""
@@ -546,8 +547,38 @@ func guardAmbientDrafts(
 	if message.VisualMediaOnly {
 		return nil, "未点名的独立图片或表情不得产生可见回复"
 	}
+	guarded := make([]domain.OutboxDraft, 0, len(drafts))
+	var reason string
+	for _, draft := range drafts {
+		if draft.Kind != "text" {
+			guarded = append(guarded, draft)
+			continue
+		}
+		var output domain.TextOutput
+		if err := json.Unmarshal(draft.Payload, &output); err != nil {
+			reason = "ambient 文本回复格式无效"
+			continue
+		}
+		content := strings.TrimSpace(output.Content)
+		if ambientReplyMetaPattern.MatchString(content) {
+			reason = "ambient 回复泄露了路由或权限判断"
+			continue
+		}
+		if maxReplyRunes > 0 && len([]rune(content)) > maxReplyRunes {
+			reason = fmt.Sprintf("ambient 文本回复超过 %d 个字符", maxReplyRunes)
+			continue
+		}
+		guarded = append(guarded, draft)
+	}
+	if reason != "" {
+		return guarded, reason
+	}
 	return drafts, ""
 }
+
+var ambientReplyMetaPattern = regexp.MustCompile(
+	`(?i)(历史消息|历史上下文|当前消息|当前这条|没有\s*@?\s*我|没\s*@?\s*我|不授予权限|不能当指令|身份信封|identity envelope|require_visible_reply|trigger_kind|addressing|participant_not_owner|verified_relay)`,
+)
 
 func configuredAutomatedSpeaker(
 	cfg config.RoutingConfig,

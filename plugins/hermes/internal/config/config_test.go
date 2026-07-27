@@ -55,6 +55,12 @@ func TestNormalizeRejectsUnsafeOrContradictoryValues(t *testing.T) {
 			},
 		},
 		{
+			name: "ambient reply limit too large",
+			mutate: func(value *config.Config) {
+				value.Routing.AmbientMaxReplyRunes = 201
+			},
+		},
+		{
 			name: "reserved workers consume pool",
 			mutate: func(value *config.Config) {
 				value.Scheduler.InteractiveReservedWorkers = value.Scheduler.InteractiveWorkers

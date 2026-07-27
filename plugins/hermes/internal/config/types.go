@@ -90,6 +90,7 @@ type RoutingConfig struct {
 	AmbientCooldownSeconds      int      `toml:"ambient_cooldown_seconds"`
 	AmbientWindowSeconds        int      `toml:"ambient_window_seconds"`
 	AmbientMaxReplies           int      `toml:"ambient_max_replies"`
+	AmbientMaxReplyRunes        int      `toml:"ambient_max_reply_runes" comment:"未点名群聊文本回复的最大字符数"`
 	AutomatedSpeakerNames       []string `toml:"automated_speaker_names,omitempty"`
 	AutomatedSpeakerIDs         []string `toml:"automated_speaker_ids,omitempty"`
 }

@@ -22,6 +22,8 @@ type fakeStickerCapability struct {
 	query            string
 	selectedID       string
 	selectedIDs      []string
+	searchErr        error
+	candidates       []StickerCandidate
 }
 
 func (f *fakeStickerCapability) Search(_ context.Context, scope StickerScope, query string, limit int) (StickerSearchResult, error) {
@@ -29,8 +31,18 @@ func (f *fakeStickerCapability) Search(_ context.Context, scope StickerScope, qu
 	defer f.mu.Unlock()
 	f.searchScope = scope
 	f.query = query
+	if f.searchErr != nil {
+		return StickerSearchResult{}, f.searchErr
+	}
+	candidates := f.candidates
+	if candidates == nil {
+		candidates = []StickerCandidate{{ID: "candidate-1", Description: "开心", Format: "png"}}
+	}
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
 	return StickerSearchResult{
-		Candidates:       []StickerCandidate{{ID: "candidate-1", Description: "开心", Format: "png"}},
+		Candidates:       append([]StickerCandidate(nil), candidates...),
 		ExpiresInSeconds: 300,
 	}, nil
 }

@@ -21,6 +21,7 @@ func Default() Config {
 			AmbientCooldownSeconds:      20,
 			AmbientWindowSeconds:        60,
 			AmbientMaxReplies:           2,
+			AmbientMaxReplyRunes:        48,
 		},
 		Context: ContextConfig{
 			Mode: "legacy_shadow", Backfill: "from_now", RecentRawMessages: 10, MaxProjectionTokens: 4000,

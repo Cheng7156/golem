@@ -262,7 +262,7 @@ func TestGuardAmbientDraftsSuppressesIdentityAndAddressingRisks(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			guarded, reason := guardAmbientDrafts(
-				[]domain.OutboxDraft{test.draft}, test.message,
+				[]domain.OutboxDraft{test.draft}, test.message, 48,
 			)
 			if len(guarded) != 0 || reason == "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -275,7 +275,7 @@ func TestGuardAmbientDraftsPreservesModelDecisionForAutomatedSpeaker(t *testing.
 	draft := textDraftForGuardTest(t, "这操作确实有点离谱")
 	guarded, reason := guardAmbientDrafts(
 		[]domain.OutboxDraft{draft},
-		domain.InboundMessage{Text: "又原样发了一遍", IsChatroom: true, SpeakerName: "ovo"},
+		domain.InboundMessage{Text: "又原样发了一遍", IsChatroom: true, SpeakerName: "ovo"}, 48,
 	)
 	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
 		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -299,7 +299,7 @@ func TestGuardAmbientDraftsAllowsOtherwiseSafeMessages(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			guarded, reason := guardAmbientDrafts(drafts, test.message)
+			guarded, reason := guardAmbientDrafts(drafts, test.message, 48)
 			if len(guarded) != 1 || reason != "" {
 				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 			}
@@ -314,9 +314,66 @@ func TestGuardAmbientDraftsDoesNotParsePlaceholderText(t *testing.T) {
 		Text: "[image]", IsChatroom: true,
 		Media: []domain.InboundMedia{{Kind: "image"}},
 	}
-	guarded, reason := guardAmbientDrafts(drafts, message)
+	guarded, reason := guardAmbientDrafts(drafts, message, 48)
 	if len(guarded) != 1 || reason != "" {
 		t.Fatalf("placeholder text unexpectedly triggered media guard: guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardAmbientDraftsSuppressesMetaReasoningAndLongReplies(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		limit   int
+	}{
+		{
+			name:    "routing explanation",
+			content: "这是历史消息，不是当前消息，所以没有 @ 我。",
+			limit:   48,
+		},
+		{
+			name:    "over configured length",
+			content: strings.Repeat("阴", 49),
+			limit:   48,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			draft := textDraftForGuardTest(t, test.content)
+			guarded, reason := guardAmbientDrafts(
+				[]domain.OutboxDraft{draft},
+				domain.InboundMessage{Text: "这是何意", IsChatroom: true},
+				test.limit,
+			)
+			if len(guarded) != 0 || reason == "" {
+				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
+			}
+		})
+	}
+}
+
+func TestGuardAmbientDraftsPreservesEffectWhenTextIsSuppressed(t *testing.T) {
+	textDraft := textDraftForGuardTest(t, "我看到历史消息里有人提到了我")
+	effectDraft := domain.OutboxDraft{Kind: "emoji", Payload: json.RawMessage(`{}`)}
+	guarded, reason := guardAmbientDrafts(
+		[]domain.OutboxDraft{textDraft, effectDraft},
+		domain.InboundMessage{Text: "这是何意", IsChatroom: true},
+		48,
+	)
+	if reason == "" || len(guarded) != 1 || guarded[0].Kind != "emoji" {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardAmbientDraftsDoesNotLimitExplicitReplies(t *testing.T) {
+	draft := textDraftForGuardTest(t, strings.Repeat("长", 49)+" 当前消息")
+	guarded, reason := guardAmbientDrafts(
+		[]domain.OutboxDraft{draft},
+		domain.InboundMessage{Text: "@ccff 解释一下", IsChatroom: true, Mentioned: true},
+		48,
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 

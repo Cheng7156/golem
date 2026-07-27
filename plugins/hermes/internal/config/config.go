@@ -167,6 +167,12 @@ func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 	if value.AmbientMaxReplies <= 0 {
 		value.AmbientMaxReplies = defaults.AmbientMaxReplies
 	}
+	if value.AmbientMaxReplyRunes <= 0 {
+		value.AmbientMaxReplyRunes = defaults.AmbientMaxReplyRunes
+	}
+	if value.AmbientMaxReplyRunes > 200 {
+		return errors.New("routing.ambient_max_reply_runes 不能大于 200")
+	}
 	value.AutomatedSpeakerNames = normalizeStrings(value.AutomatedSpeakerNames)
 	value.AutomatedSpeakerIDs = normalizeStrings(value.AutomatedSpeakerIDs)
 	return nil
