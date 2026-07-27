@@ -203,6 +203,36 @@ func TestVariadicAndGroupHermesCommandsUseExpectedSession(t *testing.T) {
 	}
 }
 
+func TestGroupResetDoesNotExposeOwnerIDAsDisplayName(t *testing.T) {
+	p, store := newCommandTestPlugin(t)
+	command := &plugin.Command{
+		Raw:         "/hermes reset",
+		Main:        "hermes",
+		Positionals: []string{"reset"},
+		Sender: &contact.Contact{
+			Username: "room@chatroom",
+			Nickname: "测试群",
+			Type:     contact.ContactType_CONTACT_TYPE_CHATROOM,
+		},
+	}
+	if result, err := p.OnCommand(command); err != nil || result != "" {
+		t.Fatalf("OnCommand(reset)=%q, %v", result, err)
+	}
+
+	events := acceptedCommandEvents(t, store)
+	if len(events) != 1 {
+		t.Fatalf("accepted events=%d, want 1", len(events))
+	}
+	event := events[0]
+	message := decodeCommandMessage(t, event)
+	if event.Binding.Principal.ID != commandTestOwner || message.SpeakerID != commandTestOwner {
+		t.Fatalf("owner IDs were not preserved: principal=%#v message=%#v", event.Binding.Principal, message)
+	}
+	if event.Binding.Principal.Name != "" || message.SpeakerName != "" {
+		t.Fatalf("owner ID exposed as display name: principal=%#v message=%#v", event.Binding.Principal, message)
+	}
+}
+
 func TestResetConfirmationCommandsShareWechatSession(t *testing.T) {
 	p, store := newCommandTestPlugin(t)
 	for _, command := range []string{"reset", "always"} {

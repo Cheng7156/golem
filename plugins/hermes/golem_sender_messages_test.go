@@ -45,3 +45,17 @@ func TestTextOutboxMessageDoesNotDuplicateMentionPrefix(t *testing.T) {
 		t.Fatalf("content=%q", result.Content)
 	}
 }
+
+func TestTextOutboxMessageDoesNotExposeMentionIDWithoutDisplayName(t *testing.T) {
+	payload := json.RawMessage(`{"content":"Session reset! Starting fresh.","delivery":{"mention_actor_id":"wxid_owner"}}`)
+	result, err := textOutboxMessage(&contact.Contact{Username: "room@chatroom"}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "Session reset! Starting fresh." || result.GetText().Content != result.Content {
+		t.Fatalf("content=%q text=%q", result.Content, result.GetText().Content)
+	}
+	if !reflect.DeepEqual(result.GetText().Reminds, []string{"wxid_owner"}) {
+		t.Fatalf("reminds=%#v", result.GetText().Reminds)
+	}
+}

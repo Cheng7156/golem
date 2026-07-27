@@ -279,7 +279,9 @@ func newHermesCommandEvent(
 	roomName := ""
 	if isChatroom {
 		sessionID = "chatroom:" + senderID
-		principalName = ownerID
+		// Command RPC 只包含群联系人，不包含命令发送成员。保留 owner ID
+		// 用于鉴权和微信提醒，但不能将它作为昵称展示。
+		principalName = ""
 		roomName = displayContact(sender)
 	}
 	raw := strings.TrimSpace(command.GetRaw())
