@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
@@ -22,6 +24,9 @@ func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
 		if request.PersonaID != "persona" || request.SessionKey != "private:wxid" ||
 			request.SessionName != "好友昵称" {
 			t.Errorf("request=%#v", request)
+		}
+		if request.RequestID == "" || request.DeadlineUnixMS <= time.Now().UnixMilli() {
+			t.Errorf("request correlation=%#v", request)
 		}
 		var sender struct {
 			Text string `json:"text"`
@@ -90,6 +95,43 @@ func TestRequestReplyAcceptsExplicitNoReply(t *testing.T) {
 	}
 }
 
+func TestRequestReplyCancelsTimedOutServerRequest(t *testing.T) {
+	requestID := make(chan string, 1)
+	cancelledID := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/cancel") {
+			parts := strings.Split(r.URL.Path, "/")
+			cancelledID <- parts[len(parts)-2]
+			_, _ = w.Write([]byte(`{"cancelled":true}`))
+			return
+		}
+		var request bridgeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		requestID <- request.RequestID
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	plugin := newPawzoChatPlugin()
+	_, _, err := plugin.requestReply(Config{
+		BaseURL: server.URL, HTTPTimeoutSeconds: 1,
+	}, "persona", incomingMessage{SessionKey: "private:wxid", Text: "hello"})
+	if err == nil {
+		t.Fatal("request did not time out")
+	}
+	want := <-requestID
+	select {
+	case got := <-cancelledID:
+		if got != want {
+			t.Fatalf("cancelled request=%q want=%q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel endpoint was not called")
+	}
+}
+
 func TestNormalizeConfigAndRoute(t *testing.T) {
 	config := normalizeConfigValue(Config{
 		BaseURL: " http://localhost:62000/ ",
@@ -113,5 +155,33 @@ func TestMissingMediaBecomesVisiblePlaceholder(t *testing.T) {
 	}
 	if len(outputs) != 2 || outputs[0].Text != "[图片]" || outputs[1].Text != "[语音]" {
 		t.Fatalf("outputs=%#v", outputs)
+	}
+}
+
+func TestLimitOutboundTextKeepsThreeTextsAndIndependentMedia(t *testing.T) {
+	outputs := []outbound{
+		{Kind: "text", Text: "one"},
+		{Kind: "image", Data: []byte("image")},
+		{Kind: "text", Text: "two"},
+		{Kind: "text", Text: "three"},
+		{Kind: "emoji", Data: []byte("emoji")},
+		{Kind: "text", Text: "four"},
+	}
+
+	limited := limitOutboundText(outputs)
+
+	textCount := 0
+	mediaCount := 0
+	var lastText string
+	for _, output := range limited {
+		if output.Kind == "text" {
+			textCount++
+			lastText = output.Text
+		} else {
+			mediaCount++
+		}
+	}
+	if textCount != 3 || mediaCount != 2 || !strings.Contains(lastText, "four") {
+		t.Fatalf("limited=%#v", limited)
 	}
 }

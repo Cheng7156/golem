@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -15,11 +19,13 @@ import (
 const maxBridgeResponseBytes = 40 * 1024 * 1024
 
 type bridgeRequest struct {
-	PersonaID   string `json:"persona_id"`
-	SessionKey  string `json:"session_key"`
-	SessionName string `json:"session_name,omitempty"`
-	Text        string `json:"text"`
-	Quote       string `json:"quote,omitempty"`
+	PersonaID      string `json:"persona_id"`
+	SessionKey     string `json:"session_key"`
+	SessionName    string `json:"session_name,omitempty"`
+	Text           string `json:"text"`
+	Quote          string `json:"quote,omitempty"`
+	RequestID      string `json:"request_id"`
+	DeadlineUnixMS int64  `json:"deadline_unix_ms"`
 }
 
 type bridgeResponse struct {
@@ -52,12 +58,30 @@ func (p *PawzoChatPlugin) requestReply(
 	personaID string,
 	incoming incomingMessage,
 ) ([]outbound, bool, error) {
+	return p.requestReplyPrompt(
+		config, personaID, incoming.SessionKey, incoming.sessionName(),
+		incoming.promptContent(), incoming.Quote.Content,
+	)
+}
+
+func (p *PawzoChatPlugin) requestReplyPrompt(
+	config Config,
+	personaID string,
+	sessionKey string,
+	sessionName string,
+	prompt string,
+	quote string,
+) ([]outbound, bool, error) {
+	requestID := newBridgeRequestID()
+	deadline := time.Now().Add(time.Duration(config.HTTPTimeoutSeconds) * time.Second)
 	payload, err := json.Marshal(bridgeRequest{
-		PersonaID:   personaID,
-		SessionKey:  incoming.SessionKey,
-		SessionName: incoming.sessionName(),
-		Text:        incoming.promptContent(),
-		Quote:       incoming.Quote.Content,
+		PersonaID:      personaID,
+		SessionKey:     sessionKey,
+		SessionName:    sessionName,
+		Text:           prompt,
+		Quote:          quote,
+		RequestID:      requestID,
+		DeadlineUnixMS: deadline.UnixMilli(),
 	})
 	if err != nil {
 		return nil, false, err
@@ -74,11 +98,13 @@ func (p *PawzoChatPlugin) requestReply(
 	client := &http.Client{Timeout: time.Duration(config.HTTPTimeoutSeconds) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		p.cancelRequest(config, requestID)
 		return nil, false, fmt.Errorf("call PawzoChat: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBridgeResponseBytes+1))
 	if err != nil {
+		p.cancelRequest(config, requestID)
 		return nil, false, fmt.Errorf("read PawzoChat response: %w", err)
 	}
 	if len(body) > maxBridgeResponseBytes {
@@ -86,6 +112,7 @@ func (p *PawzoChatPlugin) requestReply(
 	}
 	var decoded bridgeResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
+		p.cancelRequest(config, requestID)
 		return nil, false, fmt.Errorf("decode PawzoChat response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -104,7 +131,69 @@ func (p *PawzoChatPlugin) requestReply(
 		return nil, false, fmt.Errorf("unknown PawzoChat outcome: %s", decoded.Outcome)
 	}
 	outputs, err := decoded.outputs()
-	return outputs, false, err
+	if err != nil {
+		return nil, false, err
+	}
+	return limitOutboundText(outputs), false, nil
+}
+
+func limitOutboundText(outputs []outbound) []outbound {
+	limited := make([]outbound, 0, len(outputs))
+	textIndexes := make([]int, 0, 3)
+	for _, output := range outputs {
+		if output.Kind != "text" {
+			limited = append(limited, output)
+			continue
+		}
+		if len(textIndexes) < 3 {
+			limited = append(limited, output)
+			textIndexes = append(textIndexes, len(limited)-1)
+			continue
+		}
+		index := textIndexes[2]
+		if limited[index].Text == "" {
+			limited[index].Text = output.Text
+		} else {
+			limited[index].Text += "\n" + output.Text
+		}
+	}
+	return limited
+}
+
+func newBridgeRequestID() string {
+	var raw [12]byte
+	if _, err := cryptorand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func (p *PawzoChatPlugin) cancelRequest(config Config, requestID string) {
+	if requestID == "" {
+		return
+	}
+	endpoint := strings.TrimRight(config.BaseURL, "/") +
+		"/api/bridge/golem/requests/" + url.PathEscape(requestID) + "/cancel"
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if config.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+config.Token)
+	}
+	timeout := time.Duration(config.HTTPTimeoutSeconds) * time.Second
+	if timeout <= 0 || timeout > 3*time.Second {
+		timeout = 3 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("[pawzochat] 取消超时请求失败", "request_id", requestID, "err", err)
+		return
+	}
+	_ = resp.Body.Close()
+	slog.Info("[pawzochat] 已取消超时请求", "request_id", requestID, "status", resp.StatusCode)
 }
 
 func (response bridgeResponse) outputs() ([]outbound, error) {

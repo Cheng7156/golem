@@ -30,6 +30,8 @@ type PawzoChatPlugin struct {
 	configMu          sync.RWMutex
 	identityMu        sync.RWMutex
 	identityRefresh   sync.Mutex
+	sessionMu         sync.Mutex
+	sessions          map[string]*sessionState
 	self              *contact.SelfInfo
 	ownerID           string
 	ownerName         string

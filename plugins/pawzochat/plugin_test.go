@@ -5,7 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sbgayhub/golem/sdk/chatroom"
 	"github.com/sbgayhub/golem/sdk/contact"
@@ -212,5 +217,185 @@ func TestSendOutputUsesNativeEmojiMessage(t *testing.T) {
 	msg := recorder.messages[0]
 	if msg.GetType() != message.TypeEmoji || string(msg.GetEmoji().GetMedia().GetData()) != "emoji" {
 		t.Fatalf("message=%#v", msg)
+	}
+}
+
+func TestSessionKeepsOneActiveAndOneMergedPendingBatch(t *testing.T) {
+	var requestCount atomic.Int32
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondRequest := make(chan bridgeRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := concurrent.Add(1)
+		defer concurrent.Add(-1)
+		for {
+			maximum := maxConcurrent.Load()
+			if current <= maximum || maxConcurrent.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		var request bridgeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		if requestCount.Add(1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		} else {
+			secondRequest <- request
+		}
+		_, _ = w.Write([]byte(`{"outcome":"no_reply","messages":[]}`))
+	}))
+	defer server.Close()
+
+	pawzo := newPawzoChatPlugin()
+	pawzo.self = &contact.SelfInfo{Username: "wxid_self", Nickname: "Bot"}
+	pawzo.ownerID = "wxid_owner"
+	pawzo.Config = normalizeConfigValue(Config{
+		BaseURL: server.URL, HTTPTimeoutSeconds: 3,
+		Routes: map[string]string{"private:wxid_friend": "persona"},
+	})
+	makeEvent := func(text string) *plugin.Event {
+		return &plugin.Event{Payload: &plugin.Event_Message{Message: &message.Message{
+			Type: message.TypeText,
+			Sender: &contact.Contact{
+				Username: "wxid_friend", Type: contact.ContactType_CONTACT_TYPE_FRIEND,
+			},
+			Data: &message.Message_Text{Text: &message.TextData{Content: text}},
+		}}}
+	}
+
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_, _ = pawzo.OnEvent(makeEvent("message-0"))
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not start")
+	}
+	for index := 1; index < 100; index++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			_, _ = pawzo.OnEvent(makeEvent("message-" + strconv.Itoa(index)))
+		}(index)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		pawzo.sessionMu.Lock()
+		state := pawzo.sessions["private:wxid_friend"]
+		pending := 0
+		if state != nil && state.pending != nil {
+			pending = len(state.pending.messages)
+		}
+		pawzo.sessionMu.Unlock()
+		if pending == 99 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending=%d, want 99", pending)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseFirst)
+	workers.Wait()
+
+	if requestCount.Load() != 2 || maxConcurrent.Load() != 1 {
+		t.Fatalf("requests=%d max_concurrent=%d", requestCount.Load(), maxConcurrent.Load())
+	}
+	request := <-secondRequest
+	if count := strings.Count(request.Text, "[untrusted_message_from_sender_json]"); count != 99 {
+		t.Fatalf("merged messages=%d", count)
+	}
+}
+
+func TestExplicitMessageIsPrioritizedAheadOfAmbientPending(t *testing.T) {
+	pawzo := newPawzoChatPlugin()
+	session := "chatroom:room@chatroom"
+	active := incomingMessage{SessionKey: session, IsChatroom: true, Text: "active"}
+	ambient := incomingMessage{SessionKey: session, IsChatroom: true, Text: "ambient"}
+	explicit := incomingMessage{
+		SessionKey: session, IsChatroom: true, MentionedBot: true, Text: "explicit",
+	}
+	quoted := incomingMessage{
+		SessionKey: session, IsChatroom: true, QuotedBot: true, Text: "quoted",
+	}
+
+	if _, run := pawzo.enqueueBatch(active); !run {
+		t.Fatal("first message did not become active")
+	}
+	_, _ = pawzo.enqueueBatch(ambient)
+	_, _ = pawzo.enqueueBatch(explicit)
+	_, _ = pawzo.enqueueBatch(quoted)
+
+	pawzo.sessionMu.Lock()
+	pending := pawzo.sessions[session].pending
+	pawzo.sessionMu.Unlock()
+	if !pending.explicit || len(pending.messages) != 3 ||
+		pending.messages[0].Text != "explicit" || pending.messages[1].Text != "quoted" ||
+		pending.messages[2].Text != "ambient" {
+		t.Fatalf("pending=%#v", pending)
+	}
+}
+
+func TestDifferentSessionsCanCallPawzoChatInParallel(t *testing.T) {
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := concurrent.Add(1)
+		defer concurrent.Add(-1)
+		for {
+			maximum := maxConcurrent.Load()
+			if current <= maximum || maxConcurrent.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		entered <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(`{"outcome":"no_reply","messages":[]}`))
+	}))
+	defer server.Close()
+
+	pawzo := newPawzoChatPlugin()
+	pawzo.self = &contact.SelfInfo{Username: "wxid_self", Nickname: "Bot"}
+	pawzo.ownerID = "wxid_owner"
+	pawzo.Config = normalizeConfigValue(Config{
+		BaseURL: server.URL, HTTPTimeoutSeconds: 2, DefaultPersonaID: "persona",
+	})
+	makeEvent := func(sender string) *plugin.Event {
+		return &plugin.Event{Payload: &plugin.Event_Message{Message: &message.Message{
+			Type:   message.TypeText,
+			Sender: &contact.Contact{Username: sender, Type: contact.ContactType_CONTACT_TYPE_FRIEND},
+			Data:   &message.Message_Text{Text: &message.TextData{Content: "hello"}},
+		}}}
+	}
+
+	var workers sync.WaitGroup
+	for _, sender := range []string{"friend-one", "friend-two"} {
+		workers.Add(1)
+		go func(sender string) {
+			defer workers.Done()
+			_, _ = pawzo.OnEvent(makeEvent(sender))
+		}(sender)
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("different sessions were not processed in parallel")
+		}
+	}
+	close(release)
+	workers.Wait()
+	if maxConcurrent.Load() != 2 {
+		t.Fatalf("max concurrent=%d", maxConcurrent.Load())
 	}
 }

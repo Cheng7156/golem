@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "pawzochat",
 		Author:      "PawzoChat",
-		Version:     "0.3.0",
+		Version:     "0.4.0",
 		Description: "将 golem 微信消息路由到 PawzoChat 角色并回传回复。",
 		Priority:    1<<31 - 1,
 		Next:        false,
@@ -77,22 +78,156 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 		return false, nil
 	}
 
-	outputs, noReply, err := p.requestReply(config, personaID, incoming)
-	if err != nil {
-		return true, err
-	}
-	if noReply {
+	batch, run := p.enqueueBatch(incoming)
+	if !run {
 		return true, nil
 	}
-	if len(outputs) == 0 {
-		return true, errors.New("PawzoChat returned no deliverable content")
-	}
-	for _, output := range outputs {
-		if err := p.sendOutput(incoming.Receiver, output); err != nil {
-			return true, err
+	return true, p.processSession(incoming.SessionKey, personaID, batch)
+}
+
+type queuedBatch struct {
+	messages []incomingMessage
+	explicit bool
+	queuedAt time.Time
+}
+
+type sessionState struct {
+	active  bool
+	pending *queuedBatch
+}
+
+func (batch *queuedBatch) prompt() string {
+	parts := make([]string, 0, len(batch.messages))
+	for index, incoming := range batch.messages {
+		content := incoming.promptContent()
+		if index > 0 {
+			content = "[another_message_in_same_session]\n" + content
 		}
+		parts = append(parts, content)
 	}
-	return true, nil
+	return strings.Join(parts, "\n\n")
+}
+
+func (batch *queuedBatch) representative() incomingMessage {
+	return batch.messages[0]
+}
+
+func (incoming incomingMessage) isExplicit() bool {
+	return !incoming.IsChatroom || incoming.MentionedBot || incoming.QuotedBot
+}
+
+func sessionType(sessionKey string) string {
+	value, _, _ := strings.Cut(sessionKey, ":")
+	return value
+}
+
+func (p *PawzoChatPlugin) enqueueBatch(incoming incomingMessage) (*queuedBatch, bool) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	if p.sessions == nil {
+		p.sessions = make(map[string]*sessionState)
+	}
+	state := p.sessions[incoming.SessionKey]
+	if state == nil {
+		state = &sessionState{}
+		p.sessions[incoming.SessionKey] = state
+	}
+	if !state.active {
+		state.active = true
+		return &queuedBatch{
+			messages: []incomingMessage{incoming}, explicit: incoming.isExplicit(), queuedAt: time.Now(),
+		}, true
+	}
+	if state.pending == nil {
+		state.pending = &queuedBatch{
+			messages: []incomingMessage{incoming}, explicit: incoming.isExplicit(), queuedAt: time.Now(),
+		}
+	} else if incoming.isExplicit() {
+		insertAt := len(state.pending.messages)
+		for index, message := range state.pending.messages {
+			if !message.isExplicit() {
+				insertAt = index
+				break
+			}
+		}
+		state.pending.messages = append(state.pending.messages, incomingMessage{})
+		copy(state.pending.messages[insertAt+1:], state.pending.messages[insertAt:])
+		state.pending.messages[insertAt] = incoming
+		state.pending.explicit = true
+	} else {
+		state.pending.messages = append(state.pending.messages, incoming)
+		state.pending.explicit = state.pending.explicit || incoming.isExplicit()
+	}
+	slog.Info("[pawzochat] 合并会话待处理消息", "session_type", sessionType(incoming.SessionKey),
+		"pending", len(state.pending.messages), "explicit", state.pending.explicit)
+	return nil, false
+}
+
+func (p *PawzoChatPlugin) processSession(
+	sessionKey string,
+	personaID string,
+	batch *queuedBatch,
+) error {
+	var firstErr error
+	for batch != nil {
+		representative := batch.representative()
+		config := p.configSnapshot()
+		slog.Info("[pawzochat] 开始处理会话批次", "session_type", sessionType(sessionKey),
+			"messages", len(batch.messages), "queue_wait_ms", time.Since(batch.queuedAt).Milliseconds())
+		outputs, noReply, err := p.requestReplyPrompt(
+			config,
+			personaID,
+			sessionKey,
+			representative.sessionName(),
+			batch.prompt(),
+			representative.Quote.Content,
+		)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Error("[pawzochat] PawzoChat 请求失败", "session_type", sessionType(sessionKey), "err", err)
+		} else if !noReply {
+			textSegments := 0
+			for _, output := range outputs {
+				if output.Kind == "text" {
+					textSegments++
+				}
+			}
+			slog.Info("[pawzochat] 收到 PawzoChat 回复", "session_type", sessionType(sessionKey),
+				"segments", len(outputs), "text_segments", textSegments)
+			if len(outputs) == 0 {
+				if firstErr == nil {
+					firstErr = errors.New("PawzoChat returned no deliverable content")
+				}
+			} else {
+				for _, output := range outputs {
+					if sendErr := p.sendOutput(representative.Receiver, output); sendErr != nil {
+						if firstErr == nil {
+							firstErr = sendErr
+						}
+						slog.Error("[pawzochat] 发送回复失败", "session_type", sessionType(sessionKey), "err", sendErr)
+						break
+					}
+				}
+			}
+		}
+
+		p.sessionMu.Lock()
+		state := p.sessions[sessionKey]
+		if state == nil || state.pending == nil {
+			if state != nil {
+				state.active = false
+				delete(p.sessions, sessionKey)
+			}
+			batch = nil
+		} else {
+			batch = state.pending
+			state.pending = nil
+		}
+		p.sessionMu.Unlock()
+	}
+	return firstErr
 }
 
 func (p *PawzoChatPlugin) sendOutput(receiver *contact.Contact, output outbound) error {
