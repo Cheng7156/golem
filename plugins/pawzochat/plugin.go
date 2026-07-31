@@ -16,7 +16,7 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "pawzochat",
 		Author:      "PawzoChat",
-		Version:     "0.4.0",
+		Version:     "0.4.1",
 		Description: "将 golem 微信消息路由到 PawzoChat 角色并回传回复。",
 		Priority:    1<<31 - 1,
 		Next:        false,

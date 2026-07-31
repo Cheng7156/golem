@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const maxBridgeResponseBytes = 40 * 1024 * 1024
+const (
+	maxBridgeResponseBytes = 40 * 1024 * 1024
+	noReplyMarker          = "[[PAWZOCHAT_NO_REPLY]]"
+)
 
 type bridgeRequest struct {
 	PersonaID      string `json:"persona_id"`
@@ -134,7 +137,36 @@ func (p *PawzoChatPlugin) requestReplyPrompt(
 	if err != nil {
 		return nil, false, err
 	}
+	outputs, markerRemoved := filterNoReplyMarkerOutputs(outputs)
+	if markerRemoved && len(outputs) == 0 {
+		return nil, true, nil
+	}
 	return limitOutboundText(outputs), false, nil
+}
+
+func filterNoReplyMarkerOutputs(outputs []outbound) ([]outbound, bool) {
+	filtered := make([]outbound, 0, len(outputs))
+	markerRemoved := false
+	for _, output := range outputs {
+		if output.Kind != "text" {
+			filtered = append(filtered, output)
+			continue
+		}
+		lines := strings.Split(strings.ReplaceAll(output.Text, "\r\n", "\n"), "\n")
+		kept := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if strings.TrimSpace(line) == noReplyMarker {
+				markerRemoved = true
+				continue
+			}
+			kept = append(kept, line)
+		}
+		output.Text = strings.TrimSpace(strings.Join(kept, "\n"))
+		if output.Text != "" {
+			filtered = append(filtered, output)
+		}
+	}
+	return filtered, markerRemoved
 }
 
 func limitOutboundText(outputs []outbound) []outbound {
