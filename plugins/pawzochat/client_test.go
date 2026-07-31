@@ -36,13 +36,16 @@ func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
 	defer server.Close()
 
 	plugin := newPawzoChatPlugin()
-	outputs, err := plugin.requestReply(Config{
+	outputs, noReply, err := plugin.requestReply(Config{
 		BaseURL: server.URL, Token: "token", HTTPTimeoutSeconds: 2,
 	}, "persona", incomingMessage{
 		SessionKey: "private:wxid", SpeakerName: "好友昵称", Text: "hello",
 	})
 	if err != nil {
 		t.Fatalf("requestReply: %v", err)
+	}
+	if noReply {
+		t.Fatal("normal bridge response was treated as no_reply")
 	}
 	if len(outputs) != 3 || outputs[0].Kind != "text" || outputs[0].Text != "reply" {
 		t.Fatalf("outputs=%#v", outputs)
@@ -63,11 +66,27 @@ func TestRequestReplyReturnsBridgeError(t *testing.T) {
 	defer server.Close()
 
 	plugin := newPawzoChatPlugin()
-	_, err := plugin.requestReply(Config{
+	_, _, err := plugin.requestReply(Config{
 		BaseURL: server.URL, HTTPTimeoutSeconds: 2,
 	}, "missing", incomingMessage{SessionKey: "private:wxid", Text: "hello"})
 	if err == nil || err.Error() != "PawzoChat request failed: Persona not found" {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRequestReplyAcceptsExplicitNoReply(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"outcome":"no_reply","messages":[]}`))
+	}))
+	defer server.Close()
+
+	plugin := newPawzoChatPlugin()
+	outputs, noReply, err := plugin.requestReply(Config{
+		BaseURL: server.URL, HTTPTimeoutSeconds: 2,
+	}, "persona", incomingMessage{SessionKey: "private:wxid", Text: "hello"})
+
+	if err != nil || !noReply || len(outputs) != 0 {
+		t.Fatalf("outputs=%#v noReply=%v err=%v", outputs, noReply, err)
 	}
 }
 

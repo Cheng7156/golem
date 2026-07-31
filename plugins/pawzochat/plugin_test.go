@@ -120,6 +120,42 @@ func TestOnEventHandlesAmbientGroupWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestOnEventAcceptsNoReplyWithoutSending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"outcome":"no_reply","messages":[]}`))
+	}))
+	defer server.Close()
+
+	recorder := &recordingMessageAbility{}
+	pawzo := newPawzoChatPlugin()
+	pawzo.message = recorder
+	pawzo.self = &contact.SelfInfo{Username: "wxid_self", Nickname: "Bot"}
+	pawzo.ownerID = "wxid_owner"
+	pawzo.ownerName = "Owner"
+	pawzo.Config = normalizeConfigValue(Config{
+		BaseURL:            server.URL,
+		HTTPTimeoutSeconds: 2,
+		Routes:             map[string]string{"private:wxid_friend": "persona"},
+	})
+	event := &plugin.Event{Payload: &plugin.Event_Message{Message: &message.Message{
+		Type: message.TypeText,
+		Sender: &contact.Contact{
+			Username: "wxid_friend",
+			Type:     contact.ContactType_CONTACT_TYPE_FRIEND,
+		},
+		Data: &message.Message_Text{Text: &message.TextData{Content: "hello"}},
+	}}}
+
+	handled, err := pawzo.OnEvent(event)
+
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if len(recorder.messages) != 0 {
+		t.Fatalf("messages=%#v", recorder.messages)
+	}
+}
+
 func TestOnEventRejectsMissingVerifiedIdentity(t *testing.T) {
 	pawzo := newPawzoChatPlugin()
 	pawzo.Config = normalizeConfigValue(Config{DefaultPersonaID: "persona"})

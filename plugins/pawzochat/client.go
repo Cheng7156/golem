@@ -24,6 +24,7 @@ type bridgeRequest struct {
 
 type bridgeResponse struct {
 	Messages []bridgeMessage `json:"messages"`
+	Outcome  string          `json:"outcome"`
 	Error    string          `json:"error"`
 }
 
@@ -50,7 +51,7 @@ func (p *PawzoChatPlugin) requestReply(
 	config Config,
 	personaID string,
 	incoming incomingMessage,
-) ([]outbound, error) {
+) ([]outbound, bool, error) {
 	payload, err := json.Marshal(bridgeRequest{
 		PersonaID:   personaID,
 		SessionKey:  incoming.SessionKey,
@@ -59,12 +60,12 @@ func (p *PawzoChatPlugin) requestReply(
 		Quote:       incoming.Quote.Content,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	url := strings.TrimRight(config.BaseURL, "/") + "/api/bridge/golem/messages"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build PawzoChat request: %w", err)
+		return nil, false, fmt.Errorf("build PawzoChat request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if config.Token != "" {
@@ -73,27 +74,37 @@ func (p *PawzoChatPlugin) requestReply(
 	client := &http.Client{Timeout: time.Duration(config.HTTPTimeoutSeconds) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("call PawzoChat: %w", err)
+		return nil, false, fmt.Errorf("call PawzoChat: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBridgeResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read PawzoChat response: %w", err)
+		return nil, false, fmt.Errorf("read PawzoChat response: %w", err)
 	}
 	if len(body) > maxBridgeResponseBytes {
-		return nil, errors.New("PawzoChat response exceeds 40 MiB")
+		return nil, false, errors.New("PawzoChat response exceeds 40 MiB")
 	}
 	var decoded bridgeResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("decode PawzoChat response: %w", err)
+		return nil, false, fmt.Errorf("decode PawzoChat response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if decoded.Error == "" {
 			decoded.Error = resp.Status
 		}
-		return nil, fmt.Errorf("PawzoChat request failed: %s", decoded.Error)
+		return nil, false, fmt.Errorf("PawzoChat request failed: %s", decoded.Error)
 	}
-	return decoded.outputs()
+	if decoded.Outcome == "no_reply" {
+		if len(decoded.Messages) != 0 {
+			return nil, false, errors.New("PawzoChat no_reply response contains messages")
+		}
+		return nil, true, nil
+	}
+	if decoded.Outcome != "" && decoded.Outcome != "replied" {
+		return nil, false, fmt.Errorf("unknown PawzoChat outcome: %s", decoded.Outcome)
+	}
+	outputs, err := decoded.outputs()
+	return outputs, false, err
 }
 
 func (response bridgeResponse) outputs() ([]outbound, error) {

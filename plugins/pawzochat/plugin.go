@@ -15,7 +15,7 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "pawzochat",
 		Author:      "PawzoChat",
-		Version:     "0.2.0",
+		Version:     "0.3.0",
 		Description: "将 golem 微信消息路由到 PawzoChat 角色并回传回复。",
 		Priority:    1<<31 - 1,
 		Next:        false,
@@ -77,9 +77,12 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 		return false, nil
 	}
 
-	outputs, err := p.requestReply(config, personaID, incoming)
+	outputs, noReply, err := p.requestReply(config, personaID, incoming)
 	if err != nil {
 		return true, err
+	}
+	if noReply {
+		return true, nil
 	}
 	if len(outputs) == 0 {
 		return true, errors.New("PawzoChat returned no deliverable content")
