@@ -61,6 +61,30 @@ func TestNormalizeRejectsUnsafeOrContradictoryValues(t *testing.T) {
 			},
 		},
 		{
+			name: "negative ambient reply limit",
+			mutate: func(value *config.Config) {
+				value.Routing.AmbientMaxReplyRunes = -1
+			},
+		},
+		{
+			name: "negative ambient cooldown",
+			mutate: func(value *config.Config) {
+				value.Routing.AmbientCooldownSeconds = -1
+			},
+		},
+		{
+			name: "negative ambient max replies",
+			mutate: func(value *config.Config) {
+				value.Routing.AmbientMaxReplies = -1
+			},
+		},
+		{
+			name: "persona reply limit too large",
+			mutate: func(value *config.Config) {
+				value.Persona.MaxVisibleRunes = 201
+			},
+		},
+		{
 			name: "reserved workers consume pool",
 			mutate: func(value *config.Config) {
 				value.Scheduler.InteractiveReservedWorkers = value.Scheduler.InteractiveWorkers
@@ -160,6 +184,62 @@ func TestNormalizeCleansSilenceRulesFile(t *testing.T) {
 	want := filepath.Clean("data/hermes/silence-rules.txt")
 	if normalized.Agent.SilenceRulesFile != want {
 		t.Fatalf("silence rules file=%q, want %q", normalized.Agent.SilenceRulesFile, want)
+	}
+}
+
+func TestNormalizeAllowsDisabledPersonaRuneLimit(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Persona.MaxVisibleRunes = 0
+
+	normalized, err := config.Normalize(value)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if normalized.Persona.MaxVisibleRunes != 0 {
+		t.Fatalf("persona max visible runes=%d, want disabled", normalized.Persona.MaxVisibleRunes)
+	}
+}
+
+func TestNormalizeAllowsDisabledAmbientReplyRuneLimit(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Routing.AmbientMaxReplyRunes = 0
+
+	normalized, err := config.Normalize(value)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if normalized.Routing.AmbientMaxReplyRunes != 0 {
+		t.Fatalf("ambient max reply runes=%d, want disabled", normalized.Routing.AmbientMaxReplyRunes)
+	}
+}
+
+func TestNormalizeAllowsDisabledAmbientCooldown(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Routing.AmbientCooldownSeconds = 0
+
+	normalized, err := config.Normalize(value)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if normalized.Routing.AmbientCooldownSeconds != 0 {
+		t.Fatalf("ambient cooldown=%d, want disabled", normalized.Routing.AmbientCooldownSeconds)
+	}
+}
+
+func TestNormalizeAllowsDisabledAmbientMaxReplies(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Routing.AmbientMaxReplies = 0
+
+	normalized, err := config.Normalize(value)
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if normalized.Routing.AmbientMaxReplies != 0 {
+		t.Fatalf("ambient max replies=%d, want disabled", normalized.Routing.AmbientMaxReplies)
 	}
 }
 

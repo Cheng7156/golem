@@ -18,6 +18,9 @@ func Normalize(value Config) (Config, error) {
 	if err := normalizeRouting(&value.Routing, defaults.Routing); err != nil {
 		return Config{}, err
 	}
+	if err := normalizePersona(&value.Persona, defaults.Persona); err != nil {
+		return Config{}, err
+	}
 	if err := normalizeContext(&value.Context, defaults.Context); err != nil {
 		return Config{}, err
 	}
@@ -40,6 +43,22 @@ func Normalize(value Config) (Config, error) {
 		return Config{}, errors.New("Hermes 扩展能力只支持 agent.mode = relay")
 	}
 	return value, nil
+}
+
+func normalizePersona(value *PersonaConfig, defaults PersonaConfig) error {
+	if value.MaxVisibleRunes < 0 {
+		return errors.New("persona.max_visible_runes 不能小于 0")
+	}
+	if value.MaxVisibleRunes > 200 {
+		return errors.New("persona.max_visible_runes 不能大于 200")
+	}
+	if value.MaxSentences <= 0 {
+		value.MaxSentences = defaults.MaxSentences
+	}
+	if value.MaxSentences > 8 {
+		return errors.New("persona.max_sentences 不能大于 8")
+	}
+	return nil
 }
 
 func normalizeContext(value *ContextConfig, defaults ContextConfig) error {
@@ -158,17 +177,17 @@ func normalizeRouting(value *RoutingConfig, defaults RoutingConfig) error {
 	if value.CoalesceWindowMilliseconds <= 0 {
 		value.CoalesceWindowMilliseconds = defaults.CoalesceWindowMilliseconds
 	}
-	if value.AmbientCooldownSeconds <= 0 {
-		value.AmbientCooldownSeconds = defaults.AmbientCooldownSeconds
+	if value.AmbientCooldownSeconds < 0 {
+		return errors.New("routing.ambient_cooldown_seconds 不能小于 0")
 	}
 	if value.AmbientWindowSeconds <= 0 {
 		value.AmbientWindowSeconds = defaults.AmbientWindowSeconds
 	}
-	if value.AmbientMaxReplies <= 0 {
-		value.AmbientMaxReplies = defaults.AmbientMaxReplies
+	if value.AmbientMaxReplies < 0 {
+		return errors.New("routing.ambient_max_replies 不能小于 0")
 	}
-	if value.AmbientMaxReplyRunes <= 0 {
-		value.AmbientMaxReplyRunes = defaults.AmbientMaxReplyRunes
+	if value.AmbientMaxReplyRunes < 0 {
+		return errors.New("routing.ambient_max_reply_runes 不能小于 0")
 	}
 	if value.AmbientMaxReplyRunes > 200 {
 		return errors.New("routing.ambient_max_reply_runes 不能大于 200")

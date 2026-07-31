@@ -285,12 +285,12 @@ func TestV2VisibleAndObserveResultHashInterop(t *testing.T) {
 	}
 }
 
-func TestV2VisibleResultStripsInternalCompletionToken(t *testing.T) {
+func TestV2VisibleResultRejectsInternalCompletionToken(t *testing.T) {
 	request := RunRequest{RunID: "run-visible-sanitized", SessionID: "chatroom:room", Lane: domain.LaneInteractive,
 		Input: "ambient", ChatType: "group", ConversationID: "wechat:group:room",
 		CurrentObservationID: "obs-1", CurrentPayloadHash: "payload", RequiredContextSeq: 1,
 		InvocationID: "invoke-visible-sanitized"}
-	_, results, connection, stream := startV2Relay(t, request)
+	gateway, _, connection, stream := startV2Relay(t, request)
 	unknownToken := "[[GOLEM_HERMES_FUTURE_V2]]"
 	content := "hello\n\n`" + relayObserveToken + "`。\n" + unknownToken
 	proposalID := "proposal-visible-sanitized"
@@ -300,26 +300,18 @@ func TestV2VisibleResultStripsInternalCompletionToken(t *testing.T) {
 			"proposal_id": proposalID, "result_kind": "visible_reply", "content": content,
 			"effects": []any{}, "result_hash": hash}})
 
-	reply, err := stream.Recv(context.Background())
-	if err != nil || reply.Kind != EventReplyProposed || reply.Text != "hello" || reply.Proposal == nil ||
-		strings.Contains(string(reply.Proposal.Payload), relayObserveToken) ||
-		strings.Contains(string(reply.Proposal.Payload), unknownToken) {
-		t.Fatalf("reply=%#v err=%v", reply, err)
-	}
-	completed, err := stream.Recv(context.Background())
-	if err != nil || completed.Kind != EventRunCompleted || completed.ResultHash != hash {
-		t.Fatalf("completed=%#v err=%v", completed, err)
-	}
-	results.put(domain.RelayRunResult{ProposalID: proposalID, InvocationID: request.InvocationID,
-		RunID: request.RunID, ResultKind: "visible_reply", ResultHash: hash, OutboxIDs: []string{"outbox-1"}})
-	if err := stream.Send(context.Background(), Command{Kind: CommandProposalResult, RunID: request.RunID,
-		ProposalID: proposalID}); err != nil {
-		t.Fatal(err)
+	failed, err := stream.Recv(context.Background())
+	if err != nil || failed.Kind != EventRunFailed || failed.Err == nil ||
+		!strings.Contains(failed.Err.Error(), "internal completion token") {
+		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
 	result := readRelayFrame(t, connection)
 	body := result["result"].(map[string]any)
-	if body["success"] != true || body["result_hash"] != hash {
+	if body["success"] != false || !strings.Contains(body["error"].(string), "internal completion token") {
 		t.Fatalf("result=%#v", result)
+	}
+	if pending, _ := gateway.pendingRunForChat(relayChatID(request), request.InvocationID); pending != nil {
+		t.Fatal("mixed-token proposal kept the chat admission slot")
 	}
 }
 

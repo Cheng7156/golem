@@ -53,7 +53,7 @@ func (g *RelayGateway) resolveStickerIntent(
 	keyword string,
 ) (*OutputProposal, error) {
 	if keyword == "" || run == nil || g.config.Stickers == nil ||
-		run.request.TriggerKind == domain.TriggerAmbient {
+		(run.request.TriggerKind == domain.TriggerAmbient && !g.config.AllowAmbientStickerIntent) {
 		return nil, nil
 	}
 	intentCtx, cancel := context.WithTimeout(ctx, relayStickerIntentTimeout)

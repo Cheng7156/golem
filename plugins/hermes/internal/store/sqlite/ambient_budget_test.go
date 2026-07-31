@@ -79,3 +79,62 @@ func TestAmbientReplyBudgetConsumesOnlyVisibleCommit(t *testing.T) {
 		t.Fatalf("silent result consumed budget: allowed=%v err=%v", allowed, err)
 	}
 }
+
+func TestAmbientReplyBudgetAllowsZeroCooldownButKeepsWindowQuota(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	sessionID := "chatroom:zero-ambient-cooldown"
+	now := time.Now()
+	payload, _ := json.Marshal(domain.TextOutput{Content: "visible"})
+
+	first := startAmbientBudgetRun(t, store, "zero-cooldown-first", sessionID, 1)
+	allowed, err := store.ReserveAmbientReply(ctx, first.run.ID, now, 0, time.Minute, 2)
+	if err != nil || !allowed {
+		t.Fatalf("reserve first: allowed=%v err=%v", allowed, err)
+	}
+	if _, err := store.CommitRunSuccess(ctx, first.run.ID, first.run.LeaseToken, []domain.OutboxDraft{{
+		SessionID: sessionID, ReceiverID: "room", Kind: "text", Payload: payload,
+	}}); err != nil {
+		t.Fatalf("commit first: %v", err)
+	}
+
+	second := startAmbientBudgetRun(t, store, "zero-cooldown-second", sessionID, 2)
+	allowed, err = store.ReserveAmbientReply(ctx, second.run.ID, now, 0, time.Minute, 2)
+	if err != nil || !allowed {
+		t.Fatalf("reserve second: allowed=%v err=%v", allowed, err)
+	}
+	if _, err := store.CommitRunSuccess(ctx, second.run.ID, second.run.LeaseToken, []domain.OutboxDraft{{
+		SessionID: sessionID, ReceiverID: "room", Kind: "text", Payload: payload,
+	}}); err != nil {
+		t.Fatalf("commit second: %v", err)
+	}
+
+	third := startAmbientBudgetRun(t, store, "zero-cooldown-quota", sessionID, 3)
+	allowed, err = store.ReserveAmbientReply(ctx, third.run.ID, now, 0, time.Minute, 2)
+	if err != nil || allowed {
+		t.Fatalf("window quota reserve: allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestAmbientReplyBudgetAllowsUnlimitedWindowReplies(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	sessionID := "chatroom:unlimited-ambient-budget"
+	now := time.Now()
+	payload, _ := json.Marshal(domain.TextOutput{Content: "visible"})
+
+	for index := 0; index < 3; index++ {
+		fixture := startAmbientBudgetRun(
+			t, store, "unlimited-budget-"+string(rune('a'+index)), sessionID, int64(index+1),
+		)
+		allowed, err := store.ReserveAmbientReply(ctx, fixture.run.ID, now, 0, time.Minute, 0)
+		if err != nil || !allowed {
+			t.Fatalf("reserve reply %d: allowed=%v err=%v", index+1, allowed, err)
+		}
+		if _, err := store.CommitRunSuccess(ctx, fixture.run.ID, fixture.run.LeaseToken, []domain.OutboxDraft{{
+			SessionID: sessionID, ReceiverID: "room", Kind: "text", Payload: payload,
+		}}); err != nil {
+			t.Fatalf("commit reply %d: %v", index+1, err)
+		}
+	}
+}

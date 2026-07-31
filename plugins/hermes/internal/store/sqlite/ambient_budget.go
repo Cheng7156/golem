@@ -21,7 +21,7 @@ func (s *Store) ReserveAmbientReply(
 	window time.Duration,
 	maxReplies int,
 ) (bool, error) {
-	if runID == "" || now.IsZero() || cooldown <= 0 || window <= 0 || maxReplies <= 0 {
+	if runID == "" || now.IsZero() || cooldown < 0 || window <= 0 || maxReplies < 0 {
 		return false, storeport.ErrInvalid
 	}
 	allowed := false
@@ -84,7 +84,8 @@ func (s *Store) ReserveAmbientReply(
 			sessionID, windowStart).Scan(&consumed, &latest); err != nil {
 			return err
 		}
-		if consumed >= maxReplies || (latest > 0 && now.Sub(fromUnixMillis(latest)) < cooldown) {
+		if (maxReplies > 0 && consumed >= maxReplies) ||
+			(cooldown > 0 && latest > 0 && now.Sub(fromUnixMillis(latest)) < cooldown) {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ambient_reply_budget(

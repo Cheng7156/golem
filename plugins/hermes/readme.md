@@ -163,7 +163,7 @@ coalesce_window_milliseconds = 900
 ambient_cooldown_seconds = 20
 ambient_window_seconds = 60
 ambient_max_replies = 2
-ambient_max_reply_runes = 48
+ambient_max_reply_runes = 0
 automated_speaker_names = ["已知的其他机器人昵称"]
 automated_speaker_ids = []
 

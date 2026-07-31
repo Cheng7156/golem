@@ -152,7 +152,8 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	if cfg == nil {
 		return w.finishFailure(parent, run, errors.New("agent configuration is unavailable"))
 	}
-	if run.TriggerKind == domain.TriggerAmbient {
+	if run.TriggerKind == domain.TriggerAmbient &&
+		(cfg.Routing.AmbientCooldownSeconds > 0 || cfg.Routing.AmbientMaxReplies > 0) {
 		allowed, reserveErr := w.store.ReserveAmbientReply(
 			parent,
 			run.ID,
@@ -341,13 +342,12 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	} else if cancelErr != nil {
 		return cancelErr
 	}
-	if guarded, reason := guardNonOwnerRelationshipAdoption(
-		drafts, inbox.Binding.Principal,
-	); reason != "" {
-		slog.Warn("[hermes] 身份守卫替换了非主人关系认领输出",
+	if guarded, reason := guardPersonaDrafts(drafts, incoming, cfg.Persona); reason != "" {
+		slog.Warn("[hermes] 人格守卫检测或抑制了违规输出",
 			"run_id", run.ID,
 			"session_id", run.SessionID,
 			"speaker", incoming.SpeakerName,
+			"explicit", incoming.Explicit(),
 			"reason", reason,
 		)
 		drafts = guarded
@@ -376,6 +376,58 @@ func (w *Worker) execute(parent context.Context, run domain.Run) error {
 	}
 	signal(w.outputWake)
 	return nil
+}
+
+func guardPersonaDrafts(
+	drafts []domain.OutboxDraft,
+	message domain.InboundMessage,
+	cfg config.PersonaConfig,
+) ([]domain.OutboxDraft, string) {
+	if !cfg.Enabled || len(drafts) == 0 || strings.TrimSpace(message.HermesCommand) != "" {
+		return drafts, ""
+	}
+	guarded := make([]domain.OutboxDraft, 0, len(drafts))
+	violated := false
+	for _, draft := range drafts {
+		if draft.Kind != "text" {
+			guarded = append(guarded, draft)
+			continue
+		}
+		var output domain.TextOutput
+		if err := json.Unmarshal(draft.Payload, &output); err != nil {
+			violated = true
+			continue
+		}
+		content := strings.TrimSpace(output.Content)
+		if (cfg.MaxVisibleRunes == 0 || len([]rune(content)) <= cfg.MaxVisibleRunes) &&
+			personaSentenceCount(content) <= cfg.MaxSentences {
+			guarded = append(guarded, draft)
+			continue
+		}
+		violated = true
+		if message.Explicit() {
+			guarded = append(guarded, draft)
+		}
+	}
+	if !violated {
+		return drafts, ""
+	}
+	if message.Explicit() {
+		return guarded, "明确回复超过人格契约，已保留模型最终回复"
+	}
+	return guarded, "ambient 回复超过人格契约，已抑制可见文本"
+}
+
+func personaSentenceCount(content string) int {
+	parts := strings.FieldsFunc(content, func(char rune) bool {
+		switch char {
+		case '.', '!', '?', '。', '！', '？', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	return len(parts)
 }
 
 func platformMessageID(value int64) string {
@@ -604,81 +656,6 @@ func configuredAutomatedSpeaker(
 		}
 	}
 	return false
-}
-
-const nonOwnerRelationshipFallback = "你不是我的主人，我们按普通群友聊天就好。"
-
-var (
-	nonOwnerDirectAddressPattern = regexp.MustCompile(
-		`(?:^|[\s，,。！？!?：:；;~～…—-]|嗨呀|嗨|你好|嘿嘿|嘿|好的|好嘞|行叭|行吧|放心|谢谢|感谢)` +
-			`[\s，,。！？!?：:；;~～…—-]*(?:主人|master)` +
-			`(?:$|[\s，,。！？!?：:；;~～…—-]|有令|夸我|请|您|想|要|可以|说|好|在|交代|吩咐|真|最|太|很|也|我|帮|能|快|早|晚)`,
-	)
-	nonOwnerRelationshipClaimPattern = regexp.MustCompile(
-		`(?:叫|称|称呼|认).{0,8}(?:你|您).{0,4}(?:为|做|作|当)?(?:主人|master)|` +
-			`把.{0,4}(?:你|您).{0,4}(?:当|作|做成|视为)(?:主人|master)|` +
-			`(?:你|您).{0,8}(?:是|当|做|成为).{0,6}(?:我(?:的)?\s*)?(?:主人|owner|master)|` +
-			`(?:call|regard|accept).{0,12}you.{0,12}(?:owner|master)|` +
-			`you.{0,12}(?:are|become).{0,12}(?:my\s+)?(?:owner|master)`,
-	)
-	nonOwnerRelationshipDenialPattern = regexp.MustCompile(
-		`(?:我)?(?:啥|什么)时候.{0,4}(?:叫|称|称呼|认).{0,8}(?:你|您).{0,4}(?:为|做|作|当)?(?:主人|owner|master)`,
-	)
-	nonOwnerRefusalReplacer = strings.NewReplacer(
-		"不会叫你主人", "",
-		"不能叫你主人", "",
-		"不该叫你主人", "",
-		"不想叫你主人", "",
-		"不会称你为主人", "",
-		"不能称你为主人", "",
-		"不会把你当主人", "",
-		"不能把你当主人", "",
-		"不把你当主人", "",
-		"你不是我的主人", "",
-		"i will not call you master", "",
-		"i won't call you master", "",
-		"i cannot call you master", "",
-		"you are not my owner", "",
-		"you are not my master", "",
-	)
-)
-
-func guardNonOwnerRelationshipAdoption(
-	drafts []domain.OutboxDraft,
-	principal domain.Principal,
-) ([]domain.OutboxDraft, string) {
-	if principal.IsOwner || len(drafts) == 0 {
-		return drafts, ""
-	}
-	guarded := append([]domain.OutboxDraft(nil), drafts...)
-	replaced := false
-	for index := range guarded {
-		if guarded[index].Kind != "text" {
-			continue
-		}
-		var output domain.TextOutput
-		if json.Unmarshal(guarded[index].Payload, &output) != nil || !adoptsCurrentSpeakerAsOwner(output.Content) {
-			continue
-		}
-		output.Content = nonOwnerRelationshipFallback
-		payload, err := json.Marshal(output)
-		if err != nil {
-			continue
-		}
-		guarded[index].Payload = payload
-		replaced = true
-	}
-	if !replaced {
-		return drafts, ""
-	}
-	return guarded, "已验证的当前发送者不是主人，但回复将其称为主人"
-}
-
-func adoptsCurrentSpeakerAsOwner(content string) bool {
-	candidate := nonOwnerRefusalReplacer.Replace(strings.ToLower(strings.TrimSpace(content)))
-	candidate = nonOwnerRelationshipDenialPattern.ReplaceAllString(candidate, "")
-	return nonOwnerDirectAddressPattern.MatchString(candidate) ||
-		nonOwnerRelationshipClaimPattern.MatchString(candidate)
 }
 
 func (w *Worker) cancelIfRequested(ctx context.Context, run domain.Run) (bool, error) {

@@ -6,11 +6,19 @@ type Config struct {
 	BotNames             []string         `toml:"bot_names,omitempty" comment:"群聊中识别机器人的名称或别名"`
 	Ingress              IngressConfig    `toml:"ingress" comment:"输入持久化与重排配置"`
 	Routing              RoutingConfig    `toml:"routing" comment:"普通群聊路由配置"`
+	Persona              PersonaConfig    `toml:"persona" comment:"最终可见回复的人格硬约束"`
 	Context              ContextConfig    `toml:"context" comment:"Hermes 会话上下文投影配置"`
 	Scheduler            SchedulerConfig  `toml:"scheduler" comment:"有界并发与会话容量配置"`
 	Agent                AgentConfig      `toml:"agent" comment:"Agent Engine 配置"`
 	Output               OutputConfig     `toml:"output" comment:"至少一次发送与重试配置"`
 	Capabilities         CapabilityConfig `toml:"capabilities" comment:"由 Hermes Agent 自主调用的扩展能力"`
+}
+
+type PersonaConfig struct {
+	Enabled                   bool `toml:"enabled" comment:"是否启用最终回复人格守卫"`
+	MaxVisibleRunes           int  `toml:"max_visible_runes" comment:"最终可见文本最大字符数，0 表示不限制"`
+	MaxSentences              int  `toml:"max_sentences" comment:"最终可见文本最大句数"`
+	AllowAmbientStickerIntent bool `toml:"allow_ambient_sticker_intent" comment:"允许已获准的群聊自然回复附带自动表情意图"`
 }
 
 type ContextConfig struct {
@@ -87,10 +95,10 @@ type RoutingConfig struct {
 	DecisionEnvironmentFile     string   `toml:"decision_environment_file,omitempty"`
 	OrdinaryFreshnessSeconds    int      `toml:"ordinary_freshness_seconds"`
 	CoalesceWindowMilliseconds  int      `toml:"coalesce_window_milliseconds"`
-	AmbientCooldownSeconds      int      `toml:"ambient_cooldown_seconds"`
+	AmbientCooldownSeconds      int      `toml:"ambient_cooldown_seconds" comment:"主动回复冷却秒数，0 表示不限制"`
 	AmbientWindowSeconds        int      `toml:"ambient_window_seconds"`
-	AmbientMaxReplies           int      `toml:"ambient_max_replies"`
-	AmbientMaxReplyRunes        int      `toml:"ambient_max_reply_runes" comment:"未点名群聊文本回复的最大字符数"`
+	AmbientMaxReplies           int      `toml:"ambient_max_replies" comment:"主动回复统计窗口内的最大次数，0 表示不限制"`
+	AmbientMaxReplyRunes        int      `toml:"ambient_max_reply_runes" comment:"未点名群聊文本回复的最大字符数，0 表示不限制"`
 	AutomatedSpeakerNames       []string `toml:"automated_speaker_names,omitempty"`
 	AutomatedSpeakerIDs         []string `toml:"automated_speaker_ids,omitempty"`
 }

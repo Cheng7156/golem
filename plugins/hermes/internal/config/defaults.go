@@ -23,6 +23,12 @@ func Default() Config {
 			AmbientMaxReplies:           2,
 			AmbientMaxReplyRunes:        48,
 		},
+		Persona: PersonaConfig{
+			Enabled:                   false,
+			MaxVisibleRunes:           30,
+			MaxSentences:              1,
+			AllowAmbientStickerIntent: false,
+		},
 		Context: ContextConfig{
 			Mode: "legacy_shadow", Backfill: "from_now", RecentRawMessages: 10, MaxProjectionTokens: 4000,
 			BarrierWaitMilliseconds: 1500,

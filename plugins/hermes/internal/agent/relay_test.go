@@ -335,6 +335,7 @@ func TestRelayObserveResponseRecognition(t *testing.T) {
 		want    bool
 	}{
 		{content: relayObserveToken, want: true},
+		{content: "[GOLEM_HERMES_OBSERVE_V1]", want: true},
 		{content: "`" + relayObserveToken + "`。", want: true},
 		{content: "ambient 消息，没 @ 我，不需要回复。\n\n" + relayObserveToken, want: true},
 		{content: " 不需要回复。 ", want: true},
@@ -414,6 +415,14 @@ func TestRelayMarkdownToWeChatText(t *testing.T) {
 func TestRelayMarkdownOnlyReplyIsRejected(t *testing.T) {
 	if _, _, err := newRelayTextProposal("---"); err == nil {
 		t.Fatal("Markdown-only reply was accepted as empty visible text")
+	}
+}
+
+func TestRelayVisibleReplyRejectsMixedInternalToken(t *testing.T) {
+	for _, token := range []string{relayObserveToken, "[GOLEM_HERMES_OBSERVE_V1]"} {
+		if _, _, err := newRelayTextProposal("收到。\n" + token); err == nil {
+			t.Fatalf("visible reply with internal observe token %q was accepted", token)
+		}
 	}
 }
 

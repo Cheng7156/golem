@@ -42,10 +42,17 @@ func TestParseRelayStickerIntent(t *testing.T) {
 
 func TestRelayDescriptorAdvertisesStickerIntentOnlyWithCapability(t *testing.T) {
 	withStickers := relayDescriptor(relayDescriptorOptions{stickers: true})["platform_hint"].(string)
+	withAmbientStickers := relayDescriptor(relayDescriptorOptions{
+		stickers: true, allowAmbientStickerIntent: true,
+	})["platform_hint"].(string)
 	withoutStickers := relayDescriptor(relayDescriptorOptions{})["platform_hint"].(string)
 	if !strings.Contains(withStickers, relayStickerIntentExample) ||
-		!strings.Contains(withStickers, "without another model turn") {
+		!strings.Contains(withStickers, "without another model turn") ||
+		!strings.Contains(withStickers, "never emit it for an ambient Run") {
 		t.Fatalf("sticker descriptor is missing intent protocol: %q", withStickers)
+	}
+	if !strings.Contains(withAmbientStickers, "Golem's reply budget already admitted this turn") {
+		t.Fatalf("ambient sticker descriptor is missing its admission guard: %q", withAmbientStickers)
 	}
 	if strings.Contains(withoutStickers, "STICKER_INTENT") {
 		t.Fatalf("descriptor exposed sticker intent without capability: %q", withoutStickers)
@@ -141,6 +148,32 @@ func TestStickerIntentDoesNotSearchForAmbientRun(t *testing.T) {
 	stickers.mu.Unlock()
 	if query != "" {
 		t.Fatalf("ambient searched stickers with query %q", query)
+	}
+}
+
+func TestStickerIntentAllowsAmbientRunWhenConfigured(t *testing.T) {
+	stickers := &fakeStickerCapability{}
+	gateway, err := NewRelayGateway(RelayConfig{
+		CapabilityToken:           testCapabilityToken,
+		Stickers:                  stickers,
+		AllowAmbientStickerIntent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &relayRun{
+		request: RunRequest{RunID: "ambient", SessionID: "chatroom:room", TriggerKind: domain.TriggerAmbient},
+		chatID:  "chatroom:room|interactive",
+	}
+	effect, err := gateway.resolveStickerIntent(context.Background(), run, "无语")
+	if err != nil || effect == nil || effect.Kind != "emoji" {
+		t.Fatalf("ambient effect=%#v err=%v", effect, err)
+	}
+	stickers.mu.Lock()
+	query, selectedID := stickers.query, stickers.selectedID
+	stickers.mu.Unlock()
+	if query != "无语" || selectedID != "candidate-1" {
+		t.Fatalf("ambient query=%q selected=%q", query, selectedID)
 	}
 }
 

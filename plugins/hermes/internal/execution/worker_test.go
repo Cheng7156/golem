@@ -449,7 +449,7 @@ func TestRelayWorkerIgnoresLegacyAbsoluteDeadline(t *testing.T) {
 	}
 }
 
-func TestWorkerReplacesNonOwnerRelationshipAdoptionBeforeOutboxCommit(t *testing.T) {
+func TestWorkerPreservesModelReplyBeforeOutboxCommit(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "hermes.db"))
 	if err != nil {
@@ -493,7 +493,7 @@ func TestWorkerReplacesNonOwnerRelationshipAdoptionBeforeOutboxCommit(t *testing
 	if err := json.Unmarshal(item.Payload, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.Content != "你不是我的主人，我们按普通群友聊天就好。" {
+	if output.Content != engine.reply {
 		t.Fatalf("outbox content=%q", output.Content)
 	}
 

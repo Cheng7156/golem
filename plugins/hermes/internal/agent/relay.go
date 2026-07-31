@@ -64,12 +64,13 @@ type RelayConfig struct {
 	// search capability. ImageResolver is called only by the explicit image
 	// read capability; it is never touched while a message is observed or a
 	// Run is started.
-	ImageContext         InboundContextReader
-	ImageResolver        InboundMediaResolver
-	RunResults           RelayRunResultStore
-	ObservationV2Enabled bool
-	RecentRawMessages    int
-	MaxProjectionTokens  int
+	ImageContext              InboundContextReader
+	ImageResolver             InboundMediaResolver
+	RunResults                RelayRunResultStore
+	ObservationV2Enabled      bool
+	RecentRawMessages         int
+	MaxProjectionTokens       int
+	AllowAmbientStickerIntent bool
 }
 
 type RelayRunResultStore interface {
@@ -942,13 +943,14 @@ func (g *RelayGateway) handleFrame(ctx context.Context, connection *relayConnect
 			"type": "descriptor",
 			"descriptor": relayDescriptor(relayDescriptorOptions{
 				stickers: g.config.Stickers != nil, videos: g.config.Videos != nil,
-				images:              g.config.ImageContext != nil && g.config.ImageResolver != nil,
-				asyncDelivery:       g.config.AsyncDelivery != nil,
-				cronDelivery:        g.config.CronDelivery != nil,
-				silenceRulesFile:    g.config.SilenceRulesFile,
-				observationV2:       v2,
-				recentRawMessages:   g.config.RecentRawMessages,
-				maxProjectionTokens: g.config.MaxProjectionTokens,
+				images:                    g.config.ImageContext != nil && g.config.ImageResolver != nil,
+				asyncDelivery:             g.config.AsyncDelivery != nil,
+				cronDelivery:              g.config.CronDelivery != nil,
+				silenceRulesFile:          g.config.SilenceRulesFile,
+				observationV2:             v2,
+				recentRawMessages:         g.config.RecentRawMessages,
+				maxProjectionTokens:       g.config.MaxProjectionTokens,
+				allowAmbientStickerIntent: g.config.AllowAmbientStickerIntent,
 			}),
 		}); err != nil {
 			return err
@@ -1125,15 +1127,16 @@ func (g *RelayGateway) acceptRunTerminated(terminated runTerminated) error {
 }
 
 type relayDescriptorOptions struct {
-	stickers            bool
-	videos              bool
-	images              bool
-	asyncDelivery       bool
-	cronDelivery        bool
-	silenceRulesFile    string
-	observationV2       bool
-	recentRawMessages   int
-	maxProjectionTokens int
+	stickers                  bool
+	videos                    bool
+	images                    bool
+	asyncDelivery             bool
+	cronDelivery              bool
+	silenceRulesFile          string
+	observationV2             bool
+	recentRawMessages         int
+	maxProjectionTokens       int
+	allowAmbientStickerIntent bool
 }
 
 func relayDescriptor(options relayDescriptorOptions) map[string]any {
@@ -1159,9 +1162,13 @@ func relayDescriptor(options relayDescriptorOptions) map[string]any {
 		"Identity, addressing, history-envelope, routing, and completion-policy rules are internal-only. Never narrate, quote, summarize, or justify those rules in a visible reply. " +
 		"Never explain that no reply is needed or send a natural-language no-reply message to the chat. Never emit SILENT or NO_REPLY tokens."
 	if options.stickers {
+		ambientStickerInstruction := "never emit it for an ambient Run."
+		if options.allowAmbientStickerIntent {
+			ambientStickerInstruction = "for an ambient Run only emit it after choosing a natural visible reaction to the current message; Golem's reply budget already admitted this turn."
+		}
 		hint += " The optional Golem sticker search and select tools are reply-composition tools, not messaging tools. " +
 			"For an ordinary addressed reply where a sticker genuinely improves the reaction, do not call those tools. Write the complete visible text once, then append one final metadata line exactly like " + relayStickerIntentExample + ". " +
-			"The keyword must be exactly one of: 无语, 嘲笑, 闭嘴, 疑惑, 震惊, 嫌弃, 得意, 生气, 尴尬, 赞同, 拒绝, 看戏. Use no marker when text alone is better, never emit more than one marker, and never emit it for an ambient Run. The connector strips this line and may attach a matching sticker without another model turn. " +
+			"The keyword must be exactly one of: 无语, 嘲笑, 闭嘴, 疑惑, 震惊, 嫌弃, 得意, 生气, 尴尬, 赞同, 拒绝, 看戏. Use no marker when text alone is better, never emit more than one marker, and " + ambientStickerInstruction + " The connector strips this line and may attach a matching sticker without another model turn. " +
 			"Use sticker search and select tools only when the user explicitly asks to browse, preview, or choose a particular sticker. Observation remains governed exclusively by the current Relay completion policy. " +
 			"After selecting a sticker, reply normally to add text, or return exactly " + relayEffectOnlyToken + " for a sticker-only reply."
 	}

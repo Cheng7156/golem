@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"golem_plugin_hermes/internal/config"
 	"golem_plugin_hermes/internal/domain"
 )
 
@@ -377,127 +378,39 @@ func TestGuardAmbientDraftsDoesNotLimitExplicitReplies(t *testing.T) {
 	}
 }
 
-func TestGuardNonOwnerRelationshipAdoptionReplacesExplicitReplies(t *testing.T) {
-	principal := domain.Principal{ID: "member", Name: "琰"}
-	for _, content := range []string{
-		"嗨呀主人～ 有啥事儿吗？",
-		"行叭，主人有令，那我以后就叫你主人了～",
-		"嘿嘿，主人夸我我可不骄傲啊",
-		"不过放心，主人，这次对话里不会忘。",
-		"谢谢主人！",
-		"主人真好。",
-		"You are my master now.",
-	} {
-		t.Run(content, func(t *testing.T) {
-			guarded, reason := guardNonOwnerRelationshipAdoption(
-				[]domain.OutboxDraft{textDraftForGuardTest(t, content)}, principal,
-			)
-			if reason == "" || len(guarded) != 1 {
-				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
-			}
-			var output domain.TextOutput
-			if err := json.Unmarshal(guarded[0].Payload, &output); err != nil {
-				t.Fatal(err)
-			}
-			if output.Content != nonOwnerRelationshipFallback {
-				t.Fatalf("content=%q, want fallback %q", output.Content, nonOwnerRelationshipFallback)
-			}
-		})
-	}
-}
-
-func TestGuardNonOwnerRelationshipAdoptionAllowsSafeReferences(t *testing.T) {
-	principal := domain.Principal{ID: "member", Name: "member"}
-	for _, content := range []string{
-		"我不会叫你主人，你不是我的主人。",
-		"我有自己的主人，但身份信息不能透露。",
-		"你的主人需要你自己确认。",
-		"这个仓库的 owner 负责合并代码。",
-		"主人是谁属于隐私，我不能透露。",
-	} {
-		t.Run(content, func(t *testing.T) {
-			draft := textDraftForGuardTest(t, content)
-			guarded, reason := guardNonOwnerRelationshipAdoption(
-				[]domain.OutboxDraft{draft}, principal,
-			)
-			if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
-				t.Fatalf("guarded=%#v reason=%q", guarded, reason)
-			}
-		})
-	}
-}
-
-func TestGuardNonOwnerRelationshipAdoptionCoversAmbientMentions(t *testing.T) {
-	principal := domain.Principal{ID: "member", Name: "琰"}
-	unsafe := textDraftForGuardTest(t, "好的，主人。")
-	guarded, reason := guardNonOwnerRelationshipAdoption(
-		[]domain.OutboxDraft{unsafe}, principal,
-	)
-	if reason == "" || len(guarded) != 1 {
-		t.Fatalf("unsafe guarded=%#v reason=%q", guarded, reason)
-	}
-	var output domain.TextOutput
-	if err := json.Unmarshal(guarded[0].Payload, &output); err != nil {
-		t.Fatal(err)
-	}
-	if output.Content != nonOwnerRelationshipFallback {
-		t.Fatalf("content=%q, want fallback %q", output.Content, nonOwnerRelationshipFallback)
-	}
-
-	safe := textDraftForGuardTest(t, "别装无辜啊，我啥时候叫过你主人😂 你翻聊天记录也翻不出来，别想诈我。")
-	guarded, reason = guardNonOwnerRelationshipAdoption(
-		[]domain.OutboxDraft{safe}, principal,
-	)
-	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(safe.Payload) {
-		t.Fatalf("safe guarded=%#v reason=%q", guarded, reason)
-	}
-}
-
-func TestGuardNonOwnerRelationshipAdoptionAllowsOwner(t *testing.T) {
-	draft := textDraftForGuardTest(t, "主人，我在")
-	guarded, reason := guardNonOwnerRelationshipAdoption(
+func TestGuardAmbientDraftsAllowsLongTextWhenRuneLimitDisabled(t *testing.T) {
+	draft := textDraftForGuardTest(t, strings.Repeat("长", 152))
+	guarded, reason := guardAmbientDrafts(
 		[]domain.OutboxDraft{draft},
-		domain.Principal{ID: "owner", IsOwner: true},
+		domain.InboundMessage{Text: "继续说", IsChatroom: true},
+		0,
 	)
 	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
 		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
-func TestGuardNonOwnerRelationshipAdoptionCoversDirectMessages(t *testing.T) {
-	draft := textDraftForGuardTest(t, "好的，主人。")
-	guarded, reason := guardNonOwnerRelationshipAdoption(
-		[]domain.OutboxDraft{draft},
-		domain.Principal{ID: "member", Name: "member"},
-	)
-	if reason == "" || len(guarded) != 1 {
-		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
-	}
-	var output domain.TextOutput
-	if err := json.Unmarshal(guarded[0].Payload, &output); err != nil {
-		t.Fatal(err)
-	}
-	if output.Content != nonOwnerRelationshipFallback {
-		t.Fatalf("content=%q, want fallback %q", output.Content, nonOwnerRelationshipFallback)
-	}
-}
-
-func TestGuardNonOwnerRelationshipAdoptionPreservesDeliveryTarget(t *testing.T) {
+func TestGuardPersonaDraftsPreservesExplicitViolationAndDelivery(t *testing.T) {
 	delivery := &domain.DeliveryTarget{
 		ReplyToMessageID: "message-1",
 		MentionActorID:   "member",
 		MentionActorName: "琰",
 	}
-	payload, err := json.Marshal(domain.TextOutput{Content: "主人，我在", Delivery: delivery})
+	payload, err := json.Marshal(domain.TextOutput{
+		Content: strings.Repeat("长", 31), Delivery: delivery,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft := domain.OutboxDraft{
-		SessionID: "chatroom:room", ReceiverID: "room", Kind: "text", Payload: payload,
+	draft := domain.OutboxDraft{Kind: "text", Payload: payload}
+	cfg := config.PersonaConfig{
+		Enabled: true, MaxVisibleRunes: 30, MaxSentences: 1,
 	}
-	guarded, reason := guardNonOwnerRelationshipAdoption(
+
+	guarded, reason := guardPersonaDrafts(
 		[]domain.OutboxDraft{draft},
-		domain.Principal{ID: "member", Name: "琰"},
+		domain.InboundMessage{IsChatroom: true, Mentioned: true},
+		cfg,
 	)
 	if reason == "" || len(guarded) != 1 {
 		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
@@ -506,8 +419,73 @@ func TestGuardNonOwnerRelationshipAdoptionPreservesDeliveryTarget(t *testing.T) 
 	if err := json.Unmarshal(guarded[0].Payload, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.Delivery == nil || *output.Delivery != *delivery {
-		t.Fatalf("delivery=%#v, want %#v", output.Delivery, delivery)
+	if output.Content != strings.Repeat("长", 31) || output.Delivery == nil || *output.Delivery != *delivery {
+		t.Fatalf("output=%#v, want original content with delivery %#v", output, delivery)
+	}
+}
+
+func TestGuardPersonaDraftsLeavesHermesCommandOutputUntouched(t *testing.T) {
+	draft := textDraftForGuardTest(t, "会话已重置。后续消息会使用新的会话上下文继续处理。")
+	cfg := config.PersonaConfig{
+		Enabled: true, MaxVisibleRunes: 10, MaxSentences: 1,
+	}
+
+	guarded, reason := guardPersonaDrafts(
+		[]domain.OutboxDraft{draft},
+		domain.InboundMessage{HermesCommand: "/reset"},
+		cfg,
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardPersonaDraftsSuppressesAmbientViolationButPreservesEffect(t *testing.T) {
+	textDraft := textDraftForGuardTest(t, "第一句。第二句。")
+	effectDraft := domain.OutboxDraft{Kind: "emoji", Payload: json.RawMessage(`{}`)}
+	cfg := config.PersonaConfig{
+		Enabled: true, MaxVisibleRunes: 30, MaxSentences: 1,
+	}
+
+	guarded, reason := guardPersonaDrafts(
+		[]domain.OutboxDraft{textDraft, effectDraft},
+		domain.InboundMessage{IsChatroom: true},
+		cfg,
+	)
+	if reason == "" || len(guarded) != 1 || guarded[0].Kind != "emoji" {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardPersonaDraftsLeavesLegalTextAndEffectsUntouched(t *testing.T) {
+	textDraft := textDraftForGuardTest(t, "知道了。")
+	effectDraft := domain.OutboxDraft{Kind: "emoji", Payload: json.RawMessage(`{}`)}
+	drafts := []domain.OutboxDraft{textDraft, effectDraft}
+	cfg := config.PersonaConfig{
+		Enabled: true, MaxVisibleRunes: 30, MaxSentences: 1,
+	}
+
+	guarded, reason := guardPersonaDrafts(
+		drafts, domain.InboundMessage{IsChatroom: true, Mentioned: true}, cfg,
+	)
+	if reason != "" || len(guarded) != 2 || string(guarded[0].Payload) != string(textDraft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
+	}
+}
+
+func TestGuardPersonaDraftsAllowsLongTextWhenRuneLimitDisabled(t *testing.T) {
+	draft := textDraftForGuardTest(t, strings.Repeat("长", 1000))
+	cfg := config.PersonaConfig{
+		Enabled: true, MaxVisibleRunes: 0, MaxSentences: 1,
+	}
+
+	guarded, reason := guardPersonaDrafts(
+		[]domain.OutboxDraft{draft},
+		domain.InboundMessage{IsChatroom: true, Mentioned: true},
+		cfg,
+	)
+	if reason != "" || len(guarded) != 1 || string(guarded[0].Payload) != string(draft.Payload) {
+		t.Fatalf("guarded=%#v reason=%q", guarded, reason)
 	}
 }
 
