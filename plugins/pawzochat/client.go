@@ -27,6 +27,7 @@ type bridgeRequest struct {
 	SessionName    string `json:"session_name,omitempty"`
 	Text           string `json:"text"`
 	Quote          string `json:"quote,omitempty"`
+	ForceReply     bool   `json:"force_reply"`
 	RequestID      string `json:"request_id"`
 	DeadlineUnixMS int64  `json:"deadline_unix_ms"`
 }
@@ -63,7 +64,7 @@ func (p *PawzoChatPlugin) requestReply(
 ) ([]outbound, bool, error) {
 	return p.requestReplyPrompt(
 		config, personaID, incoming.SessionKey, incoming.sessionName(),
-		incoming.promptContent(), incoming.Quote.Content,
+		incoming.promptContent(), incoming.Quote.Content, incoming.isExplicit(),
 	)
 }
 
@@ -74,6 +75,7 @@ func (p *PawzoChatPlugin) requestReplyPrompt(
 	sessionName string,
 	prompt string,
 	quote string,
+	forceReply bool,
 ) ([]outbound, bool, error) {
 	requestID := newBridgeRequestID()
 	deadline := time.Now().Add(time.Duration(config.HTTPTimeoutSeconds) * time.Second)
@@ -83,6 +85,7 @@ func (p *PawzoChatPlugin) requestReplyPrompt(
 		SessionName:    sessionName,
 		Text:           prompt,
 		Quote:          quote,
+		ForceReply:     forceReply,
 		RequestID:      requestID,
 		DeadlineUnixMS: deadline.UnixMilli(),
 	})
@@ -141,7 +144,7 @@ func (p *PawzoChatPlugin) requestReplyPrompt(
 	if markerRemoved && len(outputs) == 0 {
 		return nil, true, nil
 	}
-	return limitOutboundText(outputs), false, nil
+	return limitOutboundText(prepareOutboundText(outputs)), false, nil
 }
 
 func filterNoReplyMarkerOutputs(outputs []outbound) ([]outbound, bool) {

@@ -95,7 +95,14 @@ func TestOnEventRoutesPrivateReplyToOriginalSender(t *testing.T) {
 }
 
 func TestOnEventHandlesAmbientGroupWhenConfigured(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request bridgeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		if request.ForceReply {
+			t.Error("ambient group message unexpectedly forced a reply")
+		}
 		_, _ = w.Write([]byte(`{"messages":[{"content":[{"type":"text","text":"ambient reply"}]}]}`))
 	}))
 	defer server.Close()
@@ -122,6 +129,38 @@ func TestOnEventHandlesAmbientGroupWhenConfigured(t *testing.T) {
 	}
 	if len(recorder.messages) != 1 || recorder.messages[0].GetText().GetContent() != "ambient reply" {
 		t.Fatalf("messages=%#v", recorder.messages)
+	}
+}
+
+func TestOnEventForcesReplyForAddressedGroup(t *testing.T) {
+	requests := make(chan bridgeRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request bridgeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Decode: %v", err)
+		}
+		requests <- request
+		_, _ = w.Write([]byte(`{"outcome":"no_reply","messages":[]}`))
+	}))
+	defer server.Close()
+
+	pawzo := newPawzoChatPlugin()
+	pawzo.message = &recordingMessageAbility{}
+	pawzo.self = &contact.SelfInfo{Username: "wxid_self", Nickname: "Bot"}
+	pawzo.ownerID = "wxid_owner"
+	pawzo.Config = normalizeConfigValue(Config{
+		BaseURL: server.URL, DefaultPersonaID: "persona", HTTPTimeoutSeconds: 2,
+	})
+	event := &plugin.Event{Payload: &plugin.Event_Message{Message: groupTextMessage(
+		"@Bot hello", []string{"wxid_self"}, "wxid_member", "Member",
+	)}}
+
+	handled, err := pawzo.OnEvent(event)
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if request := <-requests; !request.ForceReply {
+		t.Fatalf("addressed group request=%#v", request)
 	}
 }
 

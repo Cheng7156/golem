@@ -2,10 +2,12 @@ package main
 
 import (
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sbgayhub/golem/sdk/cdn"
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
 	"github.com/sbgayhub/golem/sdk/plugin"
@@ -24,13 +26,19 @@ type Config struct {
 
 type PawzoChatPlugin struct {
 	plugin.ConfigAbility[Config]
-	contact contact.Ability
-	message message.Ability
+	contact         contact.Ability
+	message         message.Ability
+	cdn             cdn.Ability
+	emojiHTTPClient *http.Client
 
 	configMu          sync.RWMutex
 	identityMu        sync.RWMutex
 	identityRefresh   sync.Mutex
 	sessionMu         sync.Mutex
+	emojiMu           sync.Mutex
+	emojiWG           sync.WaitGroup
+	emojiQueue        chan emojiCollectionJob
+	emojiStop         chan struct{}
 	sessions          map[string]*sessionState
 	self              *contact.SelfInfo
 	ownerID           string

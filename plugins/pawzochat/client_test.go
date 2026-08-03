@@ -28,6 +28,9 @@ func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
 		if request.RequestID == "" || request.DeadlineUnixMS <= time.Now().UnixMilli() {
 			t.Errorf("request correlation=%#v", request)
 		}
+		if !request.ForceReply {
+			t.Error("private message did not force a reply")
+		}
 		var sender struct {
 			Text string `json:"text"`
 		}
@@ -215,5 +218,36 @@ func TestLimitOutboundTextKeepsThreeTextsAndIndependentMedia(t *testing.T) {
 	}
 	if textCount != 3 || mediaCount != 2 || !strings.Contains(lastText, "four") {
 		t.Fatalf("limited=%#v", limited)
+	}
+}
+
+func TestPrepareOutboundTextStripsMarkdownAndCoalescesAdjacentText(t *testing.T) {
+	outputs := []outbound{
+		{Kind: "text", Text: "来了老弟，今天的新闻整理："},
+		{Kind: "text", Text: "🔥 **国内要闻**"},
+		{Kind: "text", Text: "- 暴雨橙色预警\n### 国际\n[新闻原文](https://example.com/news)"},
+		{Kind: "emoji", Data: []byte("emoji")},
+		{Kind: "text", Text: "> `补充说明`"},
+	}
+
+	prepared := prepareOutboundText(outputs)
+
+	if len(prepared) != 3 {
+		t.Fatalf("prepared=%#v", prepared)
+	}
+	want := "来了老弟，今天的新闻整理：\n🔥 国内要闻\n• 暴雨橙色预警\n国际\n新闻原文 (https://example.com/news)"
+	if prepared[0].Kind != "text" || prepared[0].Text != want {
+		t.Fatalf("text=%q want=%q", prepared[0].Text, want)
+	}
+	if prepared[1].Kind != "emoji" || prepared[2].Text != "补充说明" {
+		t.Fatalf("prepared=%#v", prepared)
+	}
+}
+
+func TestMarkdownToPlainTextPreservesPlainAsterisksAndFencedCode(t *testing.T) {
+	input := "2 * 3 * 4\n```go\nfmt.Println(\"ok\")\n```\n---"
+	want := "2 * 3 * 4\nfmt.Println(\"ok\")"
+	if got := markdownToPlainText(input); got != want {
+		t.Fatalf("markdownToPlainText()=%q want=%q", got, want)
 	}
 }

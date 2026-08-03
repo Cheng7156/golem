@@ -16,7 +16,7 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 	return &plugin.Metadata{
 		Name:        "pawzochat",
 		Author:      "PawzoChat",
-		Version:     "0.4.1",
+		Version:     "0.5.0",
 		Description: "将 golem 微信消息路由到 PawzoChat 角色并回传回复。",
 		Priority:    1<<31 - 1,
 		Next:        false,
@@ -25,24 +25,32 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 }
 
 func (p *PawzoChatPlugin) GetSubscriptions() []string {
-	return []string{message.TypeText.Topic, message.TypeAppQuote.Topic}
+	return []string{message.TypeText.Topic, message.TypeAppQuote.Topic, message.TypeEmoji.Topic}
 }
 
 func (p *PawzoChatPlugin) OnLoad() error {
 	p.normalizeConfig()
+	p.startEmojiWorkers()
 	p.refreshIdentity()
 	return nil
 }
 
-func (p *PawzoChatPlugin) OnUnload() error { return nil }
+func (p *PawzoChatPlugin) OnUnload() error {
+	p.stopEmojiWorkers()
+	return nil
+}
 
 func (p *PawzoChatPlugin) OnEnable() error {
 	p.normalizeConfig()
+	p.startEmojiWorkers()
 	p.refreshIdentity()
 	return nil
 }
 
-func (p *PawzoChatPlugin) OnDisable() error { return nil }
+func (p *PawzoChatPlugin) OnDisable() error {
+	p.stopEmojiWorkers()
+	return nil
+}
 
 func (p *PawzoChatPlugin) OnConfigChange() error {
 	p.normalizeConfig()
@@ -59,6 +67,12 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 	}
 	config := p.configSnapshot()
 	self, ownerID, ownerName := p.identityForEvent()
+	if payload.Message.GetType().GetCode() == message.TypeEmoji.Code {
+		if candidate, ok := buildEmojiCollectionJob(payload.Message, self, config); ok {
+			p.enqueueEmojiCollection(candidate)
+		}
+		return false, nil
+	}
 	incoming, ok := buildIncoming(payload.Message, self, ownerID, ownerName)
 	if !ok {
 		return false, nil
@@ -181,6 +195,7 @@ func (p *PawzoChatPlugin) processSession(
 			representative.sessionName(),
 			batch.prompt(),
 			representative.Quote.Content,
+			batch.explicit,
 		)
 		if err != nil {
 			if firstErr == nil {
