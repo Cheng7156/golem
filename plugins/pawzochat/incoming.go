@@ -10,6 +10,7 @@ import (
 
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
+	"google.golang.org/protobuf/proto"
 )
 
 const contactTypeChatroom = contact.ContactType_CONTACT_TYPE_CHATROOM
@@ -45,6 +46,23 @@ func (in incomingMessage) sessionName() string {
 		return strings.TrimSpace(in.ChatroomName)
 	}
 	return strings.TrimSpace(in.SpeakerName)
+}
+
+func buildMediaContext(
+	msg *message.Message,
+	self *contact.SelfInfo,
+	ownerID string,
+	ownerName string,
+	mediaKind string,
+) (incomingMessage, bool) {
+	if msg == nil {
+		return incomingMessage{}, false
+	}
+	clone := proto.Clone(msg).(*message.Message)
+	clone.Type = message.TypeText
+	clone.Data = &message.Message_Text{Text: &message.TextData{Content: mediaKind}}
+	clone.Content = mediaKind
+	return buildIncoming(clone, self, ownerID, ownerName)
 }
 
 func buildIncoming(

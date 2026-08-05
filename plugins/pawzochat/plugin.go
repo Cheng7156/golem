@@ -25,30 +25,37 @@ func (p *PawzoChatPlugin) GetMetadata() *plugin.Metadata {
 }
 
 func (p *PawzoChatPlugin) GetSubscriptions() []string {
-	return []string{message.TypeText.Topic, message.TypeAppQuote.Topic, message.TypeEmoji.Topic}
+	return []string{
+		message.TypeText.Topic, message.TypeAppQuote.Topic,
+		message.TypeImage.Topic, message.TypeEmoji.Topic,
+	}
 }
 
 func (p *PawzoChatPlugin) OnLoad() error {
 	p.normalizeConfig()
 	p.startEmojiWorkers()
+	p.startMediaWorkers()
 	p.refreshIdentity()
 	return nil
 }
 
 func (p *PawzoChatPlugin) OnUnload() error {
 	p.stopEmojiWorkers()
+	p.stopMediaWorkers()
 	return nil
 }
 
 func (p *PawzoChatPlugin) OnEnable() error {
 	p.normalizeConfig()
 	p.startEmojiWorkers()
+	p.startMediaWorkers()
 	p.refreshIdentity()
 	return nil
 }
 
 func (p *PawzoChatPlugin) OnDisable() error {
 	p.stopEmojiWorkers()
+	p.stopMediaWorkers()
 	return nil
 }
 
@@ -71,6 +78,19 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 		if candidate, ok := buildEmojiCollectionJob(payload.Message, self, config); ok {
 			p.enqueueEmojiCollection(candidate)
 		}
+		if mediaJob, ok := buildMediaStorageJob(
+			payload.Message, self, ownerID, ownerName, config,
+		); ok {
+			p.enqueueMediaStorage(mediaJob)
+		}
+		return false, nil
+	}
+	if payload.Message.GetType().GetCode() == message.TypeImage.Code {
+		if mediaJob, ok := buildMediaStorageJob(
+			payload.Message, self, ownerID, ownerName, config,
+		); ok {
+			p.enqueueMediaStorage(mediaJob)
+		}
 		return false, nil
 	}
 	incoming, ok := buildIncoming(payload.Message, self, ownerID, ownerName)
@@ -91,6 +111,9 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 		!incoming.MentionedBot && !incoming.QuotedBot {
 		return false, nil
 	}
+	// Preserve arrival order: a following text turn must see any image ID whose
+	// upload is still completing, regardless of what words the user chose.
+	p.waitForPendingMedia(incoming.SessionKey, 12*time.Second)
 
 	batch, run := p.enqueueBatch(incoming)
 	if !run {

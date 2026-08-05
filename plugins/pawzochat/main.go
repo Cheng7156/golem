@@ -39,6 +39,11 @@ type PawzoChatPlugin struct {
 	emojiWG           sync.WaitGroup
 	emojiQueue        chan emojiCollectionJob
 	emojiStop         chan struct{}
+	mediaMu           sync.Mutex
+	mediaWG           sync.WaitGroup
+	mediaQueue        chan mediaStorageJob
+	mediaStop         chan struct{}
+	mediaPending      map[string]chan struct{}
 	sessions          map[string]*sessionState
 	self              *contact.SelfInfo
 	ownerID           string
