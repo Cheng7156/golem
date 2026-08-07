@@ -240,7 +240,7 @@ func (p *PawzoChatPlugin) processSession(
 				}
 			} else {
 				for _, output := range outputs {
-					if sendErr := p.sendOutput(representative.Receiver, output); sendErr != nil {
+					if sendErr := p.sendOutputAndConfirm(config, representative.Receiver, output); sendErr != nil {
 						if firstErr == nil {
 							firstErr = sendErr
 						}
@@ -298,6 +298,22 @@ func (p *PawzoChatPlugin) sendOutput(receiver *contact.Contact, output outbound)
 	}
 	_, err := p.message.Send(msg)
 	return err
+}
+
+func (p *PawzoChatPlugin) sendOutputAndConfirm(
+	config Config,
+	receiver *contact.Contact,
+	output outbound,
+) error {
+	if err := p.sendOutput(receiver, output); err != nil {
+		return err
+	}
+	if output.Kind == "emoji" && output.DeliveryID != "" {
+		if err := p.confirmEmojiDelivery(config, output.PersonaID, output.DeliveryID); err != nil {
+			slog.Warn("[pawzochat] 表情已发送但记忆确认失败", "err", err)
+		}
+	}
+	return nil
 }
 
 func mediaData(data []byte) *message.Media {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,9 +21,13 @@ import (
 
 type recordingMessageAbility struct {
 	messages []*message.Message
+	err      error
 }
 
 func (ability *recordingMessageAbility) Send(msg *message.Message) (*message.Send_Response, error) {
+	if ability.err != nil {
+		return nil, ability.err
+	}
 	ability.messages = append(ability.messages, msg)
 	return &message.Send_Response{NewId: uint64(len(ability.messages))}, nil
 }
@@ -256,6 +261,65 @@ func TestSendOutputUsesNativeEmojiMessage(t *testing.T) {
 	msg := recorder.messages[0]
 	if msg.GetType() != message.TypeEmoji || string(msg.GetEmoji().GetMedia().GetData()) != "emoji" {
 		t.Fatalf("message=%#v", msg)
+	}
+}
+
+func TestSendOutputConfirmsEmojiOnlyAfterSuccessfulSend(t *testing.T) {
+	recorder := &recordingMessageAbility{}
+	confirmation := make(chan map[string]string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(recorder.messages) != 1 {
+			t.Errorf("confirmation arrived before native send: messages=%d", len(recorder.messages))
+		}
+		if r.URL.Path != "/api/bridge/golem/deliveries/emoji" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode confirmation: %v", err)
+		}
+		confirmation <- payload
+		_, _ = w.Write([]byte(`{"outcome":"recorded"}`))
+	}))
+	defer server.Close()
+
+	pawzo := newPawzoChatPlugin()
+	pawzo.message = recorder
+	err := pawzo.sendOutputAndConfirm(
+		Config{BaseURL: server.URL, Token: "secret", HTTPTimeoutSeconds: 2},
+		&contact.Contact{Username: "wxid_friend"},
+		outbound{
+			Kind: "emoji", Data: []byte("emoji"), PersonaID: "resolved-persona",
+			DeliveryID: "delivery-1",
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendOutputAndConfirm: %v", err)
+	}
+	payload := <-confirmation
+	if payload["persona_id"] != "resolved-persona" || payload["delivery_id"] != "delivery-1" {
+		t.Fatalf("confirmation=%#v", payload)
+	}
+
+	recorder.err = errors.New("send failed")
+	err = pawzo.sendOutputAndConfirm(
+		Config{BaseURL: server.URL, Token: "secret", HTTPTimeoutSeconds: 2},
+		&contact.Contact{Username: "wxid_friend"},
+		outbound{
+			Kind: "emoji", Data: []byte("emoji"), PersonaID: "resolved-persona",
+			DeliveryID: "delivery-2",
+		},
+	)
+	if err == nil || err.Error() != "send failed" {
+		t.Fatalf("send failure=%v", err)
+	}
+	select {
+	case payload := <-confirmation:
+		t.Fatalf("failed send was confirmed: %#v", payload)
+	default:
 	}
 }
 

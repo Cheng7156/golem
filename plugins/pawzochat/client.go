@@ -33,9 +33,10 @@ type bridgeRequest struct {
 }
 
 type bridgeResponse struct {
-	Messages []bridgeMessage `json:"messages"`
-	Outcome  string          `json:"outcome"`
-	Error    string          `json:"error"`
+	PersonaID string          `json:"persona_id"`
+	Messages  []bridgeMessage `json:"messages"`
+	Outcome   string          `json:"outcome"`
+	Error     string          `json:"error"`
 }
 
 type bridgeMessage struct {
@@ -48,6 +49,7 @@ type bridgeBlock struct {
 	Data       string `json:"data"`
 	Name       string `json:"name"`
 	DurationMS uint32 `json:"duration_ms"`
+	DeliveryID string `json:"delivery_id"`
 }
 
 type outbound struct {
@@ -55,6 +57,8 @@ type outbound struct {
 	Text       string
 	Data       []byte
 	DurationMS uint32
+	PersonaID  string
+	DeliveryID string
 }
 
 func (p *PawzoChatPlugin) requestReply(
@@ -144,6 +148,11 @@ func (p *PawzoChatPlugin) requestReplyPrompt(
 	if markerRemoved && len(outputs) == 0 {
 		return nil, true, nil
 	}
+	for index := range outputs {
+		if outputs[index].PersonaID == "" {
+			outputs[index].PersonaID = personaID
+		}
+	}
 	return limitOutboundText(prepareOutboundText(outputs)), false, nil
 }
 
@@ -231,6 +240,38 @@ func (p *PawzoChatPlugin) cancelRequest(config Config, requestID string) {
 	slog.Info("[pawzochat] 已取消超时请求", "request_id", requestID, "status", resp.StatusCode)
 }
 
+func (p *PawzoChatPlugin) confirmEmojiDelivery(
+	config Config,
+	personaID string,
+	deliveryID string,
+) error {
+	payload, err := json.Marshal(map[string]string{
+		"persona_id":  strings.TrimSpace(personaID),
+		"delivery_id": strings.TrimSpace(deliveryID),
+	})
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(config.BaseURL, "/") + "/api/bridge/golem/deliveries/emoji"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if config.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+config.Token)
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("confirm emoji delivery: %s", resp.Status)
+	}
+	return nil
+}
+
 func (response bridgeResponse) outputs() ([]outbound, error) {
 	var outputs []outbound
 	for _, item := range response.Messages {
@@ -256,6 +297,8 @@ func (response bridgeResponse) outputs() ([]outbound, error) {
 				outputs = append(outputs, outbound{
 					Kind: kind, Text: strings.TrimSpace(block.Text), Data: data,
 					DurationMS: block.DurationMS,
+					PersonaID:  strings.TrimSpace(response.PersonaID),
+					DeliveryID: strings.TrimSpace(block.DeliveryID),
 				})
 			case "file":
 				name := strings.TrimSpace(block.Name)

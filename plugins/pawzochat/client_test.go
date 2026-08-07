@@ -39,7 +39,7 @@ func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
 			t.Errorf("sender text=%q", sender.Text)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"messages":[{"content":[{"type":"text","text":"reply"},{"type":"image","data":"cG5n"},{"type":"emoji","data":"ZW1vamk="}]}]}`))
+		_, _ = w.Write([]byte(`{"persona_id":"resolved-persona","messages":[{"content":[{"type":"text","text":"reply"},{"type":"image","data":"cG5n"},{"type":"emoji","data":"ZW1vamk=","delivery_id":"delivery-1"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -63,6 +63,9 @@ func TestRequestReplyUsesBridgeProtocol(t *testing.T) {
 	}
 	if outputs[2].Kind != "emoji" || string(outputs[2].Data) != "emoji" {
 		t.Fatalf("emoji output=%#v", outputs[2])
+	}
+	if outputs[2].PersonaID != "resolved-persona" || outputs[2].DeliveryID != "delivery-1" {
+		t.Fatalf("emoji delivery metadata=%#v", outputs[2])
 	}
 }
 
