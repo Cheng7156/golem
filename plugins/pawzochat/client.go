@@ -19,6 +19,8 @@ import (
 const (
 	maxBridgeResponseBytes = 40 * 1024 * 1024
 	noReplyMarker          = "[[PAWZOCHAT_NO_REPLY]]"
+	legacyNoReplyMarker    = "[PAWZOCHAT_NO_REPLY]"
+	bareNoReplyMarker      = "PAWZOCHAT_NO_REPLY"
 )
 
 type bridgeRequest struct {
@@ -167,7 +169,8 @@ func filterNoReplyMarkerOutputs(outputs []outbound) ([]outbound, bool) {
 		lines := strings.Split(strings.ReplaceAll(output.Text, "\r\n", "\n"), "\n")
 		kept := make([]string, 0, len(lines))
 		for _, line := range lines {
-			if strings.TrimSpace(line) == noReplyMarker {
+			marker := strings.TrimSpace(line)
+			if marker == noReplyMarker || marker == legacyNoReplyMarker || marker == bareNoReplyMarker {
 				markerRemoved = true
 				continue
 			}

@@ -133,6 +133,22 @@ func TestRequestReplyTreatsLeakedMarkerOnlyAsNoReply(t *testing.T) {
 	}
 }
 
+func TestRequestReplyTreatsBareLeakedMarkerOnlyAsNoReply(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"outcome":"replied","messages":[{"content":[{"type":"text","text":"PAWZOCHAT_NO_REPLY"}]}]}`))
+	}))
+	defer server.Close()
+
+	plugin := newPawzoChatPlugin()
+	outputs, noReply, err := plugin.requestReply(Config{
+		BaseURL: server.URL, HTTPTimeoutSeconds: 2,
+	}, "persona", incomingMessage{SessionKey: "private:wxid", Text: "hello"})
+
+	if err != nil || !noReply || len(outputs) != 0 {
+		t.Fatalf("outputs=%#v noReply=%v err=%v", outputs, noReply, err)
+	}
+}
+
 func TestRequestReplyCancelsTimedOutServerRequest(t *testing.T) {
 	requestID := make(chan string, 1)
 	cancelledID := make(chan string, 1)
