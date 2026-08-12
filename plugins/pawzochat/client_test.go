@@ -149,6 +149,46 @@ func TestRequestReplyTreatsBareLeakedMarkerOnlyAsNoReply(t *testing.T) {
 	}
 }
 
+func TestRequestReplyTreatsFormattedLeakedMarkerOnlyAsNoReply(t *testing.T) {
+	for _, marker := range []string{
+		"**[[PAWZOCHAT_NO_REPLY]]**",
+		"`[[PAWZOCHAT_NO_REPLY]]`",
+		"***`[[PAWZOCHAT_NO_REPLY]]`***",
+		"\u200b[[PAWZOCHAT_NO_REPLY]]\ufeff",
+		"```\n[[PAWZOCHAT_NO_REPLY]]\n```",
+		"```text\n[[PAWZOCHAT_NO_REPLY]]\n```",
+		"~~~markdown\n[[PAWZOCHAT_NO_REPLY]]\n~~~",
+	} {
+		t.Run(marker, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(bridgeResponse{
+					Outcome:  "replied",
+					Messages: []bridgeMessage{{Content: []bridgeBlock{{Type: "text", Text: marker}}}},
+				})
+			}))
+			defer server.Close()
+
+			plugin := newPawzoChatPlugin()
+			outputs, noReply, err := plugin.requestReply(Config{
+				BaseURL: server.URL, HTTPTimeoutSeconds: 2,
+			}, "persona", incomingMessage{SessionKey: "private:wxid", Text: "hello"})
+
+			if err != nil || !noReply || len(outputs) != 0 {
+				t.Fatalf("outputs=%#v noReply=%v err=%v", outputs, noReply, err)
+			}
+		})
+	}
+}
+
+func TestFilterNoReplyMarkerPreservesMarkerInsideNormalText(t *testing.T) {
+	text := "the internal marker is `[[PAWZOCHAT_NO_REPLY]]`"
+	outputs, removed := filterNoReplyMarkerOutputs([]outbound{{Kind: "text", Text: text}})
+
+	if removed || len(outputs) != 1 || outputs[0].Text != text {
+		t.Fatalf("outputs=%#v removed=%v", outputs, removed)
+	}
+}
+
 func TestRequestReplyCancelsTimedOutServerRequest(t *testing.T) {
 	requestID := make(chan string, 1)
 	cancelledID := make(chan string, 1)

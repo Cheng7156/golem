@@ -23,6 +23,8 @@ const (
 	bareNoReplyMarker      = "PAWZOCHAT_NO_REPLY"
 )
 
+var noReplyMarkerWrappers = []string{"***", "___", "**", "__", "~~", "`", "*", "_"}
+
 type bridgeRequest struct {
 	PersonaID      string `json:"persona_id"`
 	SessionKey     string `json:"session_key"`
@@ -166,11 +168,14 @@ func filterNoReplyMarkerOutputs(outputs []outbound) ([]outbound, bool) {
 			filtered = append(filtered, output)
 			continue
 		}
+		if isNoReplyMarker(output.Text) {
+			markerRemoved = true
+			continue
+		}
 		lines := strings.Split(strings.ReplaceAll(output.Text, "\r\n", "\n"), "\n")
 		kept := make([]string, 0, len(lines))
 		for _, line := range lines {
-			marker := strings.TrimSpace(line)
-			if marker == noReplyMarker || marker == legacyNoReplyMarker || marker == bareNoReplyMarker {
+			if isNoReplyMarker(line) {
 				markerRemoved = true
 				continue
 			}
@@ -182,6 +187,53 @@ func filterNoReplyMarkerOutputs(outputs []outbound) ([]outbound, bool) {
 		}
 	}
 	return filtered, markerRemoved
+}
+
+func isNoReplyMarker(text string) bool {
+	candidate := strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff':
+			return -1
+		default:
+			return r
+		}
+	}, text))
+	for candidate != "" {
+		if len(candidate) >= 6 &&
+			(strings.HasPrefix(candidate, "```") || strings.HasPrefix(candidate, "~~~")) &&
+			strings.HasSuffix(candidate, candidate[:3]) {
+			candidate = strings.TrimSpace(candidate[3 : len(candidate)-3])
+			if language, body, found := strings.Cut(candidate, "\n"); found && isNoReplyCodeFenceLanguage(language) {
+				candidate = strings.TrimSpace(body)
+			}
+			continue
+		}
+		unwrapped := false
+		for _, wrapper := range noReplyMarkerWrappers {
+			if len(candidate) >= len(wrapper)*2 &&
+				strings.HasPrefix(candidate, wrapper) &&
+				strings.HasSuffix(candidate, wrapper) {
+				candidate = strings.TrimSpace(candidate[len(wrapper) : len(candidate)-len(wrapper)])
+				unwrapped = true
+				break
+			}
+		}
+		if !unwrapped {
+			break
+		}
+	}
+	return candidate == noReplyMarker ||
+		candidate == legacyNoReplyMarker ||
+		candidate == bareNoReplyMarker
+}
+
+func isNoReplyCodeFenceLanguage(language string) bool {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "", "text", "txt", "plaintext", "markdown", "md":
+		return true
+	default:
+		return false
+	}
 }
 
 func limitOutboundText(outputs []outbound) []outbound {
