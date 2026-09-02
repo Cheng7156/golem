@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
@@ -178,19 +177,17 @@ func (p *PawzoChatPlugin) finishMediaStorage(job mediaStorageJob) {
 	p.mediaMu.Unlock()
 }
 
-func (p *PawzoChatPlugin) waitForPendingMedia(sessionKey string, timeout time.Duration) {
+func (p *PawzoChatPlugin) waitForPendingMedia(sessionKey string) {
 	p.mediaMu.Lock()
 	done := p.mediaPending[sessionKey]
+	stop := p.mediaStop
 	p.mediaMu.Unlock()
 	if done == nil {
 		return
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case <-done:
-	case <-timer.C:
-		slog.Warn("[pawzochat] 等待图片登记超时", "session_type", sessionType(sessionKey))
+	case <-stop:
 	}
 }
 

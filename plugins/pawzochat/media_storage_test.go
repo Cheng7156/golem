@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sbgayhub/golem/sdk/contact"
 	"github.com/sbgayhub/golem/sdk/message"
@@ -72,5 +73,33 @@ func TestImageEventStoresMediaWithoutCallingMessageBridge(t *testing.T) {
 	<-stored
 	if messageCalls.Load() != 0 {
 		t.Fatalf("message bridge calls=%d", messageCalls.Load())
+	}
+}
+
+func TestFollowingTextWaitsForMediaCompletion(t *testing.T) {
+	pawzo := newPawzoChatPlugin()
+	done := make(chan struct{})
+	pawzo.mediaPending = map[string]chan struct{}{
+		"private:wxid_friend": done,
+	}
+	pawzo.mediaStop = make(chan struct{})
+	returned := make(chan struct{})
+
+	go func() {
+		pawzo.waitForPendingMedia("private:wxid_friend")
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("media wait returned before the upload completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("media wait did not return after the upload completed")
 	}
 }

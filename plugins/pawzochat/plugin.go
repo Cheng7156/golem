@@ -113,7 +113,7 @@ func (p *PawzoChatPlugin) OnEvent(event *plugin.Event) (bool, error) {
 	}
 	// Preserve arrival order: a following text turn must see any image ID whose
 	// upload is still completing, regardless of what words the user chose.
-	p.waitForPendingMedia(incoming.SessionKey, 12*time.Second)
+	p.waitForPendingMedia(incoming.SessionKey)
 
 	batch, run := p.enqueueBatch(incoming)
 	if !run {
