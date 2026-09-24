@@ -1,0 +1,11 @@
+name: golem_bridge
+version: 0.1.0
+description: 微信能力桥——通过 golem_hermes_plugin 的本地工具桥操作当前微信会话（发表情/发图片/引用回复/查群成员/查历史）
+kind: backend
+provides_tools:
+  - send_emoji
+  - send_image
+  - reply_quote
+  - get_group_members
+  - search_chat_history
+  - get_recent_context
