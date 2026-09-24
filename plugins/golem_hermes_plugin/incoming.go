@@ -86,6 +86,16 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	// 1. 全量采集群/私聊上下文（AlwaysRun 保证劫持期间也能记录）
 	p.rings.add(session, msg)
 
+	// 1.5 消息归档（画像与群史官的持久语料；异步非阻塞）
+	if p.Config.ProfileEnabled {
+		kind, content := describeMessage(msg)
+		p.store.archive(archiveMsg{
+			Ts: time.Now().Unix(), Chat: session,
+			Wxid: msg.GetMember().GetUsername(), Name: speakerName(msg),
+			Kind: kind, Content: previewOf(content, 200),
+		})
+	}
+
 	// 2. 表情收集（异步，不阻塞事件链）；新收集立即唤醒打标
 	if p.Config.StickerEnabled && msg.GetType().GetCode() == message.TypeEmoji.Code {
 		go func() {

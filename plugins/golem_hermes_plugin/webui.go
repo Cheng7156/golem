@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,9 @@ func (w *webUI) mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/config", w.auth(w.handleConfig))
 	mux.HandleFunc("POST /api/action/retag", w.auth(w.handleRetag))
 	mux.HandleFunc("GET /api/stream", w.auth(w.handleStream))
+	mux.HandleFunc("GET /api/members", w.auth(w.handleMemberCards))
+	mux.HandleFunc("GET /api/members/", w.auth(w.handleMemberRoutes))
+	mux.HandleFunc("POST /api/action/profile-rerun", w.auth(w.handleProfileRerun))
 }
 
 func (w *webUI) handleUI(rw http.ResponseWriter, _ *http.Request) {
@@ -318,4 +322,103 @@ func (w *webUI) overviewNoProbe() map[string]any {
 func stickerOverview(s *store) map[string]any {
 	total, tagged := s.stickerCounts()
 	return map[string]any{"total": total, "tagged": tagged, "queue": total - tagged}
+}
+
+// ---- 画像 API ----
+
+var wxidRe = regexp.MustCompile(`^[A-Za-z0-9_@-]{1,64}$`)
+
+func (w *webUI) handleMemberCards(rw http.ResponseWriter, _ *http.Request) {
+	writeOK(rw, map[string]any{"members": w.p.store.memberCards()})
+}
+
+// handleMemberRoutes /api/members/{wxid} 与 /api/members/avatar/{wxid}
+func (w *webUI) handleMemberRoutes(rw http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/members/")
+	if rest == "" {
+		writeErr(rw, http.StatusBadRequest, "缺少 wxid")
+		return
+	}
+	if strings.HasPrefix(rest, "avatar/") {
+		wxid := strings.TrimPrefix(rest, "avatar/")
+		if !wxidRe.MatchString(wxid) {
+			writeErr(rw, http.StatusBadRequest, "非法标识")
+			return
+		}
+		path := w.p.store.avatarPath(wxid)
+		if path == "" {
+			writeErr(rw, http.StatusNotFound, "无头像")
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			writeErr(rw, http.StatusNotFound, "无头像")
+			return
+		}
+		ct := "image/jpeg"
+		switch sniffImage(data) {
+		case "png":
+			ct = "image/png"
+		case "gif":
+			ct = "image/gif"
+		}
+		rw.Header().Set("Content-Type", ct)
+		rw.Header().Set("Cache-Control", "max-age=86400")
+		_, _ = rw.Write(data)
+		return
+	}
+	// DELETE /api/members/{wxid} 删除画像
+	if r.Method == http.MethodDelete {
+		wxid := rest
+		if !wxidRe.MatchString(wxid) {
+			writeErr(rw, http.StatusBadRequest, "非法标识")
+			return
+		}
+		w.p.store.mu.Lock()
+		_, err := w.p.store.db.Exec("DELETE FROM member_profiles WHERE wxid=?", wxid)
+		w.p.store.mu.Unlock()
+		if err != nil {
+			writeErr(rw, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.p.metrics.addLog("INFO", "[web] 删除成员画像 "+wxid)
+		writeOK(rw, map[string]any{"deleted": wxid})
+		return
+	}
+	// GET /api/members/{wxid} 详情
+	if !wxidRe.MatchString(rest) {
+		writeErr(rw, http.StatusBadRequest, "非法标识")
+		return
+	}
+	d := w.p.store.memberDetailGet(rest, w.p.Config.StickerEmotions)
+	if d == nil {
+		writeErr(rw, http.StatusNotFound, "暂无画像")
+		return
+	}
+	writeOK(rw, d)
+}
+
+func (w *webUI) handleProfileRerun(rw http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Wxid string `json:"wxid"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	if body.Wxid != "" {
+		if !wxidRe.MatchString(body.Wxid) {
+			writeErr(rw, http.StatusBadRequest, "非法标识")
+			return
+		}
+		w.p.store.mu.Lock()
+		_, _ = w.p.store.db.Exec("UPDATE member_profiles SET archived_at=0 WHERE wxid=?", body.Wxid)
+		w.p.store.mu.Unlock()
+	} else {
+		w.p.store.mu.Lock()
+		_, _ = w.p.store.db.Exec("UPDATE member_profiles SET archived_at=0")
+		w.p.store.mu.Unlock()
+	}
+	if w.p.profiler != nil {
+		w.p.profiler.Wake()
+	}
+	w.p.metrics.addLog("INFO", "[web] 触发画像重跑 "+body.Wxid)
+	writeOK(rw, map[string]any{"rerun": true})
 }

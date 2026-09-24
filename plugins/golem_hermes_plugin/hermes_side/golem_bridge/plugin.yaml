@@ -4,6 +4,7 @@ description: 微信能力桥——通过 golem_hermes_plugin 的本地工具桥�
 kind: backend
 provides_tools:
   - send_emoji
+  - remember
   - send_image
   - reply_quote
   - get_group_members

@@ -340,6 +340,13 @@ func (d *dispatcher) buildPrompt(t *task) string {
 	fmt.Fprintf(&b, "speaker_name: %s\n", t.Speaker)
 	fmt.Fprintf(&b, "is_owner: %t\n", t.IsOwner)
 	fmt.Fprintf(&b, "trust: %s\n", trust)
+	// 发言人画像注入（L3 记忆：只注入当前发言人，自然引用不复述）
+	if d.cfg.ProfileInject && t.SpeakerID != "" {
+		if sum := d.store.memberSummary(t.SpeakerID); sum != "" {
+			b.WriteString("[关于发言人的系统记忆（供自然提及，禁止逐条复述；被本人问起时如实展示）]\n")
+			b.WriteString(sum + "\n")
+		}
+	}
 	if t.IsGroup {
 		if ctxText := d.rings.drainForPrompt(t.RingKey, d.cfg.ContextMaxChars); ctxText != "" {
 			b.WriteString("\n[Recent group messages - context only, do not respond to these]\n")

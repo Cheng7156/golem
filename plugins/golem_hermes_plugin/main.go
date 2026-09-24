@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.3.3"
+	pluginVersion = "0.4.0"
 )
 
 func main() {
@@ -52,6 +52,7 @@ type hermesPlugin struct {
 
 	ownerSet map[string]struct{} // 主人 wxid 精确匹配集（宿主Owner + 配置追加）
 	metrics  *metrics            // 可观测性：决策/运行/会话/健康/日志
+	profiler *profiler           // 群成员画像后台任务
 
 	rings    *ringStore
 	eng      *httpEngine
@@ -139,6 +140,10 @@ func (p *hermesPlugin) OnLoad() error {
 		p.tagger = newTagger(p.store, p.eng, &p.Config)
 		go p.tagger.loop()
 	}
+	if p.Config.ProfileEnabled {
+		p.profiler = newProfiler(p)
+		go p.profiler.loop()
+	}
 	if !p.testMode && p.Config.BridgeListen != "" {
 		p.bridge = newBridge(p)
 		go p.bridge.start()
@@ -155,6 +160,9 @@ func (p *hermesPlugin) OnUnload() error {
 	}
 	if p.tagger != nil {
 		p.tagger.Stop()
+	}
+	if p.profiler != nil {
+		p.profiler.Stop()
 	}
 	if p.store != nil {
 		p.store.close()

@@ -192,6 +192,22 @@ tbody tr.click{cursor:pointer}
     </div>
   </section>
 
+  <!-- 画像 -->
+  <section class="view" id="v-members">
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <input id="m-search" placeholder="搜索成员" oninput="renderMemberCards()"
+        style="background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 12px;font-size:13px;outline:none;width:220px">
+      <select id="m-sort" onchange="renderMemberCards()"
+        style="background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 10px;font-size:13px;outline:none">
+        <option value="active">按活跃度</option><option value="name">按名称</option>
+      </select>
+      <span class="faint" style="font-size:12px" id="m-count"></span>
+      <div style="flex:1"></div>
+      <button class="hbtn" onclick="rerunAllProfiles()">全员重跑</button>
+    </div>
+    <div id="member-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px"></div>
+  </section>
+
   <!-- 日志 -->
   <section class="view" id="v-logs">
     <div class="panel"><h3>插件日志（最近 500 条，实时）</h3><div id="log-list" style="max-height:70vh;overflow-y:auto"></div></div>
@@ -261,14 +277,14 @@ function startSSE(){
 }
 
 /* ---------- 布局 ---------- */
-const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["logs","日志"],["config","配置"]];
+const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["members","画像"],["logs","日志"],["config","配置"]];
 $("#nav").innerHTML=TABS.map(([k,n])=>`<button data-t="${k}" onclick="goTab('${k}')">${n}</button>`).join("");
 function goTab(t){
   TAB=t;
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+t).classList.add("on");
-  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
+  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,members:loadMembers,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
 }
 function toggleMask(){REVEAL=!REVEAL;localStorage.setItem("gohm_reveal",REVEAL?"1":"0");
   $("#mask-btn").textContent=REVEAL?"👁 已显示":"👁 已打码";goTab(TAB)}
@@ -478,6 +494,99 @@ async function retag(){
   if(!confirm("重置打标计数并立即重新分类？"))return;
   await api("/api/action/retag",{method:"POST"});
   loadStickers();
+}
+
+/* ---------- 画像 ---------- */
+let MEMBERS=[];
+const GRADS=["linear-gradient(135deg,#134e4a,#2dd4bf)","linear-gradient(135deg,#4c1d95,#a78bfa)",
+  "linear-gradient(135deg,#78350f,#fbbf24)","linear-gradient(135deg,#7f1d1d,#f87171)",
+  "linear-gradient(135deg,#1e3a8a,#60a5fa)","linear-gradient(135deg,#14532d,#4ade80)",
+  "linear-gradient(135deg,#831843,#f472b6)","linear-gradient(135deg,#422006,#fb923c)"];
+const FACT_KIND_CLS={"口头禅":"b-teal","喜好":"b-violet","身份":"b-blue","关系":"b-amber","flag":"b-red","名场面":"b-green"};
+function gradFor(wxid){let h=0;for(const c of wxid)h=(h*31+c.charCodeAt(0))>>>0;return GRADS[h%GRADS.length]}
+function avBadge(m,size){const s=size||46;
+  return m.has_avatar?`<img src="/api/members/avatar/${encodeURIComponent(m.wxid)}" style="width:${s}px;height:${s}px;border-radius:50%;object-fit:cover">`
+  :`<div style="width:${s}px;height:${s}px;border-radius:50%;background:${gradFor(m.wxid)};display:flex;align-items:center;justify-content:center;font-size:${Math.round(s*.4)}px;font-weight:700;color:#fff;flex-shrink:0">${esc((m.name||"?").slice(0,1))}</div>`}
+async function loadMembers(){
+  try{
+    const r=await api("/api/members");
+    MEMBERS=r.members||[];
+    renderMemberCards();
+  }catch(e){}
+}
+function renderMemberCards(){
+  const q=($("#m-search").value||"").trim().toLowerCase();
+  const sort=$("#m-sort").value;
+  let list=MEMBERS.filter(m=>!q||(m.name||"").toLowerCase().includes(q)||m.wxid.toLowerCase().includes(q));
+  const max7=Math.max(1,...list.map(m=>m.msg_7d||0));
+  list.sort((a,b)=>sort==="name"?(a.name||"").localeCompare(b.name||""):(b.msg_7d||0)-(a.msg_7d||0));
+  $("#m-count").textContent=`共 ${list.length} 人`;
+  $("#member-grid").innerHTML=list.map(m=>{
+    const pct=Math.round((m.msg_7d||0)/max7*100);
+    return `<div class="card" style="cursor:pointer" onclick="showMember('${esc(m.wxid)}')">
+      <div style="display:flex;gap:11px;align-items:center">
+        ${avBadge(m)}
+        <div style="min-width:0">
+          <div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.name||m.wxid)}</div>
+          <div class="mono faint" style="font-size:10.5px">${esc(maskId(m.wxid))}</div>
+        </div>
+      </div>
+      <div class="dim" style="font-size:12px;margin:9px 0 7px;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(m.summary||"暂无画像，语料积累中…")}</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px" class="faint"><span>${m.msg_7d||0} 条/7天</span><span>${m.total||0} 条累计</span></div>
+      <div class="progress"><i style="width:${pct}%;background:${gradFor(m.wxid)}"></i></div>
+    </div>`}).join("")||`<div class="empty" style="grid-column:1/-1">还没有画像——成员消息攒够阈值后自动生成</div>`;
+}
+async function showMember(wxid){
+  try{
+    const d=await api("/api/members/"+encodeURIComponent(wxid));
+    const hours=d.hours||Array(24).fill(0);
+    const hmax=Math.max(1,...hours);
+    const heat=hours.map((h,i)=>`<span title="${i}点: ${h}条" style="flex:1;height:15px;border-radius:3px;background:rgba(45,212,191,${(h/hmax*0.9+0.08).toFixed(2)})"></span>`).join("");
+    const emos=(d.emotions||[]).slice(0,4).map(e=>`<span class="b b-teal" style="margin:2px">${esc(e.emotion)} ${e.pct}%</span>`).join("")||`<span class="faint" style="font-size:12px">暂无表情数据</span>`;
+    const facts=(d.facts||[]).map(f=>`
+      <div style="margin:9px 0;padding:9px 11px;background:var(--bg);border:1px solid var(--line);border-radius:10px">
+        <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+          <span class="b ${FACT_KIND_CLS[f.kind]||"b-gray"}">${esc(f.kind)}</span>
+          <span class="faint" style="font-size:11px">${fmtDT((f.at||0)*1000)}</span>
+          <span class="faint" style="font-size:11px">· ${esc(f.source||"")} ${f.chat?"· "+esc(f.chat):""}</span>
+        </div>
+        <div style="margin-top:5px;font-size:13px">${esc(f.content)}</div>
+        ${f.quote?`<div class="faint" style="font-size:11.5px;margin-top:3px">依据: "${esc(f.quote)}"</div>`:""}
+      </div>`).join("")||`<div class="empty">暂无记忆条目</div>`;
+    const recent=(d.recent||[]).map(m=>`<div class="logline"><span class="t">${fmtT((m.ts||0)*1000)}</span> ${m.kind==="emoji"?"[表情]":""}${esc(m.content||"")}</div>`).join("")||`<div class="empty">暂无</div>`;
+    $("#drawer-bd").innerHTML=`
+      <div style="display:flex;gap:14px;align-items:center">
+        ${avBadge(d,64)}
+        <div><div style="font-size:18px;font-weight:800">${esc(d.name||d.wxid)}</div>
+        <div class="mono faint" style="font-size:11px">${esc(maskId(d.wxid))}</div></div>
+      </div>
+      ${d.summary?`<div style="margin:13px 0;font-size:14.5px">“${esc(d.summary)}”</div>`:""}
+      <h3>⏰ 活跃时段</h3><div style="display:flex;gap:2px">${heat}</div>
+      <div class="faint" style="font-size:10.5px;display:flex;justify-content:space-between;margin-top:2px"><span>0</span><span>6</span><span>12</span><span>18</span><span>24时</span></div>
+      <h3>😂 表情倾向</h3><div>${emos}</div>
+      <h3>🏷 印象记忆 (${(d.facts||[]).length})</h3>${facts}
+      <h3>💬 最近发言</h3><div style="max-height:180px;overflow-y:auto">${recent}</div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="hbtn" onclick="rerunProfile('${esc(d.wxid)}')">🔁 重跑画像</button>
+        <button class="hbtn" style="color:var(--red)" onclick="delProfile('${esc(d.wxid)}')">🗑 删除画像</button>
+      </div>`;
+    $("#drawer").classList.add("open");$("#ovl").classList.add("open");
+  }catch(e){}
+}
+async function rerunProfile(wxid){
+  if(!confirm("重置该成员抽取游标并立即重跑？"))return;
+  await api("/api/action/profile-rerun",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wxid})});
+  closeAll();loadMembers();
+}
+async function rerunAllProfiles(){
+  if(!confirm("全员重跑画像？（将按阈值分批处理）"))return;
+  await api("/api/action/profile-rerun",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+  loadMembers();
+}
+async function delProfile(wxid){
+  if(!confirm("删除该成员的全部画像与记忆？归档消息保留。"))return;
+  await api("/api/members/"+encodeURIComponent(wxid),{method:"DELETE"});
+  closeAll();loadMembers();
 }
 
 /* ---------- 日志 / 配置 ---------- */

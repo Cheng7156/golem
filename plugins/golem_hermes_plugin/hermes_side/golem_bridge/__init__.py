@@ -35,6 +35,10 @@ USAGE_GUIDELINES = (
     "- get_group_members / search_chat_history / get_recent_context："
     "需要了解群成员或翻聊天记录时使用。\n"
     "- 工具失败时直接用文字回复，不要重试超过一次。\n"
+    "- remember：聊天中听到关于【当前发言人】的重要稳定事实（喜好、计划、承诺、身份、金句）"
+    "时主动记住；只能记当前发言人自己的事，绝不能替别人记；手机号/住址等隐私一律不记。\n"
+    "- 透明原则：任何人问「你记了我什么」「你了解我什么」时，如实完整地展示记得的内容，"
+    "绝不隐瞒。\n"
     "- 会话隔离：所有工具严格绑定当前对话；多个会话同时运行时若无法确定目标会被拒绝，"
     "此时如实告知对方稍后再试即可，不要猜测。"
 )
@@ -112,6 +116,20 @@ TOOLS = [
         },
         "在当前微信聊天以引用方式回复最近一条消息",
         _make_handler("POST", "/v1/quote", timeout=30),
+    ),
+    (
+        "remember",
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["口头禅", "喜好", "身份", "关系", "flag", "名场面"],
+                          "description": "记忆类别"},
+                "content": {"type": "string", "description": "要记住的事实（关于当前发言人本人），一句话"},
+            },
+            "required": ["content"],
+        },
+        "记住关于当前发言人的一条稳定事实（下次对话可自然提起）",
+        _make_handler("POST", "/v1/remember", timeout=20),
     ),
     (
         "get_group_members",

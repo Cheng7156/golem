@@ -19,11 +19,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// store 插件本地存储：表情库 + kv（用量记账），单 SQLite 文件
+// store 插件本地存储：表情库 + kv（用量记账）+ 消息归档 + 成员画像，单 SQLite 文件
 type store struct {
 	db  *sql.DB
 	dir string
 	mu  sync.Mutex
+
+	archCh   chan archiveMsg
+	archDone chan struct{}
 }
 
 func newStore(path, stickerDir string) *store {
@@ -40,10 +43,19 @@ func newStore(path, stickerDir string) *store {
 		attempts INTEGER DEFAULT 0, use_count INTEGER DEFAULT 0, last_used INTEGER DEFAULT 0,
 		created_at INTEGER)`)
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)`)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS msg_archive(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts INTEGER, chat TEXT, wxid TEXT, name TEXT, kind TEXT, content TEXT)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_archive_wxid ON msg_archive(wxid, id)`)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS member_profiles(
+		wxid TEXT PRIMARY KEY, name TEXT, summary TEXT DEFAULT '', facts TEXT DEFAULT '[]',
+		archived_at INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, updated_at INTEGER)`)
+	s.startArchive()
 	return s
 }
 
 func (s *store) close() {
+	s.stopArchive()
 	if s.db != nil {
 		_ = s.db.Close()
 	}
