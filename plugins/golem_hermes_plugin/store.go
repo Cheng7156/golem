@@ -50,6 +50,7 @@ func newStore(path, stickerDir string) *store {
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS member_profiles(
 		wxid TEXT PRIMARY KEY, name TEXT, summary TEXT DEFAULT '', facts TEXT DEFAULT '[]',
 		archived_at INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, updated_at INTEGER)`)
+	s.initSettings()
 	s.startArchive()
 	return s
 }

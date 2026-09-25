@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.4.0"
+	pluginVersion = "0.5.0"
 )
 
 func main() {
@@ -188,9 +188,12 @@ func (p *hermesPlugin) rebuildOwnerSet() {
 }
 
 func (p *hermesPlugin) isOwnerWxid(wxid string) bool {
-	if wxid == "" || len(p.ownerSet) == 0 {
+	if wxid == "" {
 		return false
 	}
-	_, ok := p.ownerSet[strings.ToLower(wxid)]
-	return ok
+	// 静态集（宿主Owner+config追加） ∪ Web 动态标记（member_flags）
+	if _, ok := p.ownerSet[strings.ToLower(wxid)]; ok {
+		return true
+	}
+	return p.store.isMemberOwner(wxid)
 }

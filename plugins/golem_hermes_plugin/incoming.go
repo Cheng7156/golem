@@ -37,11 +37,20 @@ type incoming struct {
 
 // decide 触发决策（唯一判定入口，返回结果同时用于埋点）
 func (p *hermesPlugin) decide(in *incoming) (respond, ambient bool, trigger, ignore string) {
+	// 成员级：屏蔽名单（主人亦不免，除非先解除屏蔽）
+	if p.store.isMemberIgnored(in.SpeakerID) {
+		return false, false, "", "成员被屏蔽"
+	}
+	ec := p.effectiveChatConfig(in.GroupID)
 	if !in.IsGroup {
 		if p.Config.OwnerOnlyPrivate && !in.IsOwner {
 			return false, false, "", "陌生人私聊(owner_only_private)"
 		}
 		return true, false, "private", ""
+	}
+	// 群级静音：仅主人 @/引用 可穿透唤醒
+	if ec.Muted && !(in.IsOwner && (in.Mentioned || in.QuotedBot)) {
+		return false, false, "", "群已静音"
 	}
 	if in.Mentioned {
 		return true, false, "mention", ""
@@ -52,13 +61,13 @@ func (p *hermesPlugin) decide(in *incoming) (respond, ambient bool, trigger, ign
 	if in.IsOwner && p.Config.OwnerBypassAmbient {
 		return true, true, "owner-bypass", ""
 	}
-	if p.inFreeList(in.GroupID) {
+	if ec.FreeResponse {
 		return true, false, "whitelist", ""
 	}
 	if p.Config.DailyTokenCap > 0 && p.store.tokenExceeded(p.Config.DailyTokenCap) {
 		return false, false, "", "预算熔断"
 	}
-	if hit, why := p.ambientRoll(in.GroupID); !hit {
+	if hit, why := p.ambientRoll(in.GroupID, ec.AmbientRate, ec.AmbientCooldownSec); !hit {
 		return false, false, "", why
 	}
 	if len([]rune(in.Text)) < p.Config.MinAmbientLen {
@@ -184,8 +193,12 @@ func (p *hermesPlugin) buildIncoming(session string, msg *message.Message) *inco
 		in.GroupID = sender.GetUsername()
 		in.SpeakerID = msg.GetMember().GetUsername()
 		in.Speaker = sanitizeName(speakerName(msg))
-		// 隔离策略：整群共享会话 或 按发言人拆分独立会话
-		if p.Config.GroupSessionsPerUser && in.SpeakerID != "" {
+		// 隔离策略：群设置覆盖 > 全局；按发言人拆分或整群共享
+		perUser := p.Config.GroupSessionsPerUser
+		if ec := p.effectiveChatConfig(in.GroupID); true {
+			perUser = ec.PerUserSession
+		}
+		if perUser && in.SpeakerID != "" {
 			in.HermesKey = "wx:group:" + in.GroupID + ":" + in.SpeakerID
 		} else {
 			in.HermesKey = "wx:group:" + in.GroupID
@@ -248,20 +261,27 @@ func (p *hermesPlugin) inFreeList(groupID string) bool {
 	return false
 }
 
-// ambientRoll 环境参与掷骰：概率 + 群级冷却；返回未命中原因供决策埋点
-func (p *hermesPlugin) ambientRoll(groupID string) (bool, string) {
-	if p.Config.AmbientReplyRate <= 0 {
+// ambientRoll 环境参与掷骰：概率 + 群级冷却（可被群设置覆盖）；返回未命中原因供决策埋点
+func (p *hermesPlugin) ambientRoll(groupID string, rateOver float64, cooldownOver int) (bool, string) {
+	rate := p.Config.AmbientReplyRate
+	if rateOver >= 0 {
+		rate = rateOver
+	}
+	cooldown := time.Duration(p.Config.AmbientCooldownSec) * time.Second
+	if cooldownOver >= 0 {
+		cooldown = time.Duration(cooldownOver) * time.Second
+	}
+	if rate <= 0 {
 		return false, "环境概率为0"
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	last := p.ambient[groupID]
-	cooldown := time.Duration(p.Config.AmbientCooldownSec) * time.Second
 	if cooldown > 0 && time.Since(last) < cooldown {
 		return false, "群冷却中"
 	}
-	if rand.Float64() >= p.Config.AmbientReplyRate {
-		return false, fmt.Sprintf("概率未中(%.2f)", p.Config.AmbientReplyRate)
+	if rand.Float64() >= rate {
+		return false, fmt.Sprintf("概率未中(%.2f)", rate)
 	}
 	p.ambient[groupID] = time.Now()
 	return true, ""

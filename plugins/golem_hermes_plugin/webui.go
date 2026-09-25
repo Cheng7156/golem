@@ -53,6 +53,10 @@ func (w *webUI) mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/members", w.auth(w.handleMemberCards))
 	mux.HandleFunc("GET /api/members/", w.auth(w.handleMemberRoutes))
 	mux.HandleFunc("POST /api/action/profile-rerun", w.auth(w.handleProfileRerun))
+	mux.HandleFunc("GET /api/chat-settings", w.auth(w.handleChatSettingsGet))
+	mux.HandleFunc("PUT /api/chat-settings", w.auth(w.handleChatSettingsPut))
+	mux.HandleFunc("GET /api/member-flags", w.auth(w.handleMemberFlagsGet))
+	mux.HandleFunc("PUT /api/member-flags", w.auth(w.handleMemberFlagsPut))
 }
 
 func (w *webUI) handleUI(rw http.ResponseWriter, _ *http.Request) {
@@ -396,6 +400,53 @@ func (w *webUI) handleMemberRoutes(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(rw, d)
+}
+
+// ---- 群设置 / 成员标记（配置中枢） ----
+
+func (w *webUI) handleChatSettingsGet(rw http.ResponseWriter, r *http.Request) {
+	chat := r.URL.Query().Get("chat")
+	if chat != "" {
+		writeOK(rw, w.p.store.getChatSettings(chat))
+		return
+	}
+	writeOK(rw, map[string]any{"settings": w.p.store.chatSettingsList()})
+}
+
+func (w *webUI) handleChatSettingsPut(rw http.ResponseWriter, r *http.Request) {
+	var cs chatSettings
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&cs); err != nil || cs.Chat == "" {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	if cs.SessionMode != nil && *cs.SessionMode != "shared" && *cs.SessionMode != "per_user" {
+		writeErr(rw, http.StatusBadRequest, "session_mode 仅支持 shared|per_user")
+		return
+	}
+	w.p.store.saveChatSettings(cs)
+	w.p.metrics.addLog("INFO", "[web] 群设置更新 "+previewOf(cs.Chat, 40))
+	writeOK(rw, w.p.store.getChatSettings(cs.Chat))
+}
+
+func (w *webUI) handleMemberFlagsGet(rw http.ResponseWriter, r *http.Request) {
+	wxid := r.URL.Query().Get("wxid")
+	if wxid == "" {
+		writeErr(rw, http.StatusBadRequest, "缺少 wxid")
+		return
+	}
+	writeOK(rw, w.p.store.getMemberFlags(wxid))
+}
+
+func (w *webUI) handleMemberFlagsPut(rw http.ResponseWriter, r *http.Request) {
+	var mf memberFlags
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&mf); err != nil || mf.Wxid == "" {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	w.p.store.saveMemberFlags(mf)
+	writeOK(rw, w.p.store.getMemberFlags(mf.Wxid))
 }
 
 func (w *webUI) handleProfileRerun(rw http.ResponseWriter, r *http.Request) {
