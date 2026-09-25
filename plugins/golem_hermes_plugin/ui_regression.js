@@ -25,6 +25,7 @@
     const rg = $q('#modal-bd input[data-k="ambient_rate"]');
     rg.value = 45; rg.dispatchEvent(new Event("input", { bubbles: true })); await sleep(80);
     ok("V4 ⚙滑条实时45%", $q('#modal-bd [data-vk="ambient_rate"]').textContent === "45%");
+    ok("V4 弹窗含史官开关", !!$q('#modal-bd input[type=checkbox][data-k="chronicle"]'), "群弹窗必须有chronicle开关");
     $q("#ovl").click(); await sleep(200); } else ok("V4 ⚙", false);
   await goTab("用量"); await sleep(500);
   ok("V5 用量图", $q("#usage-bars").innerText.length > 0);

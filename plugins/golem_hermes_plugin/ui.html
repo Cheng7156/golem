@@ -656,6 +656,7 @@ function renderChatSettings(chat,name,isGroup){
     <div class="faint" style="font-size:12px;margin-bottom:6px">"跟随全局"=未覆盖；点击它启用本群覆盖</div>
     ${tg("mute","整群静音（仅主人@可唤醒）")}
     ${tg("free_response","免@响应")}
+    ${isGroup?tg("chronicle","史官出刊"):""}
     ${numRow("ambient_rate","环境闲聊概率","%",0,100,5,20)}
     ${numRow("ambient_cooldown_sec","群冷却","秒",0,3600,30,300)}
     ${isGroup?`<div style="margin:12px 0">
