@@ -569,7 +569,7 @@ func (f *profiler) extractOne(wxid, name string, maxID int64) {
 	txt = strings.TrimPrefix(txt, "```")
 	txt = strings.TrimSuffix(txt, "```")
 	if err := json.Unmarshal([]byte(strings.TrimSpace(txt)), &out); err != nil {
-		slog.Warn("[ghp] 画像抽取解析失败", "wxid", wxid, "err", err)
+		slog.Warn("[ghp] 画像抽取解析失败", "wxid", wxid, "err", err, "raw", previewOf(txt, 200))
 		return
 	}
 	valid := out.Facts[:0]
