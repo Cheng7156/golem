@@ -788,7 +788,9 @@ async function chronicleToggle(){
   loadChronicle();
 }
 async function chroniclePublish(){
-  if(!confirm("立即按当前素材出刊当期？（约1-3分钟）"))return;
+  const names=(CHR_STATUS?.chats||[]).map(c=>c.chat.slice(0,14)).join("、");
+  const scope=names?("将为已开启史官的群："+names):"";
+  if(!confirm("立即出刊当期？"+scope+"\n（各群独立出报，逐群串行，约每群半分钟）"))return;
   try{
     const r=await api("/api/chronicle/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
     loadChronicle();
