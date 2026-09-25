@@ -37,6 +37,9 @@ type Config struct {
 	ProfileThreshold     int     `toml:"profile_threshold" comment:"成员新增消息达到该条数触发一次画像抽取"`
 	ProfileBatch         int     `toml:"profile_batch" comment:"每轮画像抽取处理的成员数"`
 	ProfileInject        bool    `toml:"profile_inject" comment:"群聊时把当前发言人的画像摘要注入提示（自然带出记忆）"`
+	CrowEnabled          bool    `toml:"crow_enabled" comment:"打鸣：每日随机清晨在开启的群喔喔喔（群级可覆盖）"`
+	GrudgeEnabled        bool    `toml:"grudge_enabled" comment:"记仇小本本：被嫌弃入账，低频翻旧账（群级可覆盖）"`
+	MoodEnabled          bool    `toml:"mood_enabled" comment:"突然的自我：深夜低概率存在主义发言后自动撤回（群级可覆盖）"`
 	ChronicleEnabled     bool    `toml:"chronicle_enabled" comment:"史官总开关（出刊群在会话页⚙逐群开启）"`
 	ChronicleHour        int     `toml:"chronicle_hour" comment:"正刊时刻：时(0-23)"`
 	ChronicleMinute      int     `toml:"chronicle_minute" comment:"正刊时刻：分(0-59)"`
@@ -83,6 +86,9 @@ func defaultConfig() Config {
 		ProfileThreshold:    20,
 		ProfileBatch:        3,
 		ProfileInject:       true,
+		CrowEnabled:         true,
+		GrudgeEnabled:       true,
+		MoodEnabled:         true,
 		ChronicleEnabled:    true,
 		ChronicleHour:       22,
 		ChronicleMinute:     0,

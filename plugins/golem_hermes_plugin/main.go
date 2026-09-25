@@ -54,6 +54,7 @@ type hermesPlugin struct {
 	metrics  *metrics            // 可观测性：决策/运行/会话/健康/日志
 	profiler *profiler           // 群成员画像后台任务
 	chronicle *chronicle        // 群史官
+	fun      *funEngine          // 傻吊三件套：打鸣/记仇/突然的自我
 
 	rings    *ringStore
 	eng      *httpEngine
@@ -171,6 +172,9 @@ func (p *hermesPlugin) OnUnload() error {
 	}
 	if p.chronicle != nil {
 		p.chronicle.Stop()
+	}
+	if p.fun != nil {
+		p.fun.Stop()
 	}
 	if p.store != nil {
 		p.store.close()

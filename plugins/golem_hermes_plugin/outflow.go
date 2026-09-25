@@ -71,6 +71,25 @@ func (o *outflow) sendText(receiver, text string) error {
 	return err
 }
 
+// sendMoodThenRevoke 发一句然后 N 秒后撤回（突然的自我专用）
+func (o *outflow) sendMoodThenRevoke(receiver, text string) {
+	o.slots <- struct{}{}
+	defer func() { <-o.slots }()
+	o.throttle(receiver)
+	resp, err := o.msg.Send(&message.Message{
+		Type:     message.TypeText,
+		Receiver: &contact.Contact{Username: receiver},
+		Content:  text,
+	})
+	if err != nil || resp == nil || resp.NewId == 0 {
+		return
+	}
+	go func(newID uint64) {
+		time.Sleep(3 * time.Second)
+		_, _ = o.msg.Revoke(receiver, newID)
+	}(resp.NewId)
+}
+
 // sendQuote 引用回复：TypeApplication + SubType 57 + refermsg XML
 // （宿主 Send 分支不认 TypeAppQuote(4957)，必须走 App XML，这是全仓唯一先例实现）
 func (o *outflow) sendQuote(t *task, text string) error {

@@ -95,6 +95,11 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	// 1. 全量采集群/私聊上下文（AlwaysRun 保证劫持期间也能记录）
 	p.rings.add(session, msg)
 
+	// 1.4 记仇小本本：被嫌弃则入账（同步轻量判断，写库在 store 锁内很快）
+	if p.fun != nil && (p.Config.GrudgeEnabled || p.effectiveChatConfig(session).GrudgeEnabled) {
+		p.fun.maybeGrudge(msg, session)
+	}
+
 	// 1.5 消息归档（画像与群史官的持久语料；异步非阻塞）
 	if p.Config.ProfileEnabled {
 		kind, content := describeMessage(msg)

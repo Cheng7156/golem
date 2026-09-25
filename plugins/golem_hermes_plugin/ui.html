@@ -661,6 +661,10 @@ function renderChatSettings(chat,name,isGroup){
       <button class="hbtn" style="color:var(--teal)" onclick="publishFromSettings('${esc(chat)}')">▶ 立即出刊（本群）</button></div>`:""}
     ${numRow("ambient_rate","环境闲聊概率","%",0,100,5,20)}
     ${numRow("ambient_cooldown_sec","群冷却","秒",0,3600,30,300)}
+    <div class="faint" style="margin:14px 0 4px;font-size:11.5px;letter-spacing:1px">— 傻吊三件套 —</div>
+    ${tg("crow_enabled","🐓 打鸣（每日清晨随机喔喔喔）")}
+    ${tg("grudge_enabled","📓 记仇小本本（被嫌弃入账，低频翻旧账）")}
+    ${tg("mood_enabled","🌫️ 突然的自我（深夜低概率emo后撤回）")}
     ${isGroup?`<div style="margin:12px 0">
       <div>会话模式</div>
       <select id="cs-mode" style="width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px">

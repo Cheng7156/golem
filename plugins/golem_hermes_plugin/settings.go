@@ -20,6 +20,9 @@ type chatSettings struct {
 	AmbientCooldown   *int     `json:"ambient_cooldown_sec"` // 群冷却覆盖
 	Chronicle         *bool    `json:"chronicle"`           // 史官出刊（预留）
 	SessionMode       *string  `json:"session_mode"`        // shared | per_user
+	CrowEnabled       *bool    `json:"crow_enabled"`        // 打鸣
+	GrudgeEnabled     *bool    `json:"grudge_enabled"`      // 记仇小本本
+	MoodEnabled       *bool    `json:"mood_enabled"`        // 突然的自我
 	UpdatedAt         int64    `json:"updated_at"`
 }
 
@@ -38,9 +41,53 @@ func (s *store) initSettings() {
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS chat_settings(
 		chat TEXT PRIMARY KEY,
 		mute INTEGER, free_response INTEGER, ambient_rate REAL, ambient_cooldown_sec INTEGER,
-		chronicle INTEGER, session_mode TEXT, updated_at INTEGER)`)
+		chronicle INTEGER, session_mode TEXT, updated_at INTEGER,
+		crow_enabled INTEGER, grudge_enabled INTEGER, mood_enabled INTEGER)`)
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS member_flags(
 		wxid TEXT PRIMARY KEY, owner INTEGER DEFAULT 0, ignored INTEGER DEFAULT 0, updated_at INTEGER)`)
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS grudges(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		at INTEGER, chat TEXT, wxid TEXT, name TEXT, reason TEXT, msg_id INTEGER DEFAULT 0, dug INTEGER DEFAULT 0)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_grudges_chat ON grudges(chat, dug)`)
+}
+
+// addGrudge 记一笔仇
+func (s *store) addGrudge(g grudge) {
+	if s == nil || s.db == nil || g.Wxid == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.db.Exec("INSERT INTO grudges(at,chat,wxid,name,reason,msg_id) VALUES(?,?,?,?,?,?)",
+		g.At, g.Chat, g.Wxid, g.Name, g.Reason, g.MsgID)
+}
+
+// pickGrudge 挑一条未翻过的旧账（至少隔了 minAge），标记已翻
+func (s *store) pickGrudge(chat string, minAge time.Duration) (grudge, bool) {
+	g := grudge{}
+	if s == nil || s.db == nil {
+		return g, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row := s.db.QueryRow(`SELECT id,at,wxid,name,reason FROM grudges
+		WHERE chat=? AND dug=0 AND at<=? ORDER BY at ASC LIMIT 1`,
+		chat, time.Now().Add(-minAge).Unix())
+	var id int64
+	if err := row.Scan(&id, &g.At, &g.Wxid, &g.Name, &g.Reason); err != nil {
+		return g, false
+	}
+	_, _ = s.db.Exec("UPDATE grudges SET dug=1 WHERE id=?", id)
+	return g, true
+}
+
+func (s *store) markGrudgeDug(g grudge) {
+	if s == nil || s.db == nil || g.Wxid == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.db.Exec("UPDATE grudges SET dug=1 WHERE wxid=? AND at=? AND dug=0", g.Wxid, g.At)
 }
 
 func nullableBool(v sql.NullInt64) *bool {
@@ -82,12 +129,14 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mute, freeResp, cooldown, chronicle sql.NullInt64
+	var crow, grudge, mood sql.NullInt64
 	var rate sql.NullFloat64
 	var mode sql.NullString
 	var updated sql.NullInt64
-	err := s.db.QueryRow(`SELECT mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode, updated_at
+	err := s.db.QueryRow(`SELECT mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
+		crow_enabled, grudge_enabled, mood_enabled, updated_at
 		FROM chat_settings WHERE chat=?`, chat).
-		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &updated)
+		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &updated)
 	if err != nil {
 		return cs
 	}
@@ -97,6 +146,9 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	cs.AmbientCooldown = nullableInt(cooldown)
 	cs.Chronicle = nullableBool(chronicle)
 	cs.SessionMode = nullableStr(mode)
+	cs.CrowEnabled = nullableBool(crow)
+	cs.GrudgeEnabled = nullableBool(grudge)
+	cs.MoodEnabled = nullableBool(mood)
 	cs.UpdatedAt = updated.Int64
 	return cs
 }
@@ -136,13 +188,15 @@ func (s *store) saveChatSettings(cs chatSettings) {
 	cs.UpdatedAt = time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,updated_at)
-		VALUES(?,?,?,?,?,?,?,?)
+	_, _ = s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(chat) DO UPDATE SET mute=excluded.mute, free_response=excluded.free_response,
 		ambient_rate=excluded.ambient_rate, ambient_cooldown_sec=excluded.ambient_cooldown_sec,
-		chronicle=excluded.chronicle, session_mode=excluded.session_mode, updated_at=excluded.updated_at`,
+		chronicle=excluded.chronicle, session_mode=excluded.session_mode,
+		crow_enabled=excluded.crow_enabled, grudge_enabled=excluded.grudge_enabled, mood_enabled=excluded.mood_enabled,
+		updated_at=excluded.updated_at`,
 		cs.Chat, nb(cs.Mute), nb(cs.FreeResponse), nf(cs.AmbientRate), ni(cs.AmbientCooldown),
-		nb(cs.Chronicle), ns(cs.SessionMode), cs.UpdatedAt)
+		nb(cs.Chronicle), ns(cs.SessionMode), nb(cs.CrowEnabled), nb(cs.GrudgeEnabled), nb(cs.MoodEnabled), cs.UpdatedAt)
 }
 
 // chatSettingsList 全部有覆盖的群（监控台展示用）
@@ -153,7 +207,8 @@ func (s *store) chatSettingsList() []chatSettings {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT chat, mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode, updated_at
+	rows, err := s.db.Query(`SELECT chat, mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
+		crow_enabled, grudge_enabled, mood_enabled, updated_at
 		FROM chat_settings ORDER BY updated_at DESC LIMIT 200`)
 	if err != nil {
 		return out
@@ -161,16 +216,19 @@ func (s *store) chatSettingsList() []chatSettings {
 	defer rows.Close()
 	for rows.Next() {
 		var cs chatSettings
-		var mute, freeResp, cooldown, chronicle, updated sql.NullInt64
+		var mute, freeResp, cooldown, chronicle, crow, grudge, mood, updated sql.NullInt64
 		var rate sql.NullFloat64
 		var mode sql.NullString
-		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &updated) == nil {
+		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &updated) == nil {
 			cs.Mute = nullableBool(mute)
 			cs.FreeResponse = nullableBool(freeResp)
 			cs.AmbientRate = nullableFloat(rate)
 			cs.AmbientCooldown = nullableInt(cooldown)
 			cs.Chronicle = nullableBool(chronicle)
 			cs.SessionMode = nullableStr(mode)
+			cs.CrowEnabled = nullableBool(crow)
+			cs.GrudgeEnabled = nullableBool(grudge)
+			cs.MoodEnabled = nullableBool(mood)
 			cs.UpdatedAt = updated.Int64
 			out = append(out, cs)
 		}
@@ -227,6 +285,9 @@ type effectiveChatConfig struct {
 	AmbientCooldownSec int
 	Chronicle     bool
 	PerUserSession bool
+	CrowEnabled   bool
+	GrudgeEnabled bool
+	MoodEnabled   bool
 }
 
 func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
@@ -236,6 +297,9 @@ func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
 		AmbientRate:        p.Config.AmbientReplyRate,
 		AmbientCooldownSec: p.Config.AmbientCooldownSec,
 		PerUserSession:     p.Config.GroupSessionsPerUser,
+		CrowEnabled:        p.Config.CrowEnabled,
+		GrudgeEnabled:      p.Config.GrudgeEnabled,
+		MoodEnabled:        p.Config.MoodEnabled,
 	}
 	cs := p.store.getChatSettings(groupID)
 	if cs.Mute != nil {
@@ -255,6 +319,15 @@ func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
 	}
 	if cs.SessionMode != nil {
 		ec.PerUserSession = *cs.SessionMode == "per_user"
+	}
+	if cs.CrowEnabled != nil {
+		ec.CrowEnabled = *cs.CrowEnabled
+	}
+	if cs.GrudgeEnabled != nil {
+		ec.GrudgeEnabled = *cs.GrudgeEnabled
+	}
+	if cs.MoodEnabled != nil {
+		ec.MoodEnabled = *cs.MoodEnabled
 	}
 	return ec
 }
