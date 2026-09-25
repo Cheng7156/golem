@@ -95,7 +95,27 @@ func TestUIHarness(t *testing.T) {
 	}
 	p.metrics.addLog("ERROR", "[ghp] Agent 运行失败 hermes api 500")
 
-	w := newWebUI(p)
+		// 画像与成员标记模拟数据
+	p.store.mu.Lock()
+	p.store.db.Exec(`INSERT OR REPLACE INTO member_profiles(wxid,name,summary,facts,archived_at,msg_count,updated_at) VALUES
+		('wxid_xiao','小聪明儿','嘴上到此为止实际赖着聊的躺平嘴炮王',
+		 '[{"kind":"身份","content":"自称躺平，手机放边上盯群","at":1790300000,"source":"后台抽取","chat":"群聊","quote":"在呢，躺平中"},
+			   {"kind":"口头禅","content":"爱用🫡表情收尾","at":1790300000,"source":"后台抽取","chat":"群聊","quote":"围观就围观🫡"},
+			   {"kind":"关系","content":"蛋挞债只挂老牛子名下","at":1790300000,"source":"后台抽取","chat":"群聊","quote":"蛋挞债停在老牛子名下"},
+			   {"kind":"名场面","content":"金句:墓头栽棵葱","at":1790300000,"source":"对话记住","chat":"群聊","quote":"墓头栽棵葱，有笑没账"}]',
+		 99, 128, strftime('%s','now')),
+		('wxid_lao','老牛子','蛋挞债主，念经型选手',
+		 '[{"kind":"flag","content":"欠小聪明儿一顿蛋挞","at":1790280000,"source":"后台抽取","chat":"群聊","quote":"下回一定"}]',
+		 99, 64, strftime('%s','now')-3600)`)
+	p.store.db.Exec("INSERT OR REPLACE INTO member_flags(wxid,owner,ignored,updated_at) VALUES('wxid_lao',1,0,strftime('%s','now'))")
+	p.store.mu.Unlock()
+	for i := 0; i < 30; i++ {
+		p.store.archive(archiveMsg{Ts: time.Now().Unix() - int64(i%24)*3600, Chat: "123456@chatroom",
+			Wxid: "wxid_xiao", Name: "小聪明儿", Kind: map[bool]string{true: "text", false: "emoji"}[i%3 == 0], Content: "躺平中…" + string(rune('a'+i%26))})
+	}
+	time.Sleep(1200 * time.Millisecond)
+
+w := newWebUI(p)
 	mux := http.NewServeMux()
 	w.mount(mux)
 	ln, err := net.Listen("tcp", "127.0.0.1:8791")
