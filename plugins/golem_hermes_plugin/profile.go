@@ -424,6 +424,24 @@ func maxInt(a, b int) int {
 	return b
 }
 
+// memberSearch 按昵称模糊查画像（精确优先，其次包含匹配）
+func (s *store) memberSearch(name string, emotions []string) *memberDetail {
+	if s == nil || s.db == nil || name == "" {
+		return nil
+	}
+	s.mu.Lock()
+	var wxid string
+	_ = s.db.QueryRow("SELECT wxid FROM member_profiles WHERE name=? ORDER BY updated_at DESC LIMIT 1", name).Scan(&wxid)
+	if wxid == "" {
+		_ = s.db.QueryRow("SELECT wxid FROM member_profiles WHERE name LIKE ? ORDER BY updated_at DESC LIMIT 1", "%"+name+"%").Scan(&wxid)
+	}
+	s.mu.Unlock()
+	if wxid == "" {
+		return nil
+	}
+	return s.memberDetailGet(wxid, emotions)
+}
+
 // ---- 头像 ----
 
 func (s *store) avatarPath(wxid string) string {

@@ -34,6 +34,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux.HandleFunc("POST /v1/history", b.auth(b.handleHistory))
 	mux.HandleFunc("GET /v1/members", b.auth(b.handleMembers))
 	mux.HandleFunc("POST /v1/remember", b.auth(b.handleRemember))
+	mux.HandleFunc("POST /v1/profile", b.auth(b.handleProfile))
 	mux.HandleFunc("GET /v1/ping", b.handlePing)
 	// 监控台：/ui 单页 + /api/* 数据面（Cookie 会话，与工具桥 Bearer 协议并存）
 	w := newWebUI(b.p)
@@ -279,6 +280,32 @@ func (b *bridgeServer) handleMembers(w http.ResponseWriter, r *http.Request) {
 
 func (b *bridgeServer) handlePing(w http.ResponseWriter, _ *http.Request) {
 	writeOK(w, map[string]any{"service": "golem_hermes_plugin bridge", "version": pluginVersion})
+}
+
+// handleProfile 查询成员画像（只读，仍绑定当前会话）：按昵称/备注模糊匹配
+func (b *bridgeServer) handleProfile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if _, _, err := b.resolveSession(r); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name 不能为空")
+		return
+	}
+	d := b.p.store.memberSearch(name, b.p.Config.StickerEmotions)
+	if d == nil {
+		// 给出相近候选，方便 agent 二次确认
+		writeOK(w, map[string]any{"found": false, "hint": "没有该成员画像（语料不足或名字不对）"})
+		return
+	}
+	writeOK(w, map[string]any{"found": true, "profile": d})
 }
 
 // handleRemember 对话记住：只允许记"当前发言人"（会话绑定，防冒记他人）

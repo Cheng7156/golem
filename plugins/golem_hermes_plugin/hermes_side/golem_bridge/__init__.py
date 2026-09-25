@@ -32,8 +32,11 @@ USAGE_GUIDELINES = (
     "- send_image：回复内容较长（超过约300字）、含表格/列表/代码时，"
     "改用 markdown 渲染成图片发送，正文只留一两句话。\n"
     "- reply_quote：需要精确回应某人某条消息时用引用回复。\n"
-    "- get_group_members / search_chat_history / get_recent_context："
+    "- get_member_profile / get_group_members / search_chat_history / get_recent_context："
     "需要了解群成员或翻聊天记录时使用。\n"
+    "- 发画像的规范：用户要看某人的画像/人设卡时，先 get_member_profile 查数据，"
+    "再用 send_image(kind=markdown) 渲染成一张角色卡图发出来（含昵称、一句话人设、印象标签、金句），"
+    "正文只配一句俏皮话；查不到就如实说该同学语料还不够。\n"
     "- 工具失败时直接用文字回复，不要重试超过一次。\n"
     "- remember：聊天中听到关于【当前发言人】的重要稳定事实（喜好、计划、承诺、身份、金句）"
     "时主动记住；只能记当前发言人自己的事，绝不能替别人记；手机号/住址等隐私一律不记。\n"
@@ -130,6 +133,18 @@ TOOLS = [
         },
         "记住关于当前发言人的一条稳定事实（下次对话可自然提起）",
         _make_handler("POST", "/v1/remember", timeout=20),
+    ),
+    (
+        "get_member_profile",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "成员昵称或群昵称（支持部分匹配）"},
+            },
+            "required": ["name"],
+        },
+        "查询某位群成员的画像（人设+印象记忆）。用户想看某人画像/人设/印象时先用它查，再用 send_image 渲染成卡片图",
+        _make_handler("POST", "/v1/profile", timeout=30),
     ),
     (
         "get_group_members",
