@@ -598,62 +598,66 @@ async function delProfile(wxid){
 let CUR_SET=null;
 async function showChatSettings(chat,name,isGroup){
   try{
-    const cs=await api("/api/chat-settings?chat="+encodeURIComponent(chat));
-    CUR_SET=cs;
-    const tg=(k,label)=>{const v=cs[k];
-      return `<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0">
-        <span>${label}</span>
-        <span style="display:flex;gap:6px;align-items:center">
-          <button class="hbtn" data-fx="clear" data-k="${k}" style="padding:2px 8px;font-size:11px">${v===null||v===undefined?"跟随全局":"覆盖中"}</button>
-          <input type="checkbox" data-k="${k}" ${v===true?"checked":""} ${v===null||v===undefined?"disabled":""} style="accent-color:var(--teal)">
-        </span></div>`};
-    const numRow=(k,label,suffix,min,max,step)=>{const v=cs[k];
-      return `<div style="margin:10px 0">
-        <div style="display:flex;justify-content:space-between"><span>${label}</span>
-        <span class="num dim">${v===null||v===undefined?"跟随全局":v+suffix}</span></div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v===null||v===undefined?min:v}" style="flex:1;accent-color:var(--teal)">
-          <button class="hbtn" data-fx="clear" data-k="${k}" style="padding:2px 8px;font-size:11px">清除</button>
-        </div></div>`};
-    $("#modal-bd").innerHTML=`
-      <h3>⚙ ${esc(name||chat)} <span class="mono dim" style="font-size:12px">${esc(maskId(chat))}</span></h3>
-      <div class="faint" style="font-size:12px;margin-bottom:6px">灰色=跟随全局默认；改动保存后即时生效</div>
-      ${tg("mute","整群静音（仅主人@可唤醒）")}
-      ${tg("free_response","免@响应")}
-      ${numRow("ambient_rate","环境闲聊概率","%",0,100,5)}
-      ${numRow("ambient_cooldown_sec","群冷却","秒",0,3600,30)}
-      ${isGroup?`<div style="margin:12px 0">
-        <div>会话模式</div>
-        <select id="cs-mode" style="width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px">
-          <option value="">跟随全局</option>
-          <option value="shared" ${cs.session_mode==="shared"?"selected":""}>整群共享会话</option>
-          <option value="per_user" ${cs.session_mode==="per_user"?"selected":""}>按成员拆分会话</option>
-        </select></div>`:""}
-      <div style="display:flex;gap:8px;margin-top:16px">
-        <button class="hbtn" onclick="saveChatSettings('${esc(chat)}')">💾 保存</button>
-        <button class="hbtn" onclick="closeAll()">取消</button>
-      </div>`;
-    // 交互：覆盖状态切换（点"跟随全局/覆盖中"标签启用/禁用控件）
-    $("#modal-bd").querySelectorAll("[data-fx=clear]").forEach(b=>{
-      b.onclick=()=>{
-        const k=b.dataset.k;
-        const cur=$("#modal-bd").querySelector(`input[data-k=${k}],select[data-k=${k}]`);
-        if(b.textContent.includes("跟随")){ // 启用覆盖：用默认值填充
-          CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:false;
-          showChatSettings(chat,name,isGroup);
-        }else{CUR_SET[k]=null;showChatSettings(chat,name,isGroup)}
-      }
-    });
-    $("#modal-bd").querySelectorAll("input[type=checkbox][data-k]").forEach(cb=>{
-      cb.onchange=()=>{CUR_SET[cb.dataset.k]=cb.checked};
-    });
-    $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
-      rg.oninput=()=>{if(CUR_SET[rg.dataset.k]!==null&&CUR_SET[rg.dataset.k]!==undefined)CUR_SET[rg.dataset.k]=Number(rg.value)};
-    });
-    const modeSel=$("#cs-mode");
-    if(modeSel)modeSel.onchange=()=>{CUR_SET.session_mode=modeSel.value||null};
-    $("#modal").classList.add("open");$("#ovl").classList.add("open");
+    if(!CUR_SET||CUR_SET.chat!==chat){
+      const cs=await api("/api/chat-settings?chat="+encodeURIComponent(chat));
+      CUR_SET=cs;
+    }
+    renderChatSettings(chat,name,isGroup);
   }catch(e){}
+}
+function renderChatSettings(chat,name,isGroup){
+  const cs=CUR_SET;
+  const tg=(k,label)=>{const v=cs[k];
+    return `<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0">
+      <span>${label}</span>
+      <span style="display:flex;gap:6px;align-items:center">
+        <button class="hbtn" data-fx="clear" data-k="${k}" style="padding:2px 8px;font-size:11px">${v===null||v===undefined?"跟随全局":"覆盖中"}</button>
+        <input type="checkbox" data-k="${k}" ${v===true?"checked":""} ${v===null||v===undefined?"disabled":""} style="accent-color:var(--teal)">
+      </span></div>`};
+  const numRow=(k,label,suffix,min,max,step,def)=>{const v=cs[k];
+    return `<div style="margin:10px 0">
+      <div style="display:flex;justify-content:space-between"><span>${label}</span>
+      <span class="num dim">${v===null||v===undefined?"跟随全局":v+suffix}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v===null||v===undefined?def:v}" style="flex:1;accent-color:var(--teal)" ${v===null||v===undefined?"disabled":""}>
+        <button class="hbtn" data-fx="clear" data-k="${k}" style="padding:2px 8px;font-size:11px">${v===null||v===undefined?"跟随全局":"清除"}</button>
+      </div></div>`};
+  $("#modal-bd").innerHTML=`
+    <h3>⚙ ${esc(name||chat)} <span class="mono dim" style="font-size:12px">${esc(maskId(chat))}</span></h3>
+    <div class="faint" style="font-size:12px;margin-bottom:6px">"跟随全局"=未覆盖；点击它启用本群覆盖</div>
+    ${tg("mute","整群静音（仅主人@可唤醒）")}
+    ${tg("free_response","免@响应")}
+    ${numRow("ambient_rate","环境闲聊概率","%",0,100,5,20)}
+    ${numRow("ambient_cooldown_sec","群冷却","秒",0,3600,30,300)}
+    ${isGroup?`<div style="margin:12px 0">
+      <div>会话模式</div>
+      <select id="cs-mode" style="width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px">
+        <option value="">跟随全局</option>
+        <option value="shared" ${cs.session_mode==="shared"?"selected":""}>整群共享会话</option>
+        <option value="per_user" ${cs.session_mode==="per_user"?"selected":""}>按成员拆分会话</option>
+      </select></div>`:""}
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="hbtn" onclick="saveChatSettings('${esc(chat)}')">💾 保存</button>
+      <button class="hbtn" onclick="closeAll()">取消</button>
+    </div>`;
+  $("#modal-bd").querySelectorAll("[data-fx=clear]").forEach(b=>{
+    b.onclick=()=>{
+      const k=b.dataset.k;
+      if(CUR_SET[k]===null||CUR_SET[k]===undefined){
+        CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:false;
+      }else{CUR_SET[k]=null}
+      renderChatSettings(chat,name,isGroup);
+    };
+  });
+  $("#modal-bd").querySelectorAll("input[type=checkbox][data-k]").forEach(cb=>{
+    cb.onchange=()=>{CUR_SET[cb.dataset.k]=cb.checked};
+  });
+  $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
+    rg.oninput=()=>{CUR_SET[rg.dataset.k]=Number(rg.value)};
+  });
+  const modeSel=$("#cs-mode");
+  if(modeSel)modeSel.onchange=()=>{CUR_SET.session_mode=modeSel.value||null};
+  $("#modal").classList.add("open");$("#ovl").classList.add("open");
 }
 async function saveChatSettings(chat){
   const body=Object.assign({},CUR_SET,{chat});
