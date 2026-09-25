@@ -617,7 +617,7 @@ function renderChatSettings(chat,name,isGroup){
   const numRow=(k,label,suffix,min,max,step,def)=>{const v=cs[k];
     return `<div style="margin:10px 0">
       <div style="display:flex;justify-content:space-between"><span>${label}</span>
-      <span class="num dim">${v===null||v===undefined?"跟随全局":v+suffix}</span></div>
+      <span class="num dim" data-vk="${k}">${v===null||v===undefined?"跟随全局":v+suffix}</span></div>
       <div style="display:flex;gap:8px;align-items:center">
         <input type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v===null||v===undefined?def:v}" style="flex:1;accent-color:var(--teal)" ${v===null||v===undefined?"disabled":""}>
         <button class="hbtn" data-fx="clear" data-k="${k}" style="padding:2px 8px;font-size:11px">${v===null||v===undefined?"跟随全局":"清除"}</button>
@@ -653,7 +653,11 @@ function renderChatSettings(chat,name,isGroup){
     cb.onchange=()=>{CUR_SET[cb.dataset.k]=cb.checked};
   });
   $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
-    rg.oninput=()=>{CUR_SET[rg.dataset.k]=Number(rg.value)};
+    rg.oninput=()=>{
+      CUR_SET[rg.dataset.k]=Number(rg.value);
+      const lbl=document.querySelector(`#modal-bd [data-vk="${rg.dataset.k}"]`);
+      if(lbl)lbl.textContent=rg.value+("%"===lbl.textContent.slice(-1)||rg.dataset.k==="ambient_rate"?"%":"秒");
+    };
   });
   const modeSel=$("#cs-mode");
   if(modeSel)modeSel.onchange=()=>{CUR_SET.session_mode=modeSel.value||null};
