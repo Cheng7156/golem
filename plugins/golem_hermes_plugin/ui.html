@@ -657,6 +657,8 @@ function renderChatSettings(chat,name,isGroup){
     ${tg("mute","整群静音（仅主人@可唤醒）")}
     ${tg("free_response","免@响应")}
     ${isGroup?tg("chronicle","史官出刊"):""}
+    ${isGroup&&cs.chronicle===true?`<div style="margin:6px 0 10px;display:flex;justify-content:flex-end">
+      <button class="hbtn" style="color:var(--teal)" onclick="publishFromSettings('${esc(chat)}')">▶ 立即出刊（本群）</button></div>`:""}
     ${numRow("ambient_rate","环境闲聊概率","%",0,100,5,20)}
     ${numRow("ambient_cooldown_sec","群冷却","秒",0,3600,30,300)}
     ${isGroup?`<div style="margin:12px 0">
@@ -680,7 +682,10 @@ function renderChatSettings(chat,name,isGroup){
     };
   });
   $("#modal-bd").querySelectorAll("input[type=checkbox][data-k]").forEach(cb=>{
-    cb.onchange=()=>{CUR_SET[cb.dataset.k]=cb.checked};
+    cb.onchange=()=>{
+      CUR_SET[cb.dataset.k]=cb.checked;
+      if(cb.dataset.k==="chronicle")renderChatSettings(chat,name,isGroup); // 出刊按钮随开关显隐
+    };
   });
   $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
     rg.oninput=()=>{
@@ -790,6 +795,13 @@ async function chronicleToggle(){
   await api("/api/chronicle/schedule",{method:"PUT",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({enabled:!CHR_STATUS.enabled})});
   loadChronicle();
+}
+async function publishFromSettings(chat){
+  if(!confirm("立即为 "+maskId(chat)+" 出刊当期？（约半分钟）"))return;
+  try{
+    await api("/api/chronicle/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat})});
+    alert("已提交出刊，稍后到「史官」页查看当期报纸");
+  }catch(e){alert("出刊失败: "+e.message)}
 }
 async function chroniclePublish(chat){
   const names=(CHR_STATUS?.chats||[]).map(c=>c.chat.slice(0,14)).join("、");
