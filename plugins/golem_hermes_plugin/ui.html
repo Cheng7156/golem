@@ -717,10 +717,14 @@ async function loadChronicle(){
     const [st,ls]=await Promise.all([api("/api/chronicle/status"),api("/api/chronicle/list?limit=50")]);
     CHR_STATUS=st;
     const next=st.enabled?("今日 "+String(st.hour).padStart(2,"0")+":"+String(st.minute).padStart(2,"0")+" 出刊"):"已停刊";
-    const chats=(st.chats||[]).map(c=>esc(c.chat.slice(0,10))+"("+c.today_msgs+"条今日)").join(" · ")||"未启用任何群（会话页⚙开启史官出刊）";
+    const chatRows=(st.chats||[]).map(c=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0">
+          <span class="mono" style="font-size:11.5px">${esc(maskId(c.chat))} · ${c.today_msgs}条今日</span>
+          <button class="hbtn" style="padding:2px 9px;font-size:11.5px" onclick="chroniclePublish('${esc(c.chat)}')">▶ 出刊</button>
+        </div>`).join("")||`<div class="faint" style="font-size:12px">未启用任何群（会话页⚙开启史官出刊）</div>`;
     $("#chr-status").innerHTML=`
       <div class="card"><div class="k">出刊状态</div><div class="v" style="font-size:19px">${st.enabled?("🟢 "+next):"⏸ 停刊"}</div>
-        <div class="s">${chats}</div></div>
+        <div class="s" style="margin-top:4px">${chatRows}</div></div>
       <div class="card"><div class="k">正刊时刻</div>
         <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
           <input id="chr-h" type="number" min="0" max="23" value="${st.hour}" style="width:56px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px">
@@ -729,7 +733,7 @@ async function loadChronicle(){
         <div class="s">号外阈值 <input id="chr-x" type="number" min="0" value="${st.extra_threshold}" style="width:64px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:3px"> 条/日</div></div>
       <div class="card"><div class="k">编务操作</div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <button class="hbtn" onclick="chroniclePublish()">▶ 立即出刊</button>
+          <button class="hbtn" onclick="chroniclePublish('')">▶ 全部出刊</button>
           <button class="hbtn" onclick="chronicleToggle()">${st.enabled?"⏸ 停刊":"▶ 复刊"}</button></div></div>`;
     $("#chr-wall").innerHTML=(ls.issues||[]).map(e=>`
       <div class="issue" onclick="showIssue(${e.id})">
@@ -787,12 +791,13 @@ async function chronicleToggle(){
     body:JSON.stringify({enabled:!CHR_STATUS.enabled})});
   loadChronicle();
 }
-async function chroniclePublish(){
+async function chroniclePublish(chat){
   const names=(CHR_STATUS?.chats||[]).map(c=>c.chat.slice(0,14)).join("、");
   const scope=names?("将为已开启史官的群："+names):"";
-  if(!confirm("立即出刊当期？"+scope+"\n（各群独立出报，逐群串行，约每群半分钟）"))return;
+  const scopeTxt = chat ? ("仅为 "+maskId(chat)+" 出刊？") : ("立即出刊当期？"+scope+"\n（各群独立出报，逐群串行，约每群半分钟）");
+  if(!confirm(scopeTxt))return;
   try{
-    const r=await api("/api/chronicle/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const r=await api("/api/chronicle/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat:chat||""})});
     loadChronicle();
     if(r.id)showIssue(r.id);
   }catch(e){alert("出刊失败: "+e.message)}
