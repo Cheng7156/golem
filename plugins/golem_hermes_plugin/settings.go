@@ -187,7 +187,7 @@ func (s *store) getMemberFlags(wxid string) memberFlags {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.db.QueryRow("SELECT owner, ignored FROM member_flags WHERE wxid=?", wxid).Scan(&mf.Owner, &mf.Ignored)
+	_ = s.db.QueryRow("SELECT owner, ignored, updated_at FROM member_flags WHERE wxid=?", wxid).Scan(&mf.Owner, &mf.Ignored, &mf.UpdatedAt)
 	return mf
 }
 
