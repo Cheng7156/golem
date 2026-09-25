@@ -51,6 +51,7 @@ func newStore(path, stickerDir string) *store {
 		wxid TEXT PRIMARY KEY, name TEXT, summary TEXT DEFAULT '', facts TEXT DEFAULT '[]',
 		archived_at INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, updated_at INTEGER)`)
 	s.initSettings()
+	s.initChronicle()
 	s.startArchive()
 	return s
 }

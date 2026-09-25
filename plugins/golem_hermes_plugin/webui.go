@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"context"
 	"crypto/subtle"
 	_ "embed"
@@ -57,6 +58,14 @@ func (w *webUI) mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/chat-settings", w.auth(w.handleChatSettingsPut))
 	mux.HandleFunc("GET /api/member-flags", w.auth(w.handleMemberFlagsGet))
 	mux.HandleFunc("PUT /api/member-flags", w.auth(w.handleMemberFlagsPut))
+	mux.HandleFunc("GET /api/chronicle/list", w.auth(w.handleChronicleList))
+	mux.HandleFunc("GET /api/chronicle/status", w.auth(w.handleChronicleStatus))
+	mux.HandleFunc("GET /api/chronicle/detail", w.auth(w.handleChronicleDetail))
+	mux.HandleFunc("GET /api/chronicle/file/", w.auth(w.handleChronicleFile))
+	mux.HandleFunc("POST /api/chronicle/publish", w.auth(w.handleChroniclePublish))
+	mux.HandleFunc("PUT /api/chronicle/schedule", w.auth(w.handleChronicleSchedule))
+	mux.HandleFunc("GET /api/chronicle/styles", w.auth(w.handleChronicleStylesGet))
+	mux.HandleFunc("PUT /api/chronicle/styles", w.auth(w.handleChronicleStylesPut))
 }
 
 func (w *webUI) handleUI(rw http.ResponseWriter, _ *http.Request) {
@@ -400,6 +409,173 @@ func (w *webUI) handleMemberRoutes(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(rw, d)
+}
+
+// ---- 史官 ----
+
+func (w *webUI) handleChronicleList(rw http.ResponseWriter, r *http.Request) {
+	limit := atoiDefault(r.URL.Query().Get("limit"), 50)
+	writeOK(rw, map[string]any{"issues": w.p.store.chronicleList(r.URL.Query().Get("chat"), limit)})
+}
+
+func (w *webUI) handleChronicleStatus(rw http.ResponseWriter, _ *http.Request) {
+	c := w.p.Config
+	chats := []map[string]any{}
+	if w.p.chronicle != nil {
+		for _, ch := range w.p.chronicle.chronicleChats() {
+			chats = append(chats, map[string]any{"chat": ch, "today_msgs": w.p.store.archiveCountSince(ch, time.Now().Format("2006-01-02"))})
+		}
+	}
+	writeOK(rw, map[string]any{
+		"enabled": c.ChronicleEnabled, "hour": c.ChronicleHour, "minute": c.ChronicleMinute,
+		"extra_threshold": c.ChronicleExtraThreshold, "style_mode": c.ChronicleStyleMode,
+		"fixed_style": c.ChronicleFixedStyle, "chats": chats,
+	})
+}
+
+func (w *webUI) handleChronicleDetail(rw http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(r.URL.Query().Get("id"), 0))
+	e := w.p.store.chronicleGet(id)
+	if e == nil {
+		writeErr(rw, http.StatusNotFound, "不存在")
+		return
+	}
+	writeOK(rw, e)
+}
+
+func (w *webUI) handleChronicleFile(rw http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(strings.TrimPrefix(r.URL.Path, "/api/chronicle/file/"), 0))
+	e := w.p.store.chronicleGet(id)
+	if e == nil || e.ImgFile == "" {
+		writeErr(rw, http.StatusNotFound, "无报纸图")
+		return
+	}
+	data, err := os.ReadFile(e.ImgFile)
+	if err != nil {
+		writeErr(rw, http.StatusNotFound, "无报纸图")
+		return
+	}
+	rw.Header().Set("Content-Type", "image/png")
+	rw.Header().Set("Cache-Control", "max-age=86400")
+	_, _ = rw.Write(data)
+}
+
+func (w *webUI) handleChroniclePublish(rw http.ResponseWriter, r *http.Request) {
+	if w.p.chronicle == nil {
+		writeErr(rw, http.StatusServiceUnavailable, "史官未启用")
+		return
+	}
+	var body struct {
+		Chat string `json:"chat"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	if len(w.p.chronicle.chronicleChats()) == 0 && body.Chat == "" {
+		writeErr(rw, http.StatusBadRequest, "没有启用史官的群（会话页⚙开启）")
+		return
+	}
+	id, err := w.p.chronicle.PublishNow(body.Chat)
+	if err != nil {
+		writeErr(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(rw, map[string]any{"published": true, "id": id})
+}
+
+// handleChronicleSchedule 出刊计划（时间/阈值/开关）
+func (w *webUI) handleChronicleSchedule(rw http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled    *bool `json:"enabled"`
+		Hour       *int  `json:"hour"`
+		Minute     *int  `json:"minute"`
+		Extra     *int  `json:"extra_threshold"`
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	if body.Enabled != nil {
+		w.p.Config.ChronicleEnabled = *body.Enabled
+		if *body.Enabled && w.p.chronicle == nil {
+			w.p.chronicle = newChronicle(w.p)
+			go w.p.chronicle.loop()
+		}
+	}
+	if body.Hour != nil && *body.Hour >= 0 && *body.Hour <= 23 {
+		w.p.Config.ChronicleHour = *body.Hour
+	}
+	if body.Minute != nil && *body.Minute >= 0 && *body.Minute <= 59 {
+		w.p.Config.ChronicleMinute = *body.Minute
+	}
+	if body.Extra != nil && *body.Extra >= 0 {
+		w.p.Config.ChronicleExtraThreshold = *body.Extra
+	}
+	if err := w.p.SaveConfig(w.p); err != nil {
+		slog.Warn("[ghp] 史官配置回写失败", "err", err)
+	}
+	w.p.metrics.addLog("INFO", "[web] 史官编务配置更新")
+	writeOK(rw, map[string]any{"saved": true})
+}
+
+func (w *webUI) handleChronicleStylesGet(rw http.ResponseWriter, _ *http.Request) {
+	c := &w.p.Config
+	usage := map[string]int{}
+	for _, e := range w.p.store.chronicleList("", 500) {
+		usage[e.Style]++
+	}
+	styles := []map[string]any{}
+	for _, st := range c.ChronicleStyles {
+		styles = append(styles, map[string]any{"name": st.Name, "hint": st.Hint, "enabled": st.Enabled, "used": usage[st.Name]})
+	}
+	writeOK(rw, map[string]any{"styles": styles, "mode": c.ChronicleStyleMode, "fixed": c.ChronicleFixedStyle})
+}
+
+// handleChronicleStylesPut 文风坊：整体保存（新增/更新/删除/策略）
+func (w *webUI) handleChronicleStylesPut(rw http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode  *string          `json:"mode"`
+		Fixed *string          `json:"fixed"`
+		Styles []chronicleStyle `json:"styles"`
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&body); err != nil {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	c := &w.p.Config
+	if body.Mode != nil && (*body.Mode == "rotate" || *body.Mode == "fixed") {
+		c.ChronicleStyleMode = *body.Mode
+	}
+	if body.Fixed != nil {
+		c.ChronicleFixedStyle = *body.Fixed
+	}
+	if body.Styles != nil {
+		if len(body.Styles) == 0 {
+			writeErr(rw, http.StatusBadRequest, "文风池不能为空")
+			return
+		}
+		enabled := 0
+		for _, st := range body.Styles {
+			if st.Enabled {
+				enabled++
+			}
+			if st.Name == "" || strings.TrimSpace(st.Hint) == "" {
+				writeErr(rw, http.StatusBadRequest, "文风需要名称与腔调说明")
+				return
+			}
+		}
+		if enabled == 0 {
+			writeErr(rw, http.StatusBadRequest, "至少保留一个启用的文风")
+			return
+		}
+		c.ChronicleStyles = body.Styles
+	}
+	if err := w.p.SaveConfig(w.p); err != nil {
+		writeErr(rw, http.StatusInternalServerError, "保存失败: "+err.Error())
+		return
+	}
+	w.p.metrics.addLog("INFO", "[web] 文风坊更新")
+	writeOK(rw, map[string]any{"saved": true})
 }
 
 // ---- 群设置 / 成员标记（配置中枢） ----

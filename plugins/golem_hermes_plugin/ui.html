@@ -118,6 +118,15 @@ tbody tr.click{cursor:pointer}
 .logline .t{color:var(--faint)}
 .lv-ERROR{color:var(--red)}.lv-WARN{color:var(--amber)}.lv-INFO{color:var(--dim)}
 .empty{color:var(--faint);text-align:center;padding:26px;font-size:13px}
+.issue{background:linear-gradient(160deg,#f5eeda,#e8dcbe);border:1px solid #c9b98a;border-radius:10px;overflow:hidden;cursor:pointer;transition:transform .15s}
+.issue:hover{transform:translateY(-2px)}
+.issue .head{padding:10px 12px 6px;color:#4a3b1f;display:flex;justify-content:space-between;align-items:baseline}
+.issue .no{font-size:20px;font-weight:900}
+.issue .badge{font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:10px;background:#4a3b1f;color:#f5eeda}
+.issue img{width:100%;height:110px;object-fit:cover;object-position:top;display:block}
+.issue .body{padding:8px 12px 11px;color:#4a3b1f}
+.issue .hl{font-size:13px;font-weight:700;line-height:1.45}
+.issue .meta{font-size:10.5px;color:#8a7648;margin-top:4px}
 @media(max-width:960px){.grid2,.grid3{grid-template-columns:1fr}}
 </style>
 </head>
@@ -208,6 +217,26 @@ tbody tr.click{cursor:pointer}
     <div id="member-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px"></div>
   </section>
 
+  <!-- 史官 -->
+  <section class="view" id="v-chronicle">
+    <div class="cards" id="chr-status" style="margin-bottom:12px"></div>
+    <div id="chr-wall" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px"></div>
+    <div class="panel" style="margin-top:16px"><h3>文风坊 <span class="faint" style="font-weight:400">（hint 越具体文风越稳，改完保存即生效）</span></h3>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        选用策略:
+        <label><input type="radio" name="chr-mode" value="rotate" style="accent-color:var(--teal)"> 每日轮换</label>
+        <label><input type="radio" name="chr-mode" value="fixed" style="accent-color:var(--teal)"> 固定
+          <select id="chr-fixed" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:4px 8px"></select>
+        </label>
+      </div>
+      <div id="chr-styles"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="hbtn" onclick="chrAddStyle()">+ 新增文风</button>
+        <button class="hbtn" onclick="chrSaveStyles()">💾 保存文风坊</button>
+      </div>
+    </div>
+  </section>
+
   <!-- 日志 -->
   <section class="view" id="v-logs">
     <div class="panel"><h3>插件日志（最近 500 条，实时）</h3><div id="log-list" style="max-height:70vh;overflow-y:auto"></div></div>
@@ -277,14 +306,14 @@ function startSSE(){
 }
 
 /* ---------- 布局 ---------- */
-const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["members","画像"],["logs","日志"],["config","配置"]];
+const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["members","画像"],["chronicle","史官"],["logs","日志"],["config","配置"]];
 $("#nav").innerHTML=TABS.map(([k,n])=>`<button data-t="${k}" onclick="goTab('${k}')">${n}</button>`).join("");
 function goTab(t){
   TAB=t;
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+t).classList.add("on");
-  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,members:loadMembers,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
+  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,members:loadMembers,chronicle:loadChronicle,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
 }
 function toggleMask(){REVEAL=!REVEAL;localStorage.setItem("gohm_reveal",REVEAL?"1":"0");
   $("#mask-btn").textContent=REVEAL?"👁 已显示":"👁 已打码";goTab(TAB)}
@@ -677,6 +706,105 @@ async function toggleMemberFlag(wxid,field,cur){
     await api("/api/member-flags",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(mf)});
     showMember(wxid);
   }catch(e){alert("失败: "+e.message)}
+}
+
+/* ---------- 史官 ---------- */
+let CHR_STATUS=null;
+const STYLE_CLS={"太史公体":"b-violet","说书人体":"b-amber","新闻联播体":"b-blue","武侠体":"b-red"};
+async function loadChronicle(){
+  try{
+    const [st,ls]=await Promise.all([api("/api/chronicle/status"),api("/api/chronicle/list?limit=50")]);
+    CHR_STATUS=st;
+    const next=st.enabled?("今日 "+String(st.hour).padStart(2,"0")+":"+String(st.minute).padStart(2,"0")+" 出刊"):"已停刊";
+    const chats=(st.chats||[]).map(c=>esc(c.chat.slice(0,10))+"("+c.today_msgs+"条今日)").join(" · ")||"未启用任何群（会话页⚙开启史官出刊）";
+    $("#chr-status").innerHTML=`
+      <div class="card"><div class="k">出刊状态</div><div class="v" style="font-size:19px">${st.enabled?("🟢 "+next):"⏸ 停刊"}</div>
+        <div class="s">${chats}</div></div>
+      <div class="card"><div class="k">正刊时刻</div>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+          <input id="chr-h" type="number" min="0" max="23" value="${st.hour}" style="width:56px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px">
+          :<input id="chr-m" type="number" min="0" max="59" value="${st.minute}" style="width:56px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px">
+          <button class="hbtn" onclick="saveChronicleSchedule()">保存</button></div>
+        <div class="s">号外阈值 <input id="chr-x" type="number" min="0" value="${st.extra_threshold}" style="width:64px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:3px"> 条/日</div></div>
+      <div class="card"><div class="k">编务操作</div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button class="hbtn" onclick="chroniclePublish()">▶ 立即出刊</button>
+          <button class="hbtn" onclick="chronicleToggle()">${st.enabled?"⏸ 停刊":"▶ 复刊"}</button></div></div>`;
+    $("#chr-wall").innerHTML=(ls.issues||[]).map(e=>`
+      <div class="issue" onclick="showIssue(${e.id})">
+        <div class="head"><span class="no">第${e.issue}期</span>
+          <span class="badge">${esc(e.kind)}</span></div>
+        <img src="/api/chronicle/file/${e.id}" loading="lazy" onerror="this.style.height='40px';this.style.opacity=.2">
+        <div class="body"><div class="hl">“${esc(e.headline)}”</div>
+          <div class="meta">${esc(e.date)} · ${esc(e.style)}</div></div>
+      </div>`).join("")||`<div class="empty" style="grid-column:1/-1">还没有出过刊——点"立即出刊"看创刊号</div>`;
+    const stylesR=await api("/api/chronicle/styles");
+    document.querySelectorAll("input[name=chr-mode]").forEach(r=>{r.checked=(r.value===stylesR.mode);r.onchange=()=>chrModeChange()});
+    $("#chr-fixed").innerHTML=(stylesR.styles||[]).map(x=>`<option ${x.name===stylesR.fixed?"selected":""}>${esc(x.name)}</option>`).join("");
+    $("#chr-fixed").onchange=()=>chrModeChange();
+    window.CHR_STYLES=stylesR.styles||[];
+    renderStyleList();
+  }catch(e){}
+}
+function renderStyleList(){
+  $("#chr-styles").innerHTML=(window.CHR_STYLES||[]).map((st,i)=>`
+    <div style="display:flex;gap:9px;align-items:flex-start;margin:8px 0;padding:9px 11px;background:var(--bg);border:1px solid var(--line);border-radius:10px">
+      <input type="checkbox" ${st.enabled?"checked":""} onchange="window.CHR_STYLES[${i}].enabled=this.checked" style="accent-color:var(--teal);margin-top:5px">
+      <div style="flex:1">
+        <input value="${esc(st.name)}" onchange="window.CHR_STYLES[${i}].name=this.value" placeholder="文风名"
+          style="width:38%;background:var(--card);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px 9px;font-weight:700">
+        <span class="b ${STYLE_CLS[st.name]||"b-gray"}" style="margin-left:8px">已用 ${st.used||0} 期</span>
+        <textarea onchange="window.CHR_STYLES[${i}].hint=this.value" placeholder="腔调说明（hint）" rows="2"
+          style="width:100%;margin-top:6px;background:var(--card);border:1px solid var(--line);border-radius:6px;color:var(--dim);padding:6px 9px;font-size:12px;resize:vertical">${esc(st.hint)}</textarea>
+      </div>
+      <button class="hbtn" style="color:var(--red)" onclick="window.CHR_STYLES.splice(${i},1);renderStyleList()">🗑</button>
+    </div>`).join("");
+}
+function chrAddStyle(){window.CHR_STYLES.push({name:"新文风",hint:"",enabled:true,used:0});renderStyleList()}
+function chrModeChange(){
+  const mode=(document.querySelector("input[name=chr-mode]:checked")||{}).value||"rotate";
+  window.CHR_MODE=mode;window.CHR_FIXED=($("#chr-fixed")||{}).value||"";
+}
+async function chrSaveStyles(){
+  chrModeChange();
+  try{
+    await api("/api/chronicle/styles",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({mode:window.CHR_MODE,fixed:window.CHR_FIXED,styles:window.CHR_STYLES})});
+    loadChronicle();
+  }catch(e){alert("保存失败: "+e.message)}
+}
+async function saveChronicleSchedule(){
+  try{
+    await api("/api/chronicle/schedule",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({hour:+$("#chr-h").value,minute:+$("#chr-m").value,extra_threshold:+$("#chr-x").value})});
+    loadChronicle();
+  }catch(e){alert("保存失败: "+e.message)}
+}
+async function chronicleToggle(){
+  if(!confirm(CHR_STATUS.enabled?"确认停刊？":"复刊？"))return;
+  await api("/api/chronicle/schedule",{method:"PUT",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({enabled:!CHR_STATUS.enabled})});
+  loadChronicle();
+}
+async function chroniclePublish(){
+  if(!confirm("立即按当前素材出刊当期？（约1-3分钟）"))return;
+  try{
+    const r=await api("/api/chronicle/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    loadChronicle();
+    if(r.id)showIssue(r.id);
+  }catch(e){alert("出刊失败: "+e.message)}
+}
+async function showIssue(id){
+  try{
+    const e=await api("/api/chronicle/detail?id="+id);
+    $("#modal-bd").innerHTML=`
+      <h3>第${e.issue}期 · ${esc(e.kind)} · ${esc(e.style)} <span class="faint" style="font-size:12px">${esc(e.date)} ${esc(e.chat_name||"")}</span></h3>
+      <div style="font-size:16px;font-weight:700;margin:6px 0 12px">“${esc(e.headline)}”</div>
+      <img src="/api/chronicle/file/${e.id}" style="width:100%;border-radius:10px;border:1px solid var(--line)">
+      <details style="margin-top:10px"><summary class="dim" style="cursor:pointer;font-size:12.5px">编辑部档案（markdown 原文）</summary>
+      <pre class="mono dim" style="background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:11.5px;white-space:pre-wrap;margin-top:8px">${esc(e.md||"(未存档)")}</pre></details>`;
+    $("#modal").classList.add("open");$("#ovl").classList.add("open");
+  }catch(err){}
 }
 
 /* ---------- 日志 / 配置 ---------- */

@@ -37,6 +37,13 @@ type Config struct {
 	ProfileThreshold     int     `toml:"profile_threshold" comment:"成员新增消息达到该条数触发一次画像抽取"`
 	ProfileBatch         int     `toml:"profile_batch" comment:"每轮画像抽取处理的成员数"`
 	ProfileInject        bool    `toml:"profile_inject" comment:"群聊时把当前发言人的画像摘要注入提示（自然带出记忆）"`
+	ChronicleEnabled     bool    `toml:"chronicle_enabled" comment:"史官总开关（出刊群在会话页⚙逐群开启）"`
+	ChronicleHour        int     `toml:"chronicle_hour" comment:"正刊时刻：时(0-23)"`
+	ChronicleMinute      int     `toml:"chronicle_minute" comment:"正刊时刻：分(0-59)"`
+	ChronicleExtraThreshold int  `toml:"chronicle_extra_threshold" comment:"号外触发阈值：当日群消息量达到该值即时加发号外(0=关闭)"`
+	ChronicleStyleMode   string  `toml:"chronicle_style_mode" comment:"文风策略: rotate=每日轮换 | fixed=固定"`
+	ChronicleFixedStyle  string  `toml:"chronicle_fixed_style" comment:"fixed 模式下使用的文风名"`
+	ChronicleStyles      []chronicleStyle `toml:"chronicle_styles" comment:"文风池（Web 文风坊可编辑）"`
 }
 
 func defaultConfig() Config {
@@ -76,5 +83,17 @@ func defaultConfig() Config {
 		ProfileThreshold:    20,
 		ProfileBatch:        3,
 		ProfileInject:       true,
+		ChronicleEnabled:    true,
+		ChronicleHour:       22,
+		ChronicleMinute:     0,
+		ChronicleExtraThreshold: 500,
+		ChronicleStyleMode:  "rotate",
+		ChronicleFixedStyle: "太史公体",
+		ChronicleStyles: []chronicleStyle{
+			{Name: "太史公体", Hint: "以《史记》笔法行文：句式凝练文白相间，篇末必有『太史公曰』点评，点评需毒舌或深沉二选一", Enabled: true},
+			{Name: "说书人体", Hint: "章回体说书人：『话说』开篇、『欲知后事且听下回分解』收尾，多设悬念，冲突用回合制描写，可拍惊堂木", Enabled: true},
+			{Name: "新闻联播体", Hint: "一本正经播报摸鱼日常：『本群今日经济社会发展稳中向好』式官腔+统计数据反讽（如斗图产业同比增长230%）", Enabled: true},
+			{Name: "武侠体", Hint: "江湖切口：群友皆侠客，深夜上线叫夜探手机屏，斗图叫过招，刷屏叫大战三百楼，文风快意恩仇", Enabled: true},
+		},
 	}
 }

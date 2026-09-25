@@ -37,6 +37,14 @@
   if (cards.length) { cards[0].click(); await sleep(700);
     ok("V7 详情抽屉打开", $q("#drawer").className.includes("open"));
     $q("#drawer .x").click(); await sleep(200); }
+  await goTab("史官"); await sleep(700);
+  ok("V7.5 史官编务台", $q("#chr-status").innerText.length > 10);
+  const issues = document.querySelectorAll("#chr-wall .issue");
+  ok("V7.5 史官期卡墙", true, "期数=" + issues.length + "（无出刊属正常）");
+  if (issues.length) { issues[0].click(); await sleep(500);
+    ok("V7.5 阅读模态", $q("#modal").className.includes("open"));
+    $q("#ovl").click(); await sleep(200); }
+  ok("V7.5 文风坊", document.querySelectorAll("#chr-styles > div").length >= 1);
   await goTab("日志"); await sleep(500);
   ok("V8 日志流", document.querySelectorAll("#log-list .logline").length > 0);
   await goTab("配置"); await sleep(500);

@@ -40,7 +40,9 @@ func TestUIHarness(t *testing.T) {
 
 	p := newPlugin()
 	p.Config.BridgeToken = "harness-token"
-	p.Config.BaseURL = "http://127.0.0.1:9" // 探活必失败，观察红灯
+	p.Config.APIKey = "ghp-local-api-key-2026-chatbot" // 接真实 gateway，史官写作可端到端
+	p.Config.ChronicleEnabled = true
+	chron := true
 	p.dataDir = dir
 	p.metrics = newMetrics()
 	p.rings = newRingStore(60)
@@ -52,7 +54,7 @@ func TestUIHarness(t *testing.T) {
 	mkMsg := func(rcv *contact.Contact, speaker, text string) *message.Message {
 		return &message.Message{
 			Id: time.Now().UnixNano(), Type: message.TypeText, Sender: rcv, Receiver: rcv,
-			Member: &chatroom.Member{Username: "wxid_" + speaker, DisplayName: speaker, Nickname: speaker},
+			Member:  &chatroom.Member{Username: "wxid_" + speaker, DisplayName: speaker, Nickname: speaker},
 			Content: text, Data: &message.Message_Text{Text: &message.TextData{Content: text}},
 		}
 	}
@@ -95,7 +97,7 @@ func TestUIHarness(t *testing.T) {
 	}
 	p.metrics.addLog("ERROR", "[ghp] Agent 运行失败 hermes api 500")
 
-		// 画像与成员标记模拟数据
+	// 画像与成员标记模拟数据
 	p.store.mu.Lock()
 	p.store.db.Exec(`INSERT OR REPLACE INTO member_profiles(wxid,name,summary,facts,archived_at,msg_count,updated_at) VALUES
 		('wxid_xiao','小聪明儿','嘴上到此为止实际赖着聊的躺平嘴炮王',
@@ -115,7 +117,14 @@ func TestUIHarness(t *testing.T) {
 	}
 	time.Sleep(1200 * time.Millisecond)
 
-w := newWebUI(p)
+	// 启用史官（该群），供立即出刊端到端
+	p.store.saveChatSettings(chatSettings{Chat: "123456@chatroom", Chronicle: &chron})
+
+	// 手动创建引擎与史官（不走 OnLoad，供出刊端到端；发布段 out 为 nil 自动跳过）
+	p.eng = newEngine(&p.Config)
+	p.chronicle = newChronicle(p)
+
+	w := newWebUI(p)
 	mux := http.NewServeMux()
 	w.mount(mux)
 	ln, err := net.Listen("tcp", "127.0.0.1:8791")
