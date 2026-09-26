@@ -25,6 +25,7 @@ vars:
       setu,
       farm,
       robbery,
+      golem_hermes_plugin,
     ]
 
 tasks:
