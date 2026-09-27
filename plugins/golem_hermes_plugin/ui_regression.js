@@ -71,6 +71,8 @@
   ok("V9 配置渲染", cfgTxt.includes("ambient_reply_rate"));
   ok("V9 画坊服务商表单", !!$q("#ig-base") && !!$q("#ig-key") && !!$q("#ig-enabled") && !!$q("#ig-cap"),
     "base/key/enabled/cap 四件套");
+  ok("V9 防复读参数", !!$q("#ig-dedup") && !!$q("#ig-simwin") && !!$q("#ig-simth") && !!$q("#ig-pumax"),
+    "复用窗口/相似窗口/阈值/同甲限频");
   ok("V9 画坊掩码回显", ($q("#ig-key")||{}).placeholder !== "", "api_key 需掩码回显");
   console.log(log.join("\n"));
   alert(log.some(l => l.includes("❌")) ? "存在失败项，见控制台" : "全部通过 ✅");

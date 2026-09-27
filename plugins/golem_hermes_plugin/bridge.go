@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -210,10 +211,7 @@ func (b *bridgeServer) handleImagegen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chat := as.Receiver
-	if allowed, why := b.p.imagegenAllow(chat, t.IsOwner); !allowed {
-		writeErr(w, http.StatusTooManyRequests, why)
-		return
-	}
+	// 类型与素材指定（先于查重：查重口径依赖 kind/size）
 	kind := woKindGenerate
 	ref := strings.TrimSpace(body.Ref)
 	refMsgID := body.RefMsgID
@@ -231,10 +229,40 @@ func (b *bridgeServer) handleImagegen(w http.ResponseWriter, r *http.Request) {
 			ref = ""
 		}
 	}
+	size := strings.TrimSpace(body.Size)
+
+	// 防复读把关（先于配额：L1 库存直发零成本，产能售罄也照发）
+	if action, match, why := b.p.imagegenDedupe(chat, t.SpeakerID, kind, prompt, size); action != "" {
+		if action == "reuse" { // 仅生图类会返回 reuse
+			if data, rerr := os.ReadFile(match.FilePath); rerr == nil {
+				if o := b.p.out; o != nil && o.msg != nil {
+					_ = o.sendImage(chat, shrinkImage(data))
+					_ = o.sendText(chat, fmt.Sprintf("📦【画坊】画师拒绝重复劳动——此单有存货（原工单#%d），库存直发，本次 0 元", match.ID))
+				}
+				b.p.metrics.addLog("INFO", fmt.Sprintf("[画坊] 库存直发 原工单#%d 甲方:%s", match.ID, t.Speaker))
+				writeOK(w, map[string]any{
+					"accepted": true, "workorder": match.ID, "reused": true,
+					"note": "该需求与近期成作完全相同，已直接重发原画（未产生新消耗）。请告诉甲方画坊按库存发货，无需等待。",
+				})
+				return
+			}
+			// 存货文件丢失 → 落到正常下单
+		} else if action == "busy" {
+			writeErr(w, http.StatusConflict, why)
+			return
+		} else { // reject
+			writeErr(w, http.StatusTooManyRequests, why)
+			return
+		}
+	}
+	if allowed, why := b.p.imagegenAllow(chat, t.IsOwner); !allowed {
+		writeErr(w, http.StatusTooManyRequests, why)
+		return
+	}
 	wo := &workorder{
 		Chat: chat, Requester: t.Speaker, RequesterID: t.SpeakerID,
 		Kind: kind, Prompt: prompt, Ref: ref, RefMsgID: refMsgID,
-		Size: strings.TrimSpace(body.Size),
+		Size: size,
 	}
 	if id := b.p.store.createWorkorder(wo); id == 0 {
 		writeErr(w, http.StatusInternalServerError, "工单落库失败")

@@ -927,6 +927,13 @@ async function loadConfig(){
           ${["auto","1024x1024","1536x1024","1024x1536"].map(s=>`<option ${s===g.size?"selected":""}>${s}</option>`).join("")}
         </select>
         <div class="k">全局日产能</div><input id="ig-cap" class="ig-in" type="number" min="0" value="${g.daily_cap??20}" style="width:110px">
+        <div class="k">库存复用窗口</div>
+        <div style="display:flex;gap:6px;align-items:center"><input id="ig-dedup" class="ig-in" type="number" min="1" max="240" value="${g.dedup_win??30}" style="width:80px"><span class="faint" style="font-size:12px">分钟内相同需求→库存直发(0元)</span></div>
+        <div class="k">相似拦截</div>
+        <div style="display:flex;gap:6px;align-items:center"><input id="ig-simwin" class="ig-in" type="number" min="1" max="240" value="${g.sim_win??10}" style="width:80px"><span class="faint" style="font-size:12px">分钟窗口</span>
+          <input id="ig-simth" class="ig-in" type="number" min="0.5" max="1" step="0.01" value="${g.sim_threshold??0.85}" style="width:80px"><span class="faint" style="font-size:12px">相似阈值</span></div>
+        <div class="k">同甲限频</div>
+        <div style="display:flex;gap:6px;align-items:center"><input id="ig-pumax" class="ig-in" type="number" min="1" max="20" value="${g.peruser_max??3}" style="width:80px"><span class="faint" style="font-size:12px">单 / 10分钟（第4单起拒绝）</span></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
         <button class="hbtn" style="color:var(--teal)" onclick="saveImagegenConfig()">💾 保存画坊配置</button>
@@ -938,7 +945,9 @@ async function saveImagegenConfig(){
   try{
     const r=await api("/api/imagegen/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       enabled:$("#ig-enabled").checked, base_url:$("#ig-base").value, api_key:$("#ig-key").value,
-      model:$("#ig-model").value, size:$("#ig-size").value, daily_cap:+$("#ig-cap").value})});
+      model:$("#ig-model").value, size:$("#ig-size").value, daily_cap:+$("#ig-cap").value,
+      dedup_win:+$("#ig-dedup").value, sim_win:+$("#ig-simwin").value,
+      sim_threshold:+$("#ig-simth").value, peruser_max:+$("#ig-pumax").value})});
     alert("画坊配置已保存（当前："+(r.enabled?"营业中":"歇业")+"）");
     loadConfig();
   }catch(e){alert("保存失败: "+e.message)}

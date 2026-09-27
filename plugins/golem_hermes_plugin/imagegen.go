@@ -15,9 +15,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	_ "image/gif"  // 注册解码器，画稿压缩用
 	_ "image/jpeg"
@@ -72,6 +75,11 @@ type imagegenSettings struct {
 	Model    string
 	Size     string
 	DailyCap int
+	// 防复读把关（仅 kv 配置，Web 画坊卡片可改）
+	DedupWinMin  int     // L1 库存复用窗口（分钟）
+	SimWinMin    int     // L2 相似拦截窗口（分钟）
+	SimThreshold float64 // L2 相似阈值（bigram Jaccard）
+	PerUserMax   int     // L3 同甲方 10 分钟内最大单数
 }
 
 func (p *hermesPlugin) imagegenSettings() imagegenSettings {
@@ -108,6 +116,32 @@ func (p *hermesPlugin) imagegenSettings() imagegenSettings {
 	}
 	if st.Size == "" {
 		st.Size = "auto"
+	}
+	st.DedupWinMin = 30
+	st.SimWinMin = 10
+	st.SimThreshold = 0.80 // 单字替换破坏2个bigram：J=(N-3)/(N+1)，0.8 → 核心串≥19字才拦单字改动
+	st.PerUserMax = 3
+	if p.store != nil {
+		if v := p.store.kvGet("imagegen:dedup_win"); v != "" {
+			if n := atoiDefault(v, 30); n > 0 {
+				st.DedupWinMin = n
+			}
+		}
+		if v := p.store.kvGet("imagegen:sim_win"); v != "" {
+			if n := atoiDefault(v, 10); n > 0 {
+				st.SimWinMin = n
+			}
+		}
+		if v := p.store.kvGet("imagegen:sim_threshold"); v != "" {
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f >= 0.5 && f <= 1 {
+				st.SimThreshold = f
+			}
+		}
+		if v := p.store.kvGet("imagegen:peruser_max"); v != "" {
+			if n := atoiDefault(v, 3); n > 0 {
+				st.PerUserMax = n
+			}
+		}
 	}
 	return st
 }
@@ -293,6 +327,36 @@ func (s *store) listWorkorders(chat, status string, limit int) []*workorder {
 			if wo.FilePath != "" {
 				wo.FilePath = fmt.Sprintf("/api/gallery/file/%d", wo.ID)
 			}
+			out = append(out, wo)
+		}
+	}
+	return out
+}
+
+// workordersInWindow 某群 since 之后创建的工单（查重用，FilePath 保持本机磁盘路径不转 URL）
+func (s *store) workordersInWindow(chat string, since int64, limit int) []*workorder {
+	out := []*workorder{}
+	if s == nil || s.db == nil || chat == "" {
+		return out
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT id,chat,COALESCE(chat_name,''),COALESCE(requester,''),COALESCE(requester_id,''),
+		kind,prompt,COALESCE(ref,''),ref_msg_id,COALESCE(size,''),status,COALESCE(task_id,''),COALESCE(file_path,''),
+		COALESCE(error,''),created_at,done_at
+		FROM workorders WHERE chat=? AND created_at>=? ORDER BY id DESC LIMIT ?`, chat, since, limit)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		wo := &workorder{}
+		if rows.Scan(&wo.ID, &wo.Chat, &wo.ChatName, &wo.Requester, &wo.RequesterID,
+			&wo.Kind, &wo.Prompt, &wo.Ref, &wo.RefMsgID, &wo.Size, &wo.Status, &wo.TaskID, &wo.FilePath,
+			&wo.Error, &wo.CreatedAt, &wo.DoneAt) == nil {
 			out = append(out, wo)
 		}
 	}
@@ -1049,6 +1113,133 @@ func (ws *workshop) fail(wo *workorder, reason string) {
 			}
 		}
 	}
+}
+
+// ---- 防复读把关：归一化 + bigram Jaccard（纯本地计算，零 LLM） ----
+
+// promptFillers 语气填充词：前缀类从头部反复剥，后缀类从尾部反复剥（只动两端，不动中间——中间剥离会把不同需求误融）
+var promptPrefixFillers = []string{"帮我画一张", "帮我画个", "帮我画", "帮我来一张", "画一张", "画一幅", "画个", "来一张", "来个", "再画一张", "再画个", "再画", "再来一张", "帮我", "给我", "麻烦", "请", "再", "又"}
+var promptSuffixFillers = []string{"可以吗", "好吗", "谢谢", "一下", "一张", "一个", "吧", "呗", "啊", "呢", "啦", "咯", "哈"}
+
+var nonWordRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+
+// normalizePrompt 归一化：全角→半角、小写、去标点/emoji/空白、剥两端填充词、截断 200 字。
+// 输出用于 L1 精确比较与 L2 bigram 相似度的“核心串”。
+func normalizePrompt(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r >= 0xFF01 && r <= 0xFF5E: // 全角 ASCII → 半角
+			r -= 0xFEE0
+		case r == 0x3000: // 全角空格
+			r = ' '
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	s = nonWordRe.ReplaceAllString(b.String(), "")
+	ra := []rune(s)
+	if len(ra) > 200 {
+		ra = ra[:200]
+	}
+	s = string(ra)
+	for changed := true; changed; {
+		changed = false
+		for _, f := range promptPrefixFillers {
+			if strings.HasPrefix(s, f) && len(s) > len([]rune(f)) {
+				s = strings.TrimPrefix(s, f)
+				changed = true
+			}
+		}
+		for _, f := range promptSuffixFillers {
+			if strings.HasSuffix(s, f) && len(s) > len([]rune(f)) {
+				s = strings.TrimSuffix(s, f)
+				changed = true
+			}
+		}
+	}
+	return s
+}
+
+// bigramJaccard 相邻字符二元组的 Jaccard 相似度（rune 级，CJK 友好）。
+// 任一核心串长度 <2 时退化为精确比较（单字句模糊判定必然乱杀）。
+func bigramJaccard(a, b string) float64 {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) < 2 || len(rb) < 2 {
+		if len(ra) == len(rb) && len(ra) > 0 && a == b {
+			return 1
+		}
+		return 0
+	}
+	setA := map[string]struct{}{}
+	for i := 0; i+1 < len(ra); i++ {
+		setA[string(ra[i:i+2])] = struct{}{}
+	}
+	setB := map[string]struct{}{}
+	for i := 0; i+1 < len(rb); i++ {
+		setB[string(rb[i:i+2])] = struct{}{}
+	}
+	inter := 0
+	for g := range setA {
+		if _, ok := setB[g]; ok {
+			inter++
+		}
+	}
+	union := len(setA) + len(setB) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+// nzSize 尺寸归一（空串视为 auto），保证 key 比较口径一致
+func nzSize(s string) string {
+	if s == "" || s == "auto" {
+		return "auto"
+	}
+	return s
+}
+
+// imagegenDedupe 四层查重把关（在配额闸之前执行）：
+//   - L1 精确重复：归一化后与窗口内工单全等 → 生图类返回库存直发（0 元不计配额）；在途单返回 busy
+//   - L2 高相似：与「已交稿」工单 bigram Jaccard ≥ 阈值（10 分钟窗口）→ 拒绝（failed 单不计，重试应被允许）
+//   - L3 同甲限频：同甲方 10 分钟内第 N 单起拒绝
+//
+// 返回 (action, 命中工单, 给 LLM 的转告语)；action: ""=放行 | reuse | busy | reject
+func (p *hermesPlugin) imagegenDedupe(chat, requesterID string, kind, prompt, size string) (string, *workorder, string) {
+	st := p.imagegenSettings()
+	core := normalizePrompt(prompt)
+	now := time.Now().Unix()
+	l1Cutoff := now - int64(st.DedupWinMin)*60
+	l2Cutoff := now - int64(st.SimWinMin)*60
+	perUser := 0
+	for _, wo := range p.store.workordersInWindow(chat, l1Cutoff, 50) {
+		live := wo.Status == woStatusQueued || wo.Status == woStatusPainting
+		spent := wo.Status == woStatusDone
+		if !live && !spent {
+			continue // 难产单不参与查重：服务商侧失败的重试应当被允许
+		}
+		if requesterID != "" && wo.RequesterID == requesterID {
+			perUser++
+		}
+		if wo.Kind != kind || nzSize(wo.Size) != nzSize(size) {
+			continue
+		}
+		same := normalizePrompt(wo.Prompt) == core
+		if same && live {
+			return "busy", wo, "这张画师正在画，画好自动到，别催"
+		}
+		// 仅生图类做库存直发：改图素材随时会换，复用旧稿会张冠李戴
+		if same && spent && kind == woKindGenerate && wo.FilePath != "" {
+			return "reuse", wo, ""
+		}
+		if spent && wo.CreatedAt >= l2Cutoff && bigramJaccard(normalizePrompt(wo.Prompt), core) >= st.SimThreshold {
+			return "reject", wo, fmt.Sprintf("画师拒绝复读：与 %d 分钟前的工单#%d 高度相似，换个说法再来", (now-wo.CreatedAt)/60, wo.ID)
+		}
+	}
+	if perUser >= st.PerUserMax {
+		return "reject", nil, "甲方你的需求画师记在小本本上了，歇会儿再来"
+	}
+	return "", nil, ""
 }
 
 // ---- 杂项 ----

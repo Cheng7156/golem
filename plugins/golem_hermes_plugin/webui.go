@@ -604,6 +604,8 @@ func (w *webUI) handleImagegenConfigGet(rw http.ResponseWriter, _ *http.Request)
 	writeOK(rw, map[string]any{
 		"enabled": st.Enabled, "base_url": st.BaseURL, "api_key": maskKey(st.APIKey),
 		"model": st.Model, "size": st.Size, "daily_cap": st.DailyCap,
+		"dedup_win": st.DedupWinMin, "sim_win": st.SimWinMin,
+		"sim_threshold": st.SimThreshold, "peruser_max": st.PerUserMax,
 		"workers": w.p.Config.ImageGenWorkers,
 	})
 }
@@ -617,6 +619,11 @@ func (w *webUI) handleImagegenConfigPut(rw http.ResponseWriter, r *http.Request)
 		Model    *string `json:"model"`
 		Size     *string `json:"size"`
 		DailyCap *int    `json:"daily_cap"`
+		// 防复读把关
+		DedupWin     *int     `json:"dedup_win"`
+		SimWin       *int     `json:"sim_win"`
+		SimThreshold *float64 `json:"sim_threshold"`
+		PerUserMax   *int     `json:"peruser_max"`
 	}
 	defer r.Body.Close()
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
@@ -648,6 +655,18 @@ func (w *webUI) handleImagegenConfigPut(rw http.ResponseWriter, r *http.Request)
 	}
 	if body.DailyCap != nil && *body.DailyCap >= 0 {
 		w.p.store.kvSet("imagegen:daily_cap", fmt.Sprintf("%d", *body.DailyCap))
+	}
+	if body.DedupWin != nil && *body.DedupWin >= 1 && *body.DedupWin <= 240 {
+		w.p.store.kvSet("imagegen:dedup_win", fmt.Sprintf("%d", *body.DedupWin))
+	}
+	if body.SimWin != nil && *body.SimWin >= 1 && *body.SimWin <= 240 {
+		w.p.store.kvSet("imagegen:sim_win", fmt.Sprintf("%d", *body.SimWin))
+	}
+	if body.SimThreshold != nil && *body.SimThreshold >= 0.5 && *body.SimThreshold <= 1 {
+		w.p.store.kvSet("imagegen:sim_threshold", fmt.Sprintf("%.2f", *body.SimThreshold))
+	}
+	if body.PerUserMax != nil && *body.PerUserMax >= 1 && *body.PerUserMax <= 20 {
+		w.p.store.kvSet("imagegen:peruser_max", fmt.Sprintf("%d", *body.PerUserMax))
 	}
 	if body.Enabled != nil {
 		w.p.store.kvSet("imagegen:enabled", map[bool]string{true: "1", false: "0"}[*body.Enabled])

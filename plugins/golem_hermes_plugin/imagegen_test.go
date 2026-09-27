@@ -389,3 +389,124 @@ func TestShrinkAndTruncate(t *testing.T) {
 		t.Fatal("小图应原样返回")
 	}
 }
+
+// ==================== 防复读把关 ====================
+
+func TestNormalizePrompt(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"画一张赛博红薯", "赛博红薯"},
+		{"再画一张 赛博红薯！！", "赛博红薯"},
+		{"帮我画一只戴墨镜的橘猫吧", "一只戴墨镜的橘猫"},
+		{"ＰＮＧ风格的 猫！", "png风格的猫"},
+		{"赛博红薯。", "赛博红薯"},
+		{"画一张赛博红薯好吗", "赛博红薯"},
+	}
+	for _, c := range cases {
+		if got := normalizePrompt(c.in); got != c.want {
+			t.Fatalf("normalizePrompt(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestBigramJaccard(t *testing.T) {
+	cases := []struct {
+		a, b     string
+		min, max float64
+	}{
+		{"赛博红薯", "赛博红薯", 1, 1},
+		{"赛博红薯", "赛博红薯要霓虹灯", 0.40, 0.46},   // 加修饰 → 放行
+		{"赛博朋克风橘猫", "赛博朋克风橘狗", 0.68, 0.75}, // 短句(7字)换单字 J=0.5~0.71 → 放行
+		// 长句(21字)同长单字替换 J=(21-3)/(21+1)≈0.82 → 拦截（0.8 阈值）
+		{"一只戴着墨镜的橘猫站在霓虹闪烁的街头吃烤串", "一只戴着墨镜的狗猫站在霓虹闪烁的街头吃烤串", 0.78, 0.86},
+		{"猫", "猫", 1, 1}, // 退化路径
+		{"猫", "狗", 0, 0},
+	}
+	for _, c := range cases {
+		got := bigramJaccard(c.a, c.b)
+		if got < c.min || got > c.max {
+			t.Fatalf("J(%q,%q) = %.3f, 期望 [%.2f,%.2f]", c.a, c.b, got, c.min, c.max)
+		}
+	}
+}
+
+func seedWo(t *testing.T, s *store, chat, requesterID, kind, prompt, size, status string, ageSec int64) *workorder {
+	t.Helper()
+	wo := &workorder{Chat: chat, Requester: "甲", RequesterID: requesterID, Kind: kind, Prompt: prompt, Size: size}
+	if s.createWorkorder(wo) == 0 {
+		t.Fatal("落单失败")
+	}
+	s.mu.Lock()
+	_, _ = s.db.Exec("UPDATE workorders SET status=?, created_at=?, done_at=? WHERE id=?",
+		status, time.Now().Unix()-ageSec, time.Now().Unix()-ageSec, wo.ID)
+	s.mu.Unlock()
+	return wo
+}
+
+func TestImagegenDedupe(t *testing.T) {
+	s := newTestStore(t)
+	p := &hermesPlugin{store: s}
+	p.dataDir = t.TempDir()
+
+	// chatA：生图精确重复 → 库存直发
+	w := seedWo(t, s, "A@chatroom", "wxid_1", woKindGenerate, "画一张赛博红薯！！", "auto", woStatusDone, 60)
+	w.Status = woStatusDone // seedWo 只改库；结构体补齐状态再落 FilePath，防 updateWorkorder 写回空状态
+	w.FilePath = "/tmp/stock.png"
+	w.DoneAt = time.Now().Unix() - 30
+	s.updateWorkorder(w)
+	if act, m, _ := p.imagegenDedupe("A@chatroom", "wxid_9", woKindGenerate, "赛博红薯", "auto"); act != "reuse" || m.ID != w.ID {
+		t.Fatalf("期望 reuse，得 %s %+v", act, m)
+	}
+	// 主人换了说法带修饰 → 放行（新构图）
+	if act, _, _ := p.imagegenDedupe("A@chatroom", "wxid_9", woKindGenerate, "赛博红薯要霓虹灯", "auto"); act != "" {
+		t.Fatalf("加修饰应放行，得 %s", act)
+	}
+
+	// chatB：在途单 → busy
+	seedWo(t, s, "B@chatroom", "wxid_2", woKindGenerate, "赛博红薯", "", woStatusPainting, 30)
+	if act, _, _ := p.imagegenDedupe("B@chatroom", "wxid_9", woKindGenerate, "画一张赛博红薯", "auto"); act != "busy" {
+		t.Fatalf("期望 busy，得 %s", act)
+	}
+
+	// chatC：长句(21字)单字替换 → reject；短句换单字 → 放行
+	seedWo(t, s, "C@chatroom", "wxid_3", woKindGenerate, "一只戴着墨镜的橘猫站在霓虹闪烁的街头吃烤串", "auto", woStatusDone, 120)
+	if act, _, _ := p.imagegenDedupe("C@chatroom", "wxid_9", woKindGenerate, "一只戴着墨镜的狗猫站在霓虹闪烁的街头吃烤串", "auto"); act != "reject" {
+		t.Fatalf("长句高相似应 reject，得 %s", act)
+	}
+	if act, _, _ := p.imagegenDedupe("C@chatroom", "wxid_9", woKindGenerate, "赛博朋克风橘狗", "auto"); act != "" {
+		t.Fatalf("短句换单字应放行，得 %s", act)
+	}
+
+	// chatD：难产单不参与查重（重试被允许）
+	seedWo(t, s, "D@chatroom", "wxid_4", woKindGenerate, "赛博红薯", "auto", woStatusFailed, 60)
+	if act, _, _ := p.imagegenDedupe("D@chatroom", "wxid_9", woKindGenerate, "赛博红薯", "auto"); act != "" {
+		t.Fatalf("难产后重试应放行，得 %s", act)
+	}
+
+	// chatE：改图单不库存复用（同 core 已交稿）→ 走 L2 相似 → reject
+	seedWo(t, s, "E@chatroom", "wxid_5", woKindEdit, "把他改成毕加索风格", "auto", woStatusDone, 60)
+	if act, _, why := p.imagegenDedupe("E@chatroom", "wxid_9", woKindEdit, "把他改成毕加索风格！", "auto"); act != "reject" {
+		t.Fatalf("改图同句应经 L2 拒绝，得 %s (%s)", act, why)
+	}
+
+	// chatF：L1 窗口外（31 分钟）→ 放行
+	seedWo(t, s, "F@chatroom", "wxid_6", woKindGenerate, "赛博红薯", "auto", woStatusDone, 31*60)
+	if act, _, _ := p.imagegenDedupe("F@chatroom", "wxid_9", woKindGenerate, "赛博红薯", "auto"); act != "" {
+		t.Fatalf("窗口外应放行，得 %s", act)
+	}
+
+	// chatG：同甲限频（3 单后第 4 单拒绝；他人不受影响）
+	for i := 0; i < 3; i++ {
+		seedWo(t, s, "G@chatroom", "wxid_7", woKindGenerate, fmt.Sprintf("题材甲第%d号：一只会飞的机械鸽子编号%d", i, i), "auto", woStatusDone, int64(60*(i+1)))
+	}
+	if act, _, _ := p.imagegenDedupe("G@chatroom", "wxid_7", woKindGenerate, "一只会飞的机械鸽子豪华版", "auto"); act != "reject" {
+		t.Fatalf("同甲第4单应拒绝，得 %s", act)
+	}
+	if act, _, _ := p.imagegenDedupe("G@chatroom", "wxid_999", woKindGenerate, "一只会飞的机械鸽子豪华版", "auto"); act != "" {
+		t.Fatalf("其他甲方不应受限，得 %s", act)
+	}
+
+	// 库存是全群共享：同句不同甲方 → reuse
+	if act, _, _ := p.imagegenDedupe("A@chatroom", "wxid_88", woKindGenerate, "画一张赛博红薯吧", "auto"); act != "reuse" {
+		t.Fatalf("库存应全群共享，得 %s", act)
+	}
+}
