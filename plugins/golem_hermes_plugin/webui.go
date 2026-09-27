@@ -66,6 +66,10 @@ func (w *webUI) mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/chronicle/schedule", w.auth(w.handleChronicleSchedule))
 	mux.HandleFunc("GET /api/chronicle/styles", w.auth(w.handleChronicleStylesGet))
 	mux.HandleFunc("PUT /api/chronicle/styles", w.auth(w.handleChronicleStylesPut))
+	mux.HandleFunc("GET /api/imagegen/config", w.auth(w.handleImagegenConfigGet))
+	mux.HandleFunc("PUT /api/imagegen/config", w.auth(w.handleImagegenConfigPut))
+	mux.HandleFunc("GET /api/gallery", w.auth(w.handleGallery))
+	mux.HandleFunc("GET /api/gallery/file/", w.auth(w.handleGalleryFile))
 }
 
 func (w *webUI) handleUI(rw http.ResponseWriter, _ *http.Request) {
@@ -161,6 +165,7 @@ func (w *webUI) handleOverview(rw http.ResponseWriter, _ *http.Request) {
 		"decisions_today": m.decisionStats(),
 		"latency": m.latencyStats(),
 		"stickers": stickerOverview(p.store),
+		"workshop": p.store.workorderStats(),
 	}
 	tp, tc := p.store.usageToday()
 	out["usage_today"] = map[string]any{"prompt": tp, "completion": tc, "cap": p.Config.DailyTokenCap}
@@ -330,6 +335,7 @@ func (w *webUI) overviewNoProbe() map[string]any {
 		"decisions_today": m.decisionStats(),
 		"latency": m.latencyStats(),
 		"stickers": stickerOverview(p.store),
+		"workshop": p.store.workorderStats(),
 		"usage_today": map[string]any{"prompt": tp, "completion": tc, "cap": p.Config.DailyTokenCap},
 		"ts": time.Now().Unix(),
 	}
@@ -579,6 +585,113 @@ func (w *webUI) handleChronicleStylesPut(rw http.ResponseWriter, r *http.Request
 	}
 	w.p.metrics.addLog("INFO", "[web] 文风坊更新")
 	writeOK(rw, map[string]any{"saved": true})
+}
+
+// ---- 画坊（生图/改图） ----
+
+func maskKey(s string) string {
+	if s == "" {
+		return "(未配置)"
+	}
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
+}
+
+func (w *webUI) handleImagegenConfigGet(rw http.ResponseWriter, _ *http.Request) {
+	st := w.p.imagegenSettings()
+	writeOK(rw, map[string]any{
+		"enabled": st.Enabled, "base_url": st.BaseURL, "api_key": maskKey(st.APIKey),
+		"model": st.Model, "size": st.Size, "daily_cap": st.DailyCap,
+		"workers": w.p.Config.ImageGenWorkers,
+	})
+}
+
+// handleImagegenConfigPut 服务商配置写 kv（即改即生效）；api_key 传空串=保持不变
+func (w *webUI) handleImagegenConfigPut(rw http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled  *bool   `json:"enabled"`
+		BaseURL  *string `json:"base_url"`
+		APIKey   *string `json:"api_key"`
+		Model    *string `json:"model"`
+		Size     *string `json:"size"`
+		DailyCap *int    `json:"daily_cap"`
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	if body.BaseURL != nil {
+		u := strings.TrimRight(strings.TrimSpace(*body.BaseURL), "/")
+		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			writeErr(rw, http.StatusBadRequest, "base_url 需以 http(s):// 开头")
+			return
+		}
+		w.p.store.kvSet("imagegen:base_url", u)
+	}
+	if body.APIKey != nil {
+		if k := strings.TrimSpace(*body.APIKey); k != "" && k != "(未配置)" && !strings.Contains(k, "****") {
+			w.p.store.kvSet("imagegen:api_key", k)
+		}
+	}
+	if body.Model != nil {
+		if m := strings.TrimSpace(*body.Model); m != "" {
+			w.p.store.kvSet("imagegen:model", m)
+		}
+	}
+	if body.Size != nil {
+		if s := strings.TrimSpace(*body.Size); s != "" {
+			w.p.store.kvSet("imagegen:size", s)
+		}
+	}
+	if body.DailyCap != nil && *body.DailyCap >= 0 {
+		w.p.store.kvSet("imagegen:daily_cap", fmt.Sprintf("%d", *body.DailyCap))
+	}
+	if body.Enabled != nil {
+		w.p.store.kvSet("imagegen:enabled", map[bool]string{true: "1", false: "0"}[*body.Enabled])
+		if *body.Enabled {
+			w.p.ensureWorkshop()
+		}
+	}
+	w.p.metrics.addLog("INFO", "[web] 画坊服务商配置更新")
+	st := w.p.imagegenSettings()
+	writeOK(rw, map[string]any{
+		"enabled": st.Enabled, "base_url": st.BaseURL, "api_key": maskKey(st.APIKey),
+		"model": st.Model, "size": st.Size, "daily_cap": st.DailyCap,
+	})
+}
+
+func (w *webUI) handleGallery(rw http.ResponseWriter, r *http.Request) {
+	writeOK(rw, map[string]any{
+		"stats": w.p.store.workorderStats(),
+		"items": w.p.store.listWorkorders(r.URL.Query().Get("chat"), r.URL.Query().Get("status"), atoiDefault(r.URL.Query().Get("limit"), 60)),
+	})
+}
+
+func (w *webUI) handleGalleryFile(rw http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(strings.TrimPrefix(r.URL.Path, "/api/gallery/file/"), 0))
+	wo := w.p.store.getWorkorder(id)
+	if wo == nil || wo.FilePath == "" || wo.Status != woStatusDone {
+		writeErr(rw, http.StatusNotFound, "无此画作")
+		return
+	}
+	data, err := os.ReadFile(wo.FilePath)
+	if err != nil {
+		writeErr(rw, http.StatusNotFound, "画作文件丢失")
+		return
+	}
+	ct := "image/png"
+	switch sniffImage(data) {
+	case "jpg":
+		ct = "image/jpeg"
+	case "gif":
+		ct = "image/gif"
+	}
+	rw.Header().Set("Content-Type", ct)
+	rw.Header().Set("Cache-Control", "max-age=86400")
+	_, _ = rw.Write(data)
 }
 
 // ---- 群设置 / 成员标记（配置中枢） ----

@@ -47,6 +47,13 @@ type Config struct {
 	ChronicleStyleMode   string  `toml:"chronicle_style_mode" comment:"文风策略: rotate=每日轮换 | fixed=固定"`
 	ChronicleFixedStyle  string  `toml:"chronicle_fixed_style" comment:"fixed 模式下使用的文风名"`
 	ChronicleStyles      []chronicleStyle `toml:"chronicle_styles" comment:"文风池（Web 文风坊可编辑）"`
+	ImageGenEnabled      bool             `toml:"imagegen_enabled" comment:"画坊：AI生图/改图总开关（服务商密钥建议在Web监控台配置，存本地库不落此文件）"`
+	ImageGenBaseURL      string           `toml:"imagegen_base_url" comment:"生图服务商 API 根地址（如 https://image.mlgb7.com/v1）"`
+	ImageGenAPIKey       string           `toml:"imagegen_api_key" comment:"生图服务商密钥（留空则用 Web 监控台里配置的）"`
+	ImageGenModel        string           `toml:"imagegen_model" comment:"生图模型名"`
+	ImageGenSize         string           `toml:"imagegen_size" comment:"默认尺寸: auto/1024x1024/1536x1024/1024x1536"`
+	ImageGenDailyCap     int              `toml:"imagegen_daily_cap" comment:"全局每日生图张数上限（0=不限；会话级可在Web覆盖）"`
+	ImageGenWorkers      int              `toml:"imagegen_workers" comment:"画坊并发画手数"`
 }
 
 func defaultConfig() Config {
@@ -95,6 +102,13 @@ func defaultConfig() Config {
 		ChronicleExtraThreshold: 500,
 		ChronicleStyleMode:  "rotate",
 		ChronicleFixedStyle: "太史公体",
+		ImageGenEnabled:  false,
+		ImageGenBaseURL:  "",
+		ImageGenAPIKey:   "",
+		ImageGenModel:    "gpt-image-2.5",
+		ImageGenSize:     "auto",
+		ImageGenDailyCap: 20,
+		ImageGenWorkers:  2,
 		ChronicleStyles: []chronicleStyle{
 			{Name: "太史公体", Hint: "以《史记》笔法行文：句式凝练文白相间，篇末必有『太史公曰』点评，点评需毒舌或深沉二选一", Enabled: true},
 			{Name: "说书人体", Hint: "章回体说书人：『话说』开篇、『欲知后事且听下回分解』收尾，多设悬念，冲突用回合制描写，可拍惊堂木", Enabled: true},

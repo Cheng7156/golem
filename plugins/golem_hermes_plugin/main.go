@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.6.0"
+	pluginVersion = "0.8.0"
 )
 
 func main() {
@@ -55,6 +55,7 @@ type hermesPlugin struct {
 	profiler *profiler           // 群成员画像后台任务
 	chronicle *chronicle        // 群史官
 	fun      *funEngine          // 傻吊三件套：打鸣/记仇/突然的自我
+	workshop *workshop           // 画坊：生图/改图后台画手
 
 	rings    *ringStore
 	eng      *httpEngine
@@ -118,6 +119,7 @@ func (p *hermesPlugin) OnLoad() error {
 	if err := os.MkdirAll(filepath.Join(p.dataDir, "sticker_files"), 0o755); err != nil {
 		slog.Warn("创建数据目录失败", "dir", p.dataDir, "err", err)
 	}
+	_ = os.MkdirAll(filepath.Join(p.dataDir, "gallery"), 0o755)
 
 	if p.contact != nil {
 		p.self = p.contact.GetSelf()
@@ -150,6 +152,9 @@ func (p *hermesPlugin) OnLoad() error {
 		p.chronicle = newChronicle(p)
 		go p.chronicle.loop()
 	}
+	if p.imagegenSettings().Enabled {
+		p.ensureWorkshop()
+	}
 	if !p.testMode && p.Config.BridgeListen != "" {
 		p.bridge = newBridge(p)
 		go p.bridge.start()
@@ -175,6 +180,9 @@ func (p *hermesPlugin) OnUnload() error {
 	}
 	if p.fun != nil {
 		p.fun.Stop()
+	}
+	if p.workshop != nil {
+		p.workshop.Stop()
 	}
 	if p.store != nil {
 		p.store.close()

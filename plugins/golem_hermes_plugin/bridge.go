@@ -29,6 +29,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/emoji", b.auth(b.handleEmoji))
 	mux.HandleFunc("POST /v1/image", b.auth(b.handleImage))
+	mux.HandleFunc("POST /v1/imagegen", b.auth(b.handleImagegen))
 	mux.HandleFunc("POST /v1/quote", b.auth(b.handleQuote))
 	mux.HandleFunc("GET /v1/context", b.auth(b.handleContext))
 	mux.HandleFunc("POST /v1/history", b.auth(b.handleHistory))
@@ -177,6 +178,87 @@ func (b *bridgeServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{"sent": true, "bytes": len(data)})
+}
+
+// handleImagegen 画坊接单：毫秒级受理（查闸→落工单→播报→回执），作画全在后台画手
+func (b *bridgeServer) handleImagegen(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Prompt   string `json:"prompt"`
+		Ref      string `json:"ref"`
+		Size     string `json:"size"`
+		RefMsgID int64  `json:"ref_msg_id"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	prompt := strings.TrimSpace(body.Prompt)
+	if prompt == "" {
+		writeErr(w, http.StatusBadRequest, "prompt 不能为空")
+		return
+	}
+	if len([]rune(prompt)) > 2000 {
+		prompt = truncateRunes(prompt, 2000)
+	}
+	_, as, err := b.resolveSession(r)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	t := as.LastTask
+	if t == nil {
+		writeErr(w, http.StatusConflict, "当前会话没有可识别的甲方")
+		return
+	}
+	chat := as.Receiver
+	if allowed, why := b.p.imagegenAllow(chat, t.IsOwner); !allowed {
+		writeErr(w, http.StatusTooManyRequests, why)
+		return
+	}
+	kind := woKindGenerate
+	ref := strings.TrimSpace(body.Ref)
+	refMsgID := body.RefMsgID
+	if ref != "" || refMsgID != 0 {
+		kind = woKindEdit
+		// "quoted" → 从当前入站消息的引用块取被引用消息ID
+		if strings.EqualFold(ref, "quoted") && refMsgID == 0 {
+			if t != nil {
+				fmt.Sscanf(strings.TrimSpace(t.QuoteSvrid), "%d", &refMsgID)
+			}
+			if refMsgID == 0 {
+				writeErr(w, http.StatusBadRequest, "当前消息没有可引用的图片素材")
+				return
+			}
+			ref = ""
+		}
+	}
+	wo := &workorder{
+		Chat: chat, Requester: t.Speaker, RequesterID: t.SpeakerID,
+		Kind: kind, Prompt: prompt, Ref: ref, RefMsgID: refMsgID,
+		Size: strings.TrimSpace(body.Size),
+	}
+	if id := b.p.store.createWorkorder(wo); id == 0 {
+		writeErr(w, http.StatusInternalServerError, "工单落库失败")
+		return
+	}
+	if !t.IsOwner {
+		day := time.Now().Format("20060102")
+		b.p.store.quotaIncr("g:" + day)
+		b.p.store.quotaIncr("c:" + day + ":" + chat)
+	}
+	b.p.ensureWorkshop()
+	b.p.workshop.submit(wo.ID)
+	b.p.metrics.addLog("INFO", fmt.Sprintf("[画坊] 接单#%d (%s) 甲方:%s 需求:%s", wo.ID, kind, wo.Requester, previewOf(prompt, 40)))
+	if o := b.p.out; o != nil && o.msg != nil {
+		note := "画师酝酿中…"
+		if kind == woKindEdit {
+			note = "画师拿到原图，开始动刀…"
+		}
+		_ = o.sendText(chat, fmt.Sprintf("🖌️【画坊】工单#%d 已接单，%s", wo.ID, note))
+	}
+	writeOK(w, map[string]any{
+		"accepted": true, "workorder": wo.ID, "kind": kind,
+		"note":     "画好后自动发到群里，无需再调用任何工具，也无需向用户索取图片",
+	})
 }
 
 func (b *bridgeServer) handleQuote(w http.ResponseWriter, r *http.Request) {

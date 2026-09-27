@@ -118,6 +118,8 @@ tbody tr.click{cursor:pointer}
 .logline .t{color:var(--faint)}
 .lv-ERROR{color:var(--red)}.lv-WARN{color:var(--amber)}.lv-INFO{color:var(--dim)}
 .empty{color:var(--faint);text-align:center;padding:26px;font-size:13px}
+.ig-in{background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font-size:13px;outline:none;width:100%}
+.ig-in:focus{border-color:var(--teal)}
 .issue{background:linear-gradient(160deg,#f5eeda,#e8dcbe);border:1px solid #c9b98a;border-radius:10px;overflow:hidden;cursor:pointer;transition:transform .15s}
 .issue:hover{transform:translateY(-2px)}
 .issue .head{padding:10px 12px 6px;color:#4a3b1f;display:flex;justify-content:space-between;align-items:baseline}
@@ -201,6 +203,20 @@ tbody tr.click{cursor:pointer}
     </div>
   </section>
 
+  <!-- 画廊 -->
+  <section class="view" id="v-gallery">
+    <div class="cards" id="wo-kpi" style="margin-bottom:12px"></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+      <select id="wo-status" onchange="loadGallery()"
+        style="background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 10px;font-size:13px;outline:none">
+        <option value="">全部作品</option><option value="painting">作画中</option>
+        <option value="delivered">已交稿</option><option value="failed">难产</option>
+      </select>
+      <span class="faint" style="font-size:12px" id="wo-count"></span>
+    </div>
+    <div id="wo-wall" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px"></div>
+  </section>
+
   <!-- 画像 -->
   <section class="view" id="v-members">
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
@@ -244,7 +260,8 @@ tbody tr.click{cursor:pointer}
 
   <!-- 配置 -->
   <section class="view" id="v-config">
-    <div class="panel"><h3>生效配置（只读）</h3><div id="cfg" class="kv"></div></div>
+    <div class="panel"><h3>🎨 画坊 · 生图服务商 <span class="faint" style="font-weight:400">（存本地库，即改即生效；key 不落配置文件）</span></h3><div id="ig-cfg"></div></div>
+    <div class="panel" style="margin-top:12px"><h3>生效配置（只读）</h3><div id="cfg" class="kv"></div></div>
   </section>
 </main>
 
@@ -306,14 +323,14 @@ function startSSE(){
 }
 
 /* ---------- 布局 ---------- */
-const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["members","画像"],["chronicle","史官"],["logs","日志"],["config","配置"]];
+const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["gallery","画廊"],["members","画像"],["chronicle","史官"],["logs","日志"],["config","配置"]];
 $("#nav").innerHTML=TABS.map(([k,n])=>`<button data-t="${k}" onclick="goTab('${k}')">${n}</button>`).join("");
 function goTab(t){
   TAB=t;
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+t).classList.add("on");
-  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,members:loadMembers,chronicle:loadChronicle,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
+  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,gallery:loadGallery,members:loadMembers,chronicle:loadChronicle,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
 }
 function toggleMask(){REVEAL=!REVEAL;localStorage.setItem("gohm_reveal",REVEAL?"1":"0");
   $("#mask-btn").textContent=REVEAL?"👁 已显示":"👁 已打码";goTab(TAB)}
@@ -373,6 +390,8 @@ function renderOverview(){
       <div class="s">响应 ${respond} / 见消息 ${seen}</div></div>
     <div class="card"><div class="k">表情库</div><div class="v num">${SNAP.stickers?.total??0}</div>
       <div class="s">已打标 ${SNAP.stickers?.tagged??0} · 待打标 ${SNAP.stickers?.queue??0}</div></div>
+    <div class="card"><div class="k">画坊 · 今日</div><div class="v num">${SNAP.workshop?.today_done??0}<span style="font-size:14px;color:var(--dim)"> 稿</span></div>
+      <div class="s">在画 ${SNAP.workshop?.painting??0} · 排队 ${SNAP.workshop?.queued??0} · 难产 ${SNAP.workshop?.today_failed??0} · 均耗 ${SNAP.workshop?.avg_sec??0}s</div></div>
     <div class="card"><div class="k">运行时间</div><div class="v num">${fmtDur(SNAP.uptime_s)}</div>
       <div class="s">v${SNAP.version}</div></div>`;
   // 延迟
@@ -526,6 +545,50 @@ async function retag(){
   loadStickers();
 }
 
+/* ---------- 画廊（画坊） ---------- */
+const WO={queued:["排队中","b-gray"],painting:["作画中","b-amber"],delivered:["已交稿","b-green"],failed:["难产","b-red"]};
+const woBadge=s=>{const x=WO[s]||[s,"b-gray"];return `<span class="b ${x[1]}">${x[0]}</span>`};
+async function loadGallery(){
+  try{
+    const status=($("#wo-status")||{}).value||"";
+    const r=await api("/api/gallery?limit=60&status="+encodeURIComponent(status));
+    const s=r.stats||{};
+    $("#wo-kpi").innerHTML=`
+      <div class="card"><div class="k">今日交稿</div><div class="v num">${s.today_done??0}</div><div class="s">平均耗时 ${s.avg_sec??0}s</div></div>
+      <div class="card"><div class="k">在画 / 排队</div><div class="v num">${s.painting??0} <span style="font-size:14px;color:var(--dim)">/ ${s.queued??0}</span></div><div class="s">全异步工单，画好自动发群</div></div>
+      <div class="card"><div class="k">今日难产</div><div class="v num">${s.today_failed??0}</div><div class="s">失败作品也展出（配死因）</div></div>`;
+    const items=r.items||[];
+    $("#wo-count").textContent=`共 ${items.length} 件`;
+    $("#wo-wall").innerHTML=items.map(w=>`
+      <div class="stk" style="cursor:pointer" onclick="showWorkorder(${w.id})">
+        ${w.status==="delivered"?`<img src="/api/gallery/file/${w.id}" loading="lazy" onerror="this.style.height='40px';this.style.opacity=.2">`
+          :`<div style="height:96px;display:flex;align-items:center;justify-content:center;font-size:30px;background:var(--bg)">${w.status==="failed"?"💀":"⏳"}</div>`}
+        <div class="m"><div>${woBadge(w.status)} <span class="mono faint">#${w.id}</span></div>
+        <div class="dim" style="margin:3px 0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.prompt)}">${esc(w.prompt)}</div>
+        <div class="faint">${esc(w.requester||"匿名甲方")} · ${w.kind==="edit"?"改图":"生图"}</div></div>
+      </div>`).join("")||`<div class="empty" style="grid-column:1/-1">画坊还没有作品——在群里 @机器人「画一张…」开张第一单</div>`;
+  }catch(e){}
+}
+async function showWorkorder(id){
+  try{
+    const r=await api("/api/gallery?limit=500");
+    const w=(r.items||[]).find(x=>x.id===id);if(!w)return;
+    $("#drawer-bd").innerHTML=`<h3>画坊工单 #${w.id} ${woBadge(w.status)}</h3>
+      ${w.status==="delivered"?`<img src="/api/gallery/file/${w.id}" style="width:100%;border-radius:10px;border:1px solid var(--line);margin:10px 0">`
+        :w.status==="failed"?`<div style="font-size:44px;text-align:center;margin:18px 0">💀</div>`:""}
+      <div class="kv" style="margin:10px 0">
+        <div class="k">甲方需求</div><div style="font-size:13px">${esc(w.prompt)}</div>
+        <div class="k">类型 / 尺寸</div><div>${w.kind==="edit"?("改图（素材: "+esc(w.ref||("#"+w.ref_msg_id))+"）"):"生图"} · ${esc(w.size||"auto")}</div>
+        <div class="k">甲方</div><div>${esc(w.requester||"")} <span class="mono faint">${esc(maskId(w.requester_id))}</span></div>
+        <div class="k">聊天</div><div class="mono dim">${esc(maskId(w.chat))}</div>
+        <div class="k">接单时间</div><div class="mono dim">${fmtDT(w.created_at*1000)}</div>
+        ${w.done_at?`<div class="k">完成耗时</div><div class="num">${w.done_at-w.created_at}s</div>`:""}
+        ${w.error?`<div class="k">死因</div><div style="color:var(--red)">${esc(w.error)}</div>`:""}
+      </div>`;
+    $("#drawer").classList.add("open");$("#ovl").classList.add("open");
+  }catch(e){}
+}
+
 /* ---------- 画像 ---------- */
 let MEMBERS=[];let MEM_FLAGS={};
 const GRADS=["linear-gradient(135deg,#134e4a,#2dd4bf)","linear-gradient(135deg,#4c1d95,#a78bfa)",
@@ -665,6 +728,9 @@ function renderChatSettings(chat,name,isGroup){
     ${tg("crow_enabled","🐓 打鸣（每日清晨随机喔喔喔）")}
     ${tg("grudge_enabled","📓 记仇小本本（被嫌弃入账，低频翻旧账）")}
     ${tg("mood_enabled","🌫️ 突然的自我（深夜低概率emo后撤回）")}
+    <div class="faint" style="margin:14px 0 4px;font-size:11.5px;letter-spacing:1px">— 画坊 —</div>
+    ${tg("imagegen_enabled","🎨 画坊（本群可下生图/改图工单）")}
+    ${numRow("imagegen_daily_cap","本群日产能","张",0,50,1,20)}
     ${isGroup?`<div style="margin:12px 0">
       <div>会话模式</div>
       <select id="cs-mode" style="width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px">
@@ -680,7 +746,7 @@ function renderChatSettings(chat,name,isGroup){
     b.onclick=()=>{
       const k=b.dataset.k;
       if(CUR_SET[k]===null||CUR_SET[k]===undefined){
-        CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:false;
+        CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:(k==="imagegen_daily_cap")?20:false;
       }else{CUR_SET[k]=null}
       renderChatSettings(chat,name,isGroup);
     };
@@ -694,8 +760,9 @@ function renderChatSettings(chat,name,isGroup){
   $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
     rg.oninput=()=>{
       CUR_SET[rg.dataset.k]=Number(rg.value);
+      const suf={"ambient_rate":"%","ambient_cooldown_sec":"秒","imagegen_daily_cap":"张"}[rg.dataset.k]??"";
       const lbl=document.querySelector(`#modal-bd [data-vk="${rg.dataset.k}"]`);
-      if(lbl)lbl.textContent=rg.value+("%"===lbl.textContent.slice(-1)||rg.dataset.k==="ambient_rate"?"%":"秒");
+      if(lbl)lbl.textContent=rg.value+suf;
     };
   });
   const modeSel=$("#cs-mode");
@@ -844,7 +911,37 @@ async function loadConfig(){
   try{
     const c=await api("/api/config");
     $("#cfg").innerHTML=Object.entries(c).map(([k,v])=>`<div class="k">${esc(k)}</div><div class="mono">${esc(typeof v==="object"?JSON.stringify(v):String(v))}</div>`).join("");
+    const g=await api("/api/imagegen/config");
+    $("#ig-cfg").innerHTML=`
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="ig-enabled" ${g.enabled?"checked":""} style="accent-color:var(--teal)"> 开张营业</label>
+        <span class="b ${g.enabled?"b-green":"b-gray"}">${g.enabled?"营业中":"歇业"}</span>
+        <span class="faint" style="font-size:12px">并发画手 ${g.workers??2} · 会话级开关在「会话页 ⚙」</span>
+      </div>
+      <div class="kv" style="grid-template-columns:130px 1fr;align-items:center;gap:9px 14px">
+        <div class="k">API 根地址</div><input id="ig-base" class="ig-in" value="${esc(g.base_url||"")}" placeholder="https://image.example.com/v1">
+        <div class="k">API Key</div><input id="ig-key" class="ig-in" type="password" placeholder="${esc(g.api_key||"(未配置)")}（留空=不修改）" autocomplete="new-password">
+        <div class="k">模型</div><input id="ig-model" class="ig-in" value="${esc(g.model||"")}" placeholder="gpt-image-2.5">
+        <div class="k">默认尺寸</div>
+        <select id="ig-size" class="ig-in" style="width:auto">
+          ${["auto","1024x1024","1536x1024","1024x1536"].map(s=>`<option ${s===g.size?"selected":""}>${s}</option>`).join("")}
+        </select>
+        <div class="k">全局日产能</div><input id="ig-cap" class="ig-in" type="number" min="0" value="${g.daily_cap??20}" style="width:110px">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+        <button class="hbtn" style="color:var(--teal)" onclick="saveImagegenConfig()">💾 保存画坊配置</button>
+        <span class="faint" style="font-size:11.5px">关闭「开张营业」即全群停接单，在途工单会继续画完</span>
+      </div>`;
   }catch(e){}
+}
+async function saveImagegenConfig(){
+  try{
+    const r=await api("/api/imagegen/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      enabled:$("#ig-enabled").checked, base_url:$("#ig-base").value, api_key:$("#ig-key").value,
+      model:$("#ig-model").value, size:$("#ig-size").value, daily_cap:+$("#ig-cap").value})});
+    alert("画坊配置已保存（当前："+(r.enabled?"营业中":"歇业")+"）");
+    loadConfig();
+  }catch(e){alert("保存失败: "+e.message)}
 }
 
 /* ---------- 启动 ---------- */

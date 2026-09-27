@@ -34,6 +34,7 @@ type task struct {
 	InTs       uint32
 	InTypeCode int32
 	InContent  string
+	QuoteSvrid string // 被引用消息ID（画坊改图定位素材用）
 }
 
 // activeSession 会话在工具桥的可绑定窗口

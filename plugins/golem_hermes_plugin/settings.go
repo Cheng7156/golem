@@ -23,6 +23,8 @@ type chatSettings struct {
 	CrowEnabled       *bool    `json:"crow_enabled"`        // 打鸣
 	GrudgeEnabled     *bool    `json:"grudge_enabled"`      // 记仇小本本
 	MoodEnabled       *bool    `json:"mood_enabled"`        // 突然的自我
+	ImagegenEnabled   *bool    `json:"imagegen_enabled"`    // 画坊（本群接单）
+	ImagegenDailyCap  *int     `json:"imagegen_daily_cap"`  // 本群日产能
 	UpdatedAt         int64    `json:"updated_at"`
 }
 
@@ -42,7 +44,11 @@ func (s *store) initSettings() {
 		chat TEXT PRIMARY KEY,
 		mute INTEGER, free_response INTEGER, ambient_rate REAL, ambient_cooldown_sec INTEGER,
 		chronicle INTEGER, session_mode TEXT, updated_at INTEGER,
-		crow_enabled INTEGER, grudge_enabled INTEGER, mood_enabled INTEGER)`)
+		crow_enabled INTEGER, grudge_enabled INTEGER, mood_enabled INTEGER,
+		imagegen_enabled INTEGER, imagegen_daily_cap INTEGER)`)
+	// 旧库升级：已有表补列（失败=列已存在）
+	_, _ = s.db.Exec("ALTER TABLE chat_settings ADD COLUMN imagegen_enabled INTEGER")
+	_, _ = s.db.Exec("ALTER TABLE chat_settings ADD COLUMN imagegen_daily_cap INTEGER")
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS member_flags(
 		wxid TEXT PRIMARY KEY, owner INTEGER DEFAULT 0, ignored INTEGER DEFAULT 0, updated_at INTEGER)`)
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS grudges(
@@ -129,14 +135,14 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mute, freeResp, cooldown, chronicle sql.NullInt64
-	var crow, grudge, mood sql.NullInt64
+	var crow, grudge, mood, imgEnabled, imgCap sql.NullInt64
 	var rate sql.NullFloat64
 	var mode sql.NullString
 	var updated sql.NullInt64
 	err := s.db.QueryRow(`SELECT mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
-		crow_enabled, grudge_enabled, mood_enabled, updated_at
+		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, updated_at
 		FROM chat_settings WHERE chat=?`, chat).
-		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &updated)
+		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &updated)
 	if err != nil {
 		return cs
 	}
@@ -149,6 +155,8 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	cs.CrowEnabled = nullableBool(crow)
 	cs.GrudgeEnabled = nullableBool(grudge)
 	cs.MoodEnabled = nullableBool(mood)
+	cs.ImagegenEnabled = nullableBool(imgEnabled)
+	cs.ImagegenDailyCap = nullableInt(imgCap)
 	cs.UpdatedAt = updated.Int64
 	return cs
 }
@@ -188,15 +196,17 @@ func (s *store) saveChatSettings(cs chatSettings) {
 	cs.UpdatedAt = time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)
+	_, _ = s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,imagegen_enabled,imagegen_daily_cap,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(chat) DO UPDATE SET mute=excluded.mute, free_response=excluded.free_response,
 		ambient_rate=excluded.ambient_rate, ambient_cooldown_sec=excluded.ambient_cooldown_sec,
 		chronicle=excluded.chronicle, session_mode=excluded.session_mode,
 		crow_enabled=excluded.crow_enabled, grudge_enabled=excluded.grudge_enabled, mood_enabled=excluded.mood_enabled,
+		imagegen_enabled=excluded.imagegen_enabled, imagegen_daily_cap=excluded.imagegen_daily_cap,
 		updated_at=excluded.updated_at`,
 		cs.Chat, nb(cs.Mute), nb(cs.FreeResponse), nf(cs.AmbientRate), ni(cs.AmbientCooldown),
-		nb(cs.Chronicle), ns(cs.SessionMode), nb(cs.CrowEnabled), nb(cs.GrudgeEnabled), nb(cs.MoodEnabled), cs.UpdatedAt)
+		nb(cs.Chronicle), ns(cs.SessionMode), nb(cs.CrowEnabled), nb(cs.GrudgeEnabled), nb(cs.MoodEnabled),
+		nb(cs.ImagegenEnabled), ni(cs.ImagegenDailyCap), cs.UpdatedAt)
 }
 
 // chatSettingsList 全部有覆盖的群（监控台展示用）
@@ -208,7 +218,7 @@ func (s *store) chatSettingsList() []chatSettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`SELECT chat, mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
-		crow_enabled, grudge_enabled, mood_enabled, updated_at
+		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, updated_at
 		FROM chat_settings ORDER BY updated_at DESC LIMIT 200`)
 	if err != nil {
 		return out
@@ -216,10 +226,10 @@ func (s *store) chatSettingsList() []chatSettings {
 	defer rows.Close()
 	for rows.Next() {
 		var cs chatSettings
-		var mute, freeResp, cooldown, chronicle, crow, grudge, mood, updated sql.NullInt64
+		var mute, freeResp, cooldown, chronicle, crow, grudge, mood, imgEnabled, imgCap, updated sql.NullInt64
 		var rate sql.NullFloat64
 		var mode sql.NullString
-		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &updated) == nil {
+		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &updated) == nil {
 			cs.Mute = nullableBool(mute)
 			cs.FreeResponse = nullableBool(freeResp)
 			cs.AmbientRate = nullableFloat(rate)
@@ -229,6 +239,8 @@ func (s *store) chatSettingsList() []chatSettings {
 			cs.CrowEnabled = nullableBool(crow)
 			cs.GrudgeEnabled = nullableBool(grudge)
 			cs.MoodEnabled = nullableBool(mood)
+			cs.ImagegenEnabled = nullableBool(imgEnabled)
+			cs.ImagegenDailyCap = nullableInt(imgCap)
 			cs.UpdatedAt = updated.Int64
 			out = append(out, cs)
 		}
@@ -288,6 +300,8 @@ type effectiveChatConfig struct {
 	CrowEnabled   bool
 	GrudgeEnabled bool
 	MoodEnabled   bool
+	ImagegenEnabled  bool
+	ImagegenDailyCap int
 }
 
 func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
@@ -301,6 +315,10 @@ func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
 		GrudgeEnabled:      p.Config.GrudgeEnabled,
 		MoodEnabled:        p.Config.MoodEnabled,
 	}
+	// 画坊全局默认来自 kv 运行时配置（Web 可改），群级可覆盖
+	ig := p.imagegenSettings()
+	ec.ImagegenEnabled = ig.Enabled
+	ec.ImagegenDailyCap = ig.DailyCap
 	cs := p.store.getChatSettings(groupID)
 	if cs.Mute != nil {
 		ec.Muted = *cs.Mute
@@ -328,6 +346,12 @@ func (p *hermesPlugin) effectiveChatConfig(groupID string) effectiveChatConfig {
 	}
 	if cs.MoodEnabled != nil {
 		ec.MoodEnabled = *cs.MoodEnabled
+	}
+	if cs.ImagegenEnabled != nil {
+		ec.ImagegenEnabled = *cs.ImagegenEnabled
+	}
+	if cs.ImagegenDailyCap != nil && *cs.ImagegenDailyCap > 0 {
+		ec.ImagegenDailyCap = *cs.ImagegenDailyCap
 	}
 	return ec
 }

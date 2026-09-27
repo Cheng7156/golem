@@ -95,6 +95,18 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	// 1. 全量采集群/私聊上下文（AlwaysRun 保证劫持期间也能记录）
 	p.rings.add(session, msg)
 
+	// 1.2 图片环：画坊改图素材（只存元数据，被点单才下载原图；自己发的已在上方过滤）
+	if msg.GetType().GetCode() == message.TypeImage.Code &&
+		msg.GetSender().GetType() == contact.ContactType_CONTACT_TYPE_CHATROOM {
+		if md := msg.GetImage().GetMedia(); md != nil && md.GetMd5() != "" {
+			p.store.ringAddImage(ringImage{
+				MsgID: msg.GetId(), Chat: session,
+				Wxid: msg.GetMember().GetUsername(), Name: sanitizeName(speakerName(msg)),
+				Md5: md.GetMd5(), AesKey: md.GetKey(), Size: md.GetSize(),
+			})
+		}
+	}
+
 	// 1.4 记仇小本本：被嫌弃则入账（同步轻量判断，写库在 store 锁内很快）
 	if p.fun != nil && (p.Config.GrudgeEnabled || p.effectiveChatConfig(session).GrudgeEnabled) {
 		p.fun.maybeGrudge(msg, session)
@@ -173,6 +185,7 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 		InTs:       in.InTs,
 		InTypeCode: in.InTypeCode,
 		InContent:  in.InContent,
+		QuoteSvrid: in.Quote.Svrid,
 	}
 	p.disp.enqueue(t)
 	return true, nil

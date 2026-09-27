@@ -52,8 +52,31 @@ func newStore(path, stickerDir string) *store {
 		archived_at INTEGER DEFAULT 0, msg_count INTEGER DEFAULT 0, updated_at INTEGER)`)
 	s.initSettings()
 	s.initChronicle()
+	s.initImagegen()
 	s.startArchive()
 	return s
+}
+
+// ---- kv 通用读写（画坊运行时配置、配额计数等） ----
+
+func (s *store) kvGet(k string) string {
+	if s == nil || s.db == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var v string
+	_ = s.db.QueryRow("SELECT v FROM kv WHERE k=?", k).Scan(&v)
+	return v
+}
+
+func (s *store) kvSet(k, v string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.db.Exec("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, v)
 }
 
 func (s *store) close() {

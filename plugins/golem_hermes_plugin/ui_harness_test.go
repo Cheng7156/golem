@@ -120,6 +120,25 @@ func TestUIHarness(t *testing.T) {
 	// 启用史官（该群），供立即出刊端到端
 	p.store.saveChatSettings(chatSettings{Chat: "123456@chatroom", Chronicle: &chron})
 
+	// 画坊模拟数据：已交稿/在画/难产三张工单 + 图片环素材
+	os.MkdirAll(filepath.Join(dir, "gallery"), 0o755)
+	art := filepath.Join(dir, "gallery", "wo-1.png")
+	if data, err := os.ReadFile(src); err == nil {
+		os.WriteFile(art, data, 0o644)
+	}
+	nowTs := time.Now().Unix()
+	p.store.mu.Lock()
+	p.store.db.Exec(`INSERT OR REPLACE INTO workorders(id,chat,chat_name,requester,requester_id,kind,prompt,ref,ref_msg_id,size,status,file_path,created_at,done_at)
+		VALUES(1,'123456@chatroom','家人群','李四','wxid_李四','generate','赛博红薯，霓虹灯夜景','','0','auto','delivered',?,?,?)`,
+		art, nowTs-300, nowTs-258)
+	p.store.db.Exec(`INSERT OR REPLACE INTO workorders(id,chat,chat_name,requester,requester_id,kind,prompt,ref,ref_msg_id,size,status,created_at)
+		VALUES(2,'123456@chatroom','家人群','王五','wxid_王五','edit','把楼上改成毕加索风格','@李四',0,'auto','painting',?)`, nowTs-60)
+	p.store.db.Exec(`INSERT OR REPLACE INTO workorders(id,chat,chat_name,requester,requester_id,kind,prompt,ref,ref_msg_id,size,status,error,created_at,done_at)
+		VALUES(3,'123456@chatroom','家人群','张三','wxid_张三','generate','一张会飞的鲸鱼','','0','auto','failed','轮询超时，画师失联了',?,?)`, nowTs-600, nowTs-540)
+	p.store.db.Exec(`INSERT OR REPLACE INTO image_ring(msg_id,chat,wxid,name,md5,aeskey,size,created_at)
+		VALUES(999,'123456@chatroom','wxid_李四','李四','feedfacefeedface','aeskey_demo',10240,?)`, nowTs-120)
+	p.store.mu.Unlock()
+
 	// 手动创建引擎与史官（不走 OnLoad，供出刊端到端；发布段 out 为 nil 自动跳过）
 	p.eng = newEngine(&p.Config)
 	p.chronicle = newChronicle(p)
