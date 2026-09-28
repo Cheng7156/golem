@@ -27,8 +27,9 @@ type outflow struct {
 	cfg   *Config
 	slots chan struct{}
 
-	mu   sync.Mutex
-	last map[string]time.Time
+	mu        sync.Mutex
+	last      map[string]time.Time
+	emojiLast map[string]time.Time // 同聊天表情最小间隔（防表情刷屏的硬闸）
 }
 
 func newOutflow(m message.Ability, cfg *Config) *outflow {
@@ -36,7 +37,7 @@ func newOutflow(m message.Ability, cfg *Config) *outflow {
 	if slots <= 0 {
 		slots = 4
 	}
-	return &outflow{msg: m, cfg: cfg, slots: make(chan struct{}, slots), last: map[string]time.Time{}}
+	return &outflow{msg: m, cfg: cfg, slots: make(chan struct{}, slots), last: map[string]time.Time{}, emojiLast: map[string]time.Time{}}
 }
 
 func (o *outflow) throttle(session string) {
@@ -149,13 +150,25 @@ func (o *outflow) sendEmoji(receiver string, data []byte) error {
 	if len(data) == 0 || len(data) > maxEmojiBytes {
 		return fmt.Errorf("表情大小不合规: %d bytes", len(data))
 	}
+	// 硬节流：同聊天两次表情之间的最小间隔。提示词管不住速率（LLM 纪律不可靠），
+	// 且 pickSticker 的同情绪冷却有"放宽兜底"逃生门，库小时必然绕过——这里是一夫当关的闸。
+	interval := time.Duration(o.cfg.StickerChatCooldownMin) * time.Minute
+	if interval > 0 {
+		o.mu.Lock()
+		if wait := interval - time.Since(o.emojiLast[receiver]); wait > 0 {
+			o.mu.Unlock()
+			return fmt.Errorf("本群表情包冷却中，刚发过一张（还需等 %ds），请不要再尝试", int(wait.Seconds()))
+		}
+		o.emojiLast[receiver] = time.Now()
+		o.mu.Unlock()
+	}
 	o.slots <- struct{}{}
 	defer func() { <-o.slots }()
 	o.throttle(receiver)
 	_, err := o.msg.Send(&message.Message{
 		Type:     message.TypeEmoji,
 		Receiver: &contact.Contact{Username: receiver},
-		Data: &message.Message_Emoji{Emoji: &message.EmojiData{
+		Data:     &message.Message_Emoji{Emoji: &message.EmojiData{
 			Media: &message.Media{Data: data, Size: uint32(len(data))},
 		}},
 	})

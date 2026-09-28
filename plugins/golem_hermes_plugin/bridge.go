@@ -142,6 +142,10 @@ func (b *bridgeServer) handleEmoji(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := b.p.out.sendEmoji(as.Receiver, data); err != nil {
+		if strings.Contains(err.Error(), "冷却") {
+			writeErr(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

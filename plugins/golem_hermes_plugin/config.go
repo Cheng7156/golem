@@ -28,6 +28,7 @@ type Config struct {
 	StickerEnabled      bool     `toml:"sticker_enabled" comment:"启用表情包收集/打标/发送"`
 	StickerProbability  float64  `toml:"sticker_probability" comment:"文本回复后按情绪附加表情的概率(0-1)"`
 	StickerCooldownMin  int      `toml:"sticker_cooldown_min" comment:"同一情绪表情的使用冷却分钟"`
+	StickerChatCooldownMin int   `toml:"sticker_chat_cooldown_min" comment:"同聊天任意两次表情的最小间隔分钟（硬节流，0=不限）"`
 	StickerEmotions     []string `toml:"sticker_emotions" comment:"表情情绪分类集合（视觉打标与选取都用它）"`
 	OwnerWxIDs          []string `toml:"owner_wxids" comment:"额外主人wxid列表（宿主Owner自动并入，无需重复填）"`
 	OwnerOnlyPrivate    bool     `toml:"owner_only_private" comment:"仅主人可私聊触发（陌生人私聊不响应）"`
@@ -84,6 +85,7 @@ func defaultConfig() Config {
 		StickerEnabled:      true,
 		StickerProbability:  0.35,
 		StickerCooldownMin:  10,
+		StickerChatCooldownMin: 2,
 		StickerEmotions:     []string{"开心", "笑哭", "狗头", "赞", "疑惑", "生气", "伤心", "无语", "可爱", "其他"},
 		OwnerWxIDs:          []string{},
 		OwnerOnlyPrivate:    false,
