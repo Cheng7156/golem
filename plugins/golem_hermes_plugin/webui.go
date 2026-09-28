@@ -735,7 +735,11 @@ func (w *webUI) handleChatSettingsPut(rw http.ResponseWriter, r *http.Request) {
 		writeErr(rw, http.StatusBadRequest, "session_mode 仅支持 shared|per_user")
 		return
 	}
-	w.p.store.saveChatSettings(cs)
+	if err := w.p.store.saveChatSettings(cs); err != nil {
+		slog.Error("[ghp] 群设置保存失败", "chat", cs.Chat, "err", err)
+		writeErr(rw, http.StatusInternalServerError, "保存失败: "+err.Error())
+		return
+	}
 	w.p.metrics.addLog("INFO", "[web] 群设置更新 "+previewOf(cs.Chat, 40))
 	writeOK(rw, w.p.store.getChatSettings(cs.Chat))
 }

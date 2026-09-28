@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -46,15 +48,25 @@ func (s *store) initSettings() {
 		chronicle INTEGER, session_mode TEXT, updated_at INTEGER,
 		crow_enabled INTEGER, grudge_enabled INTEGER, mood_enabled INTEGER,
 		imagegen_enabled INTEGER, imagegen_daily_cap INTEGER)`)
-	// 旧库升级：已有表补列（失败=列已存在）
-	_, _ = s.db.Exec("ALTER TABLE chat_settings ADD COLUMN imagegen_enabled INTEGER")
-	_, _ = s.db.Exec("ALTER TABLE chat_settings ADD COLUMN imagegen_daily_cap INTEGER")
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS member_flags(
 		wxid TEXT PRIMARY KEY, owner INTEGER DEFAULT 0, ignored INTEGER DEFAULT 0, updated_at INTEGER)`)
 	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS grudges(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		at INTEGER, chat TEXT, wxid TEXT, name TEXT, reason TEXT, msg_id INTEGER DEFAULT 0, dug INTEGER DEFAULT 0)`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_grudges_chat ON grudges(chat, dug)`)
+	// 旧库迁移：CREATE IF NOT EXISTS 对已存在的老表不生效，逐列补齐（列已存在时报错忽略）。
+	// 血泪教训：v0.7.0 给这张表加列时漏了迁移，运行库缺列导致群设置读写全部静默失败。
+	for _, col := range []string{
+		"mute INTEGER", "free_response INTEGER", "ambient_rate REAL", "ambient_cooldown_sec INTEGER",
+		"chronicle INTEGER", "session_mode TEXT", "updated_at INTEGER",
+		"crow_enabled INTEGER", "grudge_enabled INTEGER", "mood_enabled INTEGER",
+		"imagegen_enabled INTEGER", "imagegen_daily_cap INTEGER",
+	} {
+		if _, err := s.db.Exec("ALTER TABLE chat_settings ADD COLUMN " + col); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			slog.Warn("[ghp] chat_settings 迁移异常", "col", col, "err", err)
+		}
+	}
 }
 
 // addGrudge 记一笔仇
@@ -144,6 +156,9 @@ func (s *store) getChatSettings(chat string) chatSettings {
 		FROM chat_settings WHERE chat=?`, chat).
 		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &updated)
 	if err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("[ghp] chat_settings 读取失败（疑似旧库缺列）", "chat", chat, "err", err)
+		}
 		return cs
 	}
 	cs.Mute = nullableBool(mute)
@@ -161,10 +176,10 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	return cs
 }
 
-// saveChatSettings 保存群级设置（整行覆盖，nil 字段即清除覆盖）
-func (s *store) saveChatSettings(cs chatSettings) {
+// saveChatSettings 保存群级设置（整行覆盖，nil 字段即清除覆盖）。写失败必须上抛——静默丢配置的血案不能再有
+func (s *store) saveChatSettings(cs chatSettings) error {
 	if s == nil || s.db == nil || cs.Chat == "" {
-		return
+		return errors.New("store 不可用或 chat 为空")
 	}
 	nb := func(b *bool) any {
 		if b == nil {
@@ -196,7 +211,7 @@ func (s *store) saveChatSettings(cs chatSettings) {
 	cs.UpdatedAt = time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,imagegen_enabled,imagegen_daily_cap,updated_at)
+	_, err := s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,imagegen_enabled,imagegen_daily_cap,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(chat) DO UPDATE SET mute=excluded.mute, free_response=excluded.free_response,
 		ambient_rate=excluded.ambient_rate, ambient_cooldown_sec=excluded.ambient_cooldown_sec,
@@ -207,6 +222,7 @@ func (s *store) saveChatSettings(cs chatSettings) {
 		cs.Chat, nb(cs.Mute), nb(cs.FreeResponse), nf(cs.AmbientRate), ni(cs.AmbientCooldown),
 		nb(cs.Chronicle), ns(cs.SessionMode), nb(cs.CrowEnabled), nb(cs.GrudgeEnabled), nb(cs.MoodEnabled),
 		nb(cs.ImagegenEnabled), ni(cs.ImagegenDailyCap), cs.UpdatedAt)
+	return err
 }
 
 // chatSettingsList 全部有覆盖的群（监控台展示用）

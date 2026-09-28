@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -89,5 +90,65 @@ func TestEffectiveChatConfig(t *testing.T) {
 	ec2 := p.effectiveChatConfig("other@chatroom")
 	if ec2.FreeResponse || ec2.AmbientRate != p.Config.AmbientReplyRate {
 		t.Fatalf("覆盖泄漏到其他群: %+v", ec2)
+	}
+}
+
+// TestChatSettingsLegacyMigration 旧库缺列回归：v0.7.0 前建的 chat_settings 没有
+// crow/grudge/mood/imagegen 列，曾导致群设置读写全部静默失败（用户改了又"恢复"）。
+func TestChatSettingsLegacyMigration(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	// 模拟 v0.6.x 时代的旧表（无 crow/grudge/mood/imagegen 列）并塞入老数据
+	old, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Exec(`CREATE TABLE chat_settings(
+		chat TEXT PRIMARY KEY, mute INTEGER, free_response INTEGER, ambient_rate REAL,
+		ambient_cooldown_sec INTEGER, chronicle INTEGER, session_mode TEXT, updated_at INTEGER)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Exec(`INSERT INTO chat_settings VALUES('g@chatroom', NULL, 1, 65.0, NULL, 1, NULL, 100)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s := newStore(dbPath, filepath.Join(dir, "files"))
+	t.Cleanup(s.close)
+
+	// 老数据必须能读出来
+	cs := s.getChatSettings("g@chatroom")
+	if cs.FreeResponse == nil || !*cs.FreeResponse || cs.Chronicle == nil || !*cs.Chronicle {
+		t.Fatalf("旧数据读取失败: %+v", cs)
+	}
+	if cs.AmbientRate == nil || *cs.AmbientRate != 65 {
+		t.Fatalf("旧 ambient_rate 读取失败: %+v", cs)
+	}
+	// 新列写入必须成功（此前因缺列静默失败）。
+	// 注意保存契约是"整行覆盖"：Web UI 恒为 GET 全量→改→PUT 全量，此处照实模拟。
+	crow, imgCap := true, 9
+	full := cs // 先取到旧值再整体回写
+	full.CrowEnabled = &crow
+	full.ImagegenDailyCap = &imgCap
+	if err := s.saveChatSettings(full); err != nil {
+		t.Fatalf("新列保存失败: %v", err)
+	}
+	cs = s.getChatSettings("g@chatroom")
+	if cs.CrowEnabled == nil || !*cs.CrowEnabled {
+		t.Fatalf("crow_enabled 未持久化: %+v", cs)
+	}
+	if cs.ImagegenDailyCap == nil || *cs.ImagegenDailyCap != 9 {
+		t.Fatalf("imagegen_daily_cap 未持久化: %+v", cs)
+	}
+	// 老数据仍在（未被迁移抹掉）
+	if cs.FreeResponse == nil || !*cs.FreeResponse || cs.AmbientRate == nil || *cs.AmbientRate != 65 {
+		t.Fatalf("迁移抹掉了旧数据: %+v", cs)
+	}
+	// 保存错误要上抛（不再静默）
+	var empty *store
+	if err := empty.saveChatSettings(chatSettings{Chat: "x"}); err == nil {
+		t.Fatal("空 store 保存应返回错误")
 	}
 }
