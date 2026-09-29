@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,8 +61,12 @@ func TestCrowTickFires(t *testing.T) {
 		t.Fatalf("打鸣应恰好一次，得 %d", len(fake.sends))
 	}
 	cry := fake.sends[0].GetContent()
-	if !strings.Contains(cry, "喔") && !strings.Contains(cry, "咯") && !strings.Contains(cry, "咕") {
-		t.Fatalf("叫声不像打鸣: %q", cry)
+	known := append(append([]string{}, crowCries...), crowCriesAlt...)
+	if !slices.Contains(known, cry) {
+		t.Fatalf("叫声不在打鸣文案池: %q", cry)
+	}
+	if fake.sends[0].GetReceiver().GetUsername() != "g@chatroom" {
+		t.Fatalf("打鸣发错了聊天: %q", fake.sends[0].GetReceiver().GetUsername())
 	}
 	// 当日去重：再扫一轮不再发
 	for i := 0; i < 180; i++ {

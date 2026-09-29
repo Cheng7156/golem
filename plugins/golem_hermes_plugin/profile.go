@@ -425,6 +425,73 @@ func maxInt(a, b int) int {
 }
 
 // memberSearch 按昵称模糊查画像（精确优先，其次包含匹配）
+// profileCardMarkdown 确定性画像卡：与监控台画像页同源的数据，按固定模板拼 markdown
+// 供 send_image 渲染。查无此人返回空串。展示完整性不押在 LLM 的自觉上。
+func (s *store) profileCardMarkdown(name string, emotions []string) string {
+	d := s.memberSearch(name, emotions)
+	if d == nil {
+		return ""
+	}
+	s.mu.Lock()
+	var total, week int64
+	weekAgo := time.Now().AddDate(0, 0, -7).Unix()
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM msg_archive WHERE wxid=?", d.Wxid).Scan(&total)
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM msg_archive WHERE wxid=? AND ts>=?", d.Wxid, weekAgo).Scan(&week)
+	s.mu.Unlock()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# 🎭 %s 的人设卡\n\n", d.Name)
+	if d.Summary != "" {
+		fmt.Fprintf(&b, "> %s\n\n", d.Summary)
+	} else {
+		b.WriteString("> 语料积累中，画像还未成形\n\n")
+	}
+	if len(d.Facts) > 0 {
+		fmt.Fprintf(&b, "**印象记忆**（%d 条）\n\n", len(d.Facts))
+		for _, f := range d.Facts {
+			if f.Quote != "" {
+				fmt.Fprintf(&b, "- 「%s」%s ——“%s”\n", f.Kind, f.Content, f.Quote)
+			} else {
+				fmt.Fprintf(&b, "- 「%s」%s\n", f.Kind, f.Content)
+			}
+		}
+		b.WriteString("\n")
+	}
+	// 活跃时段：24h 压成 8 个 3 小时桶的文本直方图
+	bucketNames := []string{"0-3", "3-6", "6-9", "9-12", "12-15", "15-18", "18-21", "21-24"}
+	buckets := make([]int, 8)
+	hmax := 0
+	for h, c := range d.Hours {
+		buckets[h/3] += c
+		if buckets[h/3] > hmax {
+			hmax = buckets[h/3]
+		}
+	}
+	if hmax > 0 {
+		b.WriteString("**活跃时段**\n\n")
+		for i, c := range buckets {
+			bar := strings.Repeat("▓", c*10/hmax)
+			if bar == "" {
+				bar = "·"
+			}
+			fmt.Fprintf(&b, "%s时 %s %d\n\n", bucketNames[i], bar, c)
+		}
+	}
+	if len(d.Emotions) > 0 {
+		parts := make([]string, 0, len(d.Emotions))
+		for _, e := range d.Emotions {
+			parts = append(parts, fmt.Sprintf("%s %d%%", e["emotion"], e["pct"]))
+		}
+		fmt.Fprintf(&b, "**表情倾向**\n\n%s\n\n", strings.Join(parts, " · "))
+	}
+	updated := ""
+	if d.Updated > 0 {
+		updated = fmt.Sprintf(" · 画像更新于 %s", time.Unix(d.Updated, 0).Format("01-02 15:04"))
+	}
+	fmt.Fprintf(&b, "---\n累计 %d 条 · 近7天 %d 条%s", total, week, updated)
+	return b.String()
+}
+
 func (s *store) memberSearch(name string, emotions []string) *memberDetail {
 	if s == nil || s.db == nil || name == "" {
 		return nil

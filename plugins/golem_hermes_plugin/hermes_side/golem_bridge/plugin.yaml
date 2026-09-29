@@ -6,6 +6,7 @@ provides_tools:
   - send_emoji
   - remember
   - get_member_profile
+  - send_member_profile_card
   - send_image
   - generate_image
   - reply_quote

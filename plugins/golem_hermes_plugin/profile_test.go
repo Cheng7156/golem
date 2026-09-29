@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,5 +115,37 @@ func TestSafeWxid(t *testing.T) {
 		if safeWxid(bad) {
 			t.Fatalf("%s 应非法", bad)
 		}
+	}
+}
+
+func TestProfileCardMarkdown(t *testing.T) {
+	s := newSettingsStore(t)
+	now := time.Now().Unix()
+	// 归档语料：白天+夜间、文本与表情混合
+	s.mu.Lock()
+	for i := 0; i < 30; i++ {
+		kind, content := "text", fmt.Sprintf("消息%d", i)
+		if i%5 == 0 {
+			kind, content = "emoji", "😂"
+		}
+		s.db.Exec("INSERT INTO msg_archive(ts,chat,wxid,name,kind,content) VALUES(?,?,?,?,?,?)",
+			now-int64(i)*3600, "g@chatroom", "wxid_x", "小聪明儿", kind, content)
+	}
+	s.db.Exec(`INSERT INTO member_profiles(wxid,name,summary,facts,archived_at,msg_count,updated_at)
+		VALUES('wxid_x','小聪明儿','躺平嘴炮王','[{"kind":"口头禅","content":"躺平中","quote":"在呢，躺平中"}]',99,0,strftime('%s','now'))`)
+	s.mu.Unlock()
+
+	md := s.profileCardMarkdown("小聪明儿", []string{"开心", "笑哭", "无语", "其他"})
+	for _, want := range []string{"人设卡", "躺平嘴炮王", "印象记忆", "口头禅", "活跃时段", "表情倾向", "累计 30 条", "画像更新于"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("画像卡缺 %q:\n%s", want, md)
+		}
+	}
+	if !strings.Contains(md, "“在呢，躺平中”") {
+		t.Fatalf("引用原句缺失:\n%s", md)
+	}
+	// 查无此人
+	if got := s.profileCardMarkdown("不存在的人", nil); got != "" {
+		t.Fatalf("查无此人应返回空串，得 %q", got)
 	}
 }

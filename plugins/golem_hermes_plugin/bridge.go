@@ -37,6 +37,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux.HandleFunc("GET /v1/members", b.auth(b.handleMembers))
 	mux.HandleFunc("POST /v1/remember", b.auth(b.handleRemember))
 	mux.HandleFunc("POST /v1/profile", b.auth(b.handleProfile))
+	mux.HandleFunc("POST /v1/profile_card", b.auth(b.handleProfileCard))
 	mux.HandleFunc("GET /v1/ping", b.handlePing)
 	// 监控台：/ui 单页 + /api/* 数据面（Cookie 会话，与工具桥 Bearer 协议并存）
 	w := newWebUI(b.p)
@@ -432,6 +433,42 @@ func (b *bridgeServer) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{"found": true, "profile": d})
+}
+
+// handleProfileCard 一站式画像卡：Go 侧确定性渲染（与监控台画像页同源数据），
+// 不给 LLM 拼内容的机会——展示完整性不押在模型自觉上
+func (b *bridgeServer) handleProfileCard(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name 不能为空")
+		return
+	}
+	if _, as, err := b.resolveSession(r); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	} else {
+		md := b.p.store.profileCardMarkdown(name, b.p.Config.StickerEmotions)
+		if md == "" {
+			writeOK(w, map[string]any{"found": false, "hint": "查无此人（语料不足或名字不对），如实转告即可，不要编造"})
+			return
+		}
+		_, data, err := callWithTimeout(b.p.caller, "markdown.to.image", map[string]string{"context": md}, 90*time.Second)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "渲染失败: "+err.Error())
+			return
+		}
+		if err := b.p.out.sendImage(as.Receiver, data); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeOK(w, map[string]any{"sent": true, "bytes": len(data)})
+	}
 }
 
 // handleRemember 对话记住：只允许记"当前发言人"（会话绑定，防冒记他人）
