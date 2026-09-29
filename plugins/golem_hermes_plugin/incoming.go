@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,24 +16,27 @@ import (
 	"github.com/sbgayhub/golem/sdk/plugin"
 )
 
+var atNameRe = regexp.MustCompile(`@([^\s@]+)`)
+
 // incoming 归一化后的入站消息
 type incoming struct {
-	RingKey    string // 观察上下文键（群共享，供 ring buffer）
-	HermesKey  string // Hermes 会话键（受 group_sessions_per_user 影响）
-	Receiver   string
-	IsGroup    bool
-	GroupID    string
-	SpeakerID  string
-	Speaker    string
-	IsOwner    bool
-	Text       string
-	Quote      quoteInfo
-	Mentioned  bool
-	QuotedBot  bool
-	InMsgID    int64
-	InTs       uint32
-	InTypeCode int32
-	InContent  string
+	RingKey        string // 观察上下文键（群共享，供 ring buffer）
+	HermesKey      string // Hermes 会话键（受 group_sessions_per_user 影响）
+	Receiver       string
+	IsGroup        bool
+	GroupID        string
+	SpeakerID      string
+	Speaker        string
+	IsOwner        bool
+	Text           string
+	Quote          quoteInfo
+	Mentioned      bool
+	QuotedBot      bool
+	MentionedOther bool // @ 了人但没 @ 我 → 明显喊别人（画坊拒接这种单）
+	InMsgID        int64
+	InTs           uint32
+	InTypeCode     int32
+	InContent      string
 }
 
 // decide 触发决策（唯一判定入口，返回结果同时用于埋点）
@@ -164,28 +168,29 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	}
 
 	t := &task{
-		SessionKey: in.HermesKey,
-		RingKey:    in.RingKey,
-		Receiver:   in.Receiver,
-		IsGroup:    in.IsGroup,
-		GroupID:    in.GroupID,
-		SpeakerID:  in.SpeakerID,
-		Speaker:    in.Speaker,
-		IsOwner:    in.IsOwner,
-		Text:       in.Text,
-		Quote:      in.Quote.Content,
-		Mentioned:  in.Mentioned,
-		QuotedBot:  in.QuotedBot,
-		Ambient:    ambient,
-		Trigger:    trigger,
-		Profile:    profile,
-		Image:      image,
-		ImageMime:  "image/jpeg",
-		InMsgID:    in.InMsgID,
-		InTs:       in.InTs,
-		InTypeCode: in.InTypeCode,
-		InContent:  in.InContent,
-		QuoteSvrid: in.Quote.Svrid,
+		SessionKey:     in.HermesKey,
+		RingKey:        in.RingKey,
+		Receiver:       in.Receiver,
+		IsGroup:        in.IsGroup,
+		GroupID:        in.GroupID,
+		SpeakerID:      in.SpeakerID,
+		Speaker:        in.Speaker,
+		IsOwner:        in.IsOwner,
+		Text:           in.Text,
+		Quote:          in.Quote.Content,
+		Mentioned:      in.Mentioned,
+		MentionedOther: in.MentionedOther,
+		QuotedBot:      in.QuotedBot,
+		Ambient:        ambient,
+		Trigger:        trigger,
+		Profile:        profile,
+		Image:          image,
+		ImageMime:      "image/jpeg",
+		InMsgID:        in.InMsgID,
+		InTs:           in.InTs,
+		InTypeCode:     in.InTypeCode,
+		InContent:      in.InContent,
+		QuoteSvrid:     in.Quote.Svrid,
 	}
 	p.disp.enqueue(t)
 	return true, nil
@@ -244,6 +249,7 @@ func (p *hermesPlugin) buildIncoming(session string, msg *message.Message) *inco
 	}
 	self := p.self
 	in.Mentioned = isMentionedBot(msg, self)
+	in.MentionedOther = mentionsOtherMember(msg, self)
 	in.QuotedBot = isQuotedBot(in.Quote, self)
 	// 免@白名单群视为"被@级"交互
 	if !in.Mentioned && in.IsGroup && p.inFreeList(in.GroupID) {
@@ -424,6 +430,39 @@ func isMentionedBot(msg *message.Message, self *contact.SelfInfo) bool {
 	for _, identity := range identities {
 		if strings.Contains(content, "@"+identity) {
 			return true
+		}
+	}
+	return false
+}
+
+// mentionsOtherMember 消息 @ 了人但没 @ 我 → 明显是喊别人。
+// 协议 reminds 精准优先；正文 @xxx 兜底。@ 了我和别人混合不算（对我的单）。
+func mentionsOtherMember(msg *message.Message, self *contact.SelfInfo) bool {
+	identities := selfIdentities(self)
+	if text := msg.GetText(); text != nil && len(text.GetReminds()) > 0 {
+		for _, remind := range text.GetReminds() {
+			remind = strings.Trim(strings.TrimSpace(remind), "@")
+			for _, identity := range identities {
+				if remind != "" && strings.EqualFold(remind, identity) {
+					return false // @ 列表里有我 → 混合@，算对我的单
+				}
+			}
+		}
+		return true // @ 了人但没有我
+	}
+	for _, body := range []string{msg.GetContent(), msg.GetText().GetContent()} {
+		for _, m := range atNameRe.FindAllStringSubmatch(body, -1) {
+			name := strings.TrimSpace(m[1])
+			isSelf := false
+			for _, identity := range identities {
+				if name != "" && strings.EqualFold(name, identity) {
+					isSelf = true
+					break
+				}
+			}
+			if !isSelf {
+				return true
+			}
 		}
 	}
 	return false

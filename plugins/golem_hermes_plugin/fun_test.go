@@ -114,3 +114,33 @@ func TestMoodQuietHours(t *testing.T) {
 	night := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 23, 0, 0, 0, time.Local)
 	p.fun.maybeMood(night)
 }
+
+func TestMentionsOtherMember(t *testing.T) {
+	self := &contact.SelfInfo{Username: "wxid_bot", Nickname: "小赫"}
+	mk := func(reminds []string, content string) *message.Message {
+		m := &message.Message{Type: message.TypeText,
+			Sender: &contact.Contact{Username: "g@chatroom", Type: contact.ContactType_CONTACT_TYPE_CHATROOM},
+			Data:   &message.Message_Text{Text: &message.TextData{Content: content}}}
+		if reminds != nil {
+			m.Data = &message.Message_Text{Text: &message.TextData{Content: content, Reminds: reminds}}
+		}
+		return m
+	}
+	cases := []struct {
+		name    string
+		msg     *message.Message
+		want    bool
+	}{
+		{"只@别人", mk([]string{"小美"}, "@小美 画一张狗"), true},
+		{"只@我", mk([]string{"小赫"}, "@小赫 画一张狗"), false},
+		{"@我和别人混合", mk([]string{"小赫", "小美"}, "@小赫 @小美 画一张狗"), false},
+		{"无@纯文本", mk(nil, "画一张狗"), false},
+		{"无reminds正文兜底@别人", mk(nil, "@小美 画一张狗"), true},
+		{"无reminds正文@我", mk(nil, "@小赫 画一张狗"), false},
+	}
+	for _, c := range cases {
+		if got := mentionsOtherMember(c.msg, self); got != c.want {
+			t.Fatalf("%s: 期望 %v 得 %v", c.name, c.want, got)
+		}
+	}
+}

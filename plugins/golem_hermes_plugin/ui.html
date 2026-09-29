@@ -998,6 +998,7 @@ async function loadConfig(){
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
         <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="ig-enabled" ${g.enabled?"checked":""} style="accent-color:var(--teal)"> 开张营业</label>
         <span class="b ${g.enabled?"b-green":"b-gray"}">${g.enabled?"营业中":"歇业"}</span>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer" title="闲聊参与（ambient）的会话也允许开画图工单；默认关，防烧钱"><input type="checkbox" id="ig-ambient" ${g.ambient?"checked":""} style="accent-color:var(--amber)"> 顺路单（闲聊也接）</label>
         <span class="faint" style="font-size:12px">并发画手 ${g.workers??2} · 会话级开关在「会话页 ⚙」</span>
       </div>
       <div class="kv" style="grid-template-columns:130px 1fr;align-items:center;gap:9px 14px">
@@ -1028,6 +1029,7 @@ async function saveImagegenConfig(){
     const r=await api("/api/imagegen/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       enabled:$("#ig-enabled").checked, base_url:$("#ig-base").value, api_key:$("#ig-key").value,
       model:$("#ig-model").value, size:$("#ig-size").value, daily_cap:+$("#ig-cap").value,
+      ambient:$("#ig-ambient").checked,
       dedup_win:+$("#ig-dedup").value, sim_win:+$("#ig-simwin").value,
       sim_threshold:+$("#ig-simth").value, peruser_max:+$("#ig-pumax").value})});
     alert("画坊配置已保存（当前："+(r.enabled?"营业中":"歇业")+"）");

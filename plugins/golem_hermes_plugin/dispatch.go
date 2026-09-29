@@ -25,6 +25,7 @@ type task struct {
 	Quote      string
 	Mentioned  bool
 	QuotedBot  bool
+	MentionedOther bool // @ 了人但没 @ 我（画坊拒接的单）
 	Ambient    bool
 	Trigger    string // private|mention|quote|whitelist|ambient|owner-bypass
 	Profile    string

@@ -606,6 +606,7 @@ func (w *webUI) handleImagegenConfigGet(rw http.ResponseWriter, _ *http.Request)
 	writeOK(rw, map[string]any{
 		"enabled": st.Enabled, "base_url": st.BaseURL, "api_key": maskKey(st.APIKey),
 		"model": st.Model, "size": st.Size, "daily_cap": st.DailyCap,
+		"ambient": st.Ambient,
 		"dedup_win": st.DedupWinMin, "sim_win": st.SimWinMin,
 		"sim_threshold": st.SimThreshold, "peruser_max": st.PerUserMax,
 		"workers": w.p.Config.ImageGenWorkers,
@@ -621,6 +622,7 @@ func (w *webUI) handleImagegenConfigPut(rw http.ResponseWriter, r *http.Request)
 		Model    *string `json:"model"`
 		Size     *string `json:"size"`
 		DailyCap *int    `json:"daily_cap"`
+		Ambient  *bool   `json:"ambient"`
 		// 防复读把关
 		DedupWin     *int     `json:"dedup_win"`
 		SimWin       *int     `json:"sim_win"`
@@ -657,6 +659,9 @@ func (w *webUI) handleImagegenConfigPut(rw http.ResponseWriter, r *http.Request)
 	}
 	if body.DailyCap != nil && *body.DailyCap >= 0 {
 		w.p.store.kvSet("imagegen:daily_cap", fmt.Sprintf("%d", *body.DailyCap))
+	}
+	if body.Ambient != nil {
+		w.p.store.kvSet("imagegen:ambient", map[bool]string{true: "1", false: "0"}[*body.Ambient])
 	}
 	if body.DedupWin != nil && *body.DedupWin >= 1 && *body.DedupWin <= 240 {
 		w.p.store.kvSet("imagegen:dedup_win", fmt.Sprintf("%d", *body.DedupWin))

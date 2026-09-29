@@ -235,6 +235,18 @@ func (b *bridgeServer) handleImagegen(w http.ResponseWriter, r *http.Request) {
 	}
 	size := strings.TrimSpace(body.Size)
 
+	// 硬闸一：群里 @ 了别人（没 @ 我）的画图需求不是对我下的单，画师不接。
+	// 提示词拦不住热心（免@群里 LLM 看到上下文有画图需求就顺手接），必须在接单口判。
+	if t.MentionedOther {
+		writeErr(w, http.StatusForbidden, "这条消息在 @ 别人，不是对我下的单，画师不接。请如实告知对方：画坊只接直接下达给机器人医生（当前对话）的工单")
+		return
+	}
+	// 硬闸二：ambient 顺路单默认关（环境参与的会话不许烧画坊的钱）
+	if t.Ambient && !b.p.imagegenSettings().Ambient {
+		writeErr(w, http.StatusForbidden, "画坊未开通顺路单（闲聊参与时不接画图工单）")
+		return
+	}
+
 	// 防复读把关（先于配额：L1 库存直发零成本，产能售罄也照发）
 	if action, match, why := b.p.imagegenDedupe(chat, t.SpeakerID, kind, prompt, size); action != "" {
 		if action == "reuse" { // 仅生图类会返回 reuse

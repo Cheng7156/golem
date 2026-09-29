@@ -75,6 +75,7 @@ type imagegenSettings struct {
 	Model    string
 	Size     string
 	DailyCap int
+	Ambient  bool // ambient 顺路单（环境参与会话也能开单；默认关）
 	// 防复读把关（仅 kv 配置，Web 画坊卡片可改）
 	DedupWinMin  int     // L1 库存复用窗口（分钟）
 	SimWinMin    int     // L2 相似拦截窗口（分钟）
@@ -121,7 +122,11 @@ func (p *hermesPlugin) imagegenSettings() imagegenSettings {
 	st.SimWinMin = 10
 	st.SimThreshold = 0.80 // 单字替换破坏2个bigram：J=(N-3)/(N+1)，0.8 → 核心串≥19字才拦单字改动
 	st.PerUserMax = 3
+	st.Ambient = false
 	if p.store != nil {
+		if v := p.store.kvGet("imagegen:ambient"); v != "" {
+			st.Ambient = v == "1"
+		}
 		if v := p.store.kvGet("imagegen:dedup_win"); v != "" {
 			if n := atoiDefault(v, 30); n > 0 {
 				st.DedupWinMin = n
