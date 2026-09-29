@@ -150,6 +150,14 @@ func (s *store) memberSave(r *memberRow) {
 }
 
 // mergeFacts 增量合并：前缀包含式去重（一方前缀是另一方前缀即视为同义），上限20条（保最新）
+// prevSummaryLine 抽取提示里的「此前人设」行（空则不给）
+func prevSummaryLine(summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return ""
+	}
+	return "\n（此前人设，供参考：可沿用或修正）" + summary
+}
+
 func mergeFacts(old, add []memberFact, now int64) []memberFact {
 	prefix := func(s string) string {
 		ra := []rune(s)
@@ -158,9 +166,39 @@ func mergeFacts(old, add []memberFact, now int64) []memberFact {
 		}
 		return s
 	}
+	// 存量内部先做一次相似度清理（历史变体，如"常@某人点单：背诗/背书/查新闻"三胞胎）
+	key := func(f memberFact) string { // 同模板换尾的变体：kind+前8字相同即视为同一事实
+		ra := []rune(f.Content)
+		if len(ra) > 8 {
+			ra = ra[:8]
+		}
+		return f.Kind + ":" + string(ra)
+	}
+	cleaned := []memberFact{}
+	cleanedKeys := map[string]bool{}
+	for _, f := range old {
+		k := key(f)
+		dup := cleanedKeys[k]
+		if !dup {
+			for _, e := range cleaned {
+				if strings.EqualFold(strings.TrimSpace(e.Content), strings.TrimSpace(f.Content)) ||
+					bigramJaccard(e.Content, f.Content) >= 0.5 {
+					dup = true
+					break
+				}
+			}
+		}
+		if !dup {
+			cleaned = append(cleaned, f)
+			cleanedKeys[k] = true
+		}
+	}
+	old = cleaned
 	seen := []string{}
+	keys := map[string]bool{}
 	for _, f := range old {
 		seen = append(seen, prefix(f.Content))
+		keys[key(f)] = true
 	}
 	dup := func(p string) bool {
 		for _, s := range seen {
@@ -174,10 +212,21 @@ func mergeFacts(old, add []memberFact, now int64) []memberFact {
 	for _, f := range add {
 		f.At = now
 		p := prefix(f.Content)
-		if dup(p) {
+		k := key(f)
+		similar := keys[k]
+		if !similar {
+			for _, e := range out {
+				if bigramJaccard(e.Content, f.Content) >= 0.5 {
+					similar = true
+					break
+				}
+			}
+		}
+		if dup(p) || similar {
 			continue
 		}
 		seen = append(seen, p)
+		keys[k] = true
 		out = append(out, f)
 	}
 	if len(out) > 20 {
@@ -606,10 +655,17 @@ func (f *profiler) batch() {
 
 func (f *profiler) extractOne(wxid, name string, maxID int64) {
 	s := f.p.store
-	corpus := s.memberCorpus(wxid, 0, maxID, 200)
+	// 增量语料：只读上次游标之后的新消息。全量窗口会让高频群每次对着同一段
+	// 近期聊天反复提取，同一话题不断生成变体事实挤占 20 条上限（信息密度衰减事故）
+	after := int64(0)
+	existing := s.memberGet(wxid)
+	if existing != nil {
+		after = existing.ArchivedAt
+	}
+	corpus := s.memberCorpus(wxid, after, maxID, 200)
 	if len(corpus) < 5 {
 		// 语料太少也推进游标，避免反复扫描
-		r := s.memberGet(wxid)
+		r := existing
 		if r == nil {
 			r = &memberRow{Wxid: wxid, Name: name}
 		}
@@ -617,20 +673,25 @@ func (f *profiler) extractOne(wxid, name string, maxID int64) {
 		s.memberSave(r)
 		return
 	}
-	prompt := fmt.Sprintf(`以下是微信群成员「%s」最近的聊天记录。请只根据这些记录，抽取关于这个人本身的稳定事实。
+	prevSummary := ""
+	if existing != nil {
+		prevSummary = existing.Summary
+	}
+	prompt := fmt.Sprintf(`以下是微信群成员「%s」最近一段时间的聊天记录。请只根据这些记录，抽取关于这个人本身的稳定事实。%s
 
 输出严格 JSON（不要其他文字）：
 {"summary":"一句话人设,不超过25字","facts":[{"kind":"口头禅|喜好|身份|关系|flag|名场面","content":"事实描述(不超过20字)","quote":"依据原句(不超过30字)"}]}
 
 规则：
 - 只抽取关于此人自身的稳定信息，不抽取群聊话题本身
+- 与「此前人设」重复的事实不要再输出，只输出新观察到的
 - 口头禅=反复出现的表达；flag=承诺或计划；名场面=金句或标志性事件；关系=与其他人的互动关系
 - 丢弃并绝不记录任何手机号、住址、身份证、银行卡、转账类内容
 - 没有值得记的就输出 {"summary":"","facts":[]}
 - 最多8条，全部用中文
 
 聊天记录：
-%s`, name, strings.Join(corpus, "\n"))
+%s`, name, prevSummaryLine(prevSummary), strings.Join(corpus, "\n"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

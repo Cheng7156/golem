@@ -149,3 +149,44 @@ func TestProfileCardMarkdown(t *testing.T) {
 		t.Fatalf("查无此人应返回空串，得 %q", got)
 	}
 }
+
+// TestMergeFactsDedupVariants 变体重复治理：jaccard 相似度去重 + 存量清理
+func TestMergeFactsDedupVariants(t *testing.T) {
+	old := []memberFact{
+		{Kind: "关系", Content: "常@陌私语点单：背诵画图点表情"},
+		{Kind: "关系", Content: "常@陌私语点单：背书问答报时"},
+		{Kind: "口头禅", Content: "句尾挂🫡"},
+		{Kind: "名场面", Content: "科普接龙能接判据出尺子"},
+	}
+	add := []memberFact{
+		{Kind: "关系", Content: "常@陌私语点单：查新闻画像"}, // 与前两条同源变体
+		{Kind: "喜好", Content: "收藏萌宠图"},              // 真新事实
+	}
+	out := mergeFacts(old, add, time.Now().Unix())
+	n := 0
+	for _, f := range out {
+		if strings.HasPrefix(f.Content, "常@陌私语点单") {
+			n++
+		}
+	}
+	if n > 1 {
+		t.Fatalf("同源变体应去重到 1 条，得 %d 条: %+v", n, out)
+	}
+	found := false
+	for _, f := range out {
+		if f.Content == "收藏萌宠图" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("真新事实被误杀")
+	}
+	// 逐字重复清理
+	out2 := mergeFacts([]memberFact{
+		{Kind: "关系", Content: "自封蛋挞账账房，盯着老牛子的账"},
+		{Kind: "关系", Content: "自封蛋挞账账房，盯着老牛子的账"}, // 逐字重复
+	}, nil, time.Now().Unix())
+	if len(out2) != 1 {
+		t.Fatalf("逐字重复应清理为 1 条，得 %d", len(out2))
+	}
+}
