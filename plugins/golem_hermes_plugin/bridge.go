@@ -453,7 +453,24 @@ func (b *bridgeServer) handleProfileCard(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	} else {
-		md := b.p.store.profileCardMarkdown(name, b.p.Config.StickerEmotions)
+		// 快路径：后台已预渲染的缓存卡（毫秒级）
+		if d := b.p.store.memberSearch(name, b.p.Config.StickerEmotions); d != nil {
+			if full := b.p.store.memberDetailGet(d.Wxid, b.p.Config.StickerEmotions); full != nil &&
+				full.CardFile != "" {
+				if data, rerr := os.ReadFile(full.CardFile); rerr == nil && len(data) > 512 {
+					if serr := b.p.out.sendImage(as.Receiver, data); serr == nil {
+						writeOK(w, map[string]any{"sent": true, "bytes": len(data), "cached": true})
+						return
+					}
+				}
+			}
+		}
+		// 慢路径兜底：无缓存现场渲染（新成员/文件丢失）
+		full := b.p.store.memberSearch(name, b.p.Config.StickerEmotions)
+		var md string
+		if full != nil {
+			md = b.p.store.profileCardMarkdown(b.p.store.memberDetailGet(full.Wxid, b.p.Config.StickerEmotions))
+		}
 		if md == "" {
 			writeOK(w, map[string]any{"found": false, "hint": "查无此人（语料不足或名字不对），如实转告即可，不要编造"})
 			return

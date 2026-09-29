@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.9.4"
+	pluginVersion = "0.9.5"
 )
 
 func main() {

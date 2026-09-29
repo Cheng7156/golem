@@ -117,6 +117,8 @@ type memberRow struct {
 	ArchivedAt int64
 	MsgCount   int64
 	UpdatedAt  int64
+	CardIntro  string // AI 润色的人设速写（后台生成）
+	CardFile   string // 预渲染画像卡路径（毫秒级发送的缓存）
 }
 
 func (s *store) memberGet(wxid string) *memberRow {
@@ -127,8 +129,8 @@ func (s *store) memberGet(wxid string) *memberRow {
 	defer s.mu.Unlock()
 	var r memberRow
 	var facts string
-	err := s.db.QueryRow("SELECT wxid,name,summary,facts,archived_at,msg_count,updated_at FROM member_profiles WHERE wxid=?", wxid).
-		Scan(&r.Wxid, &r.Name, &r.Summary, &facts, &r.ArchivedAt, &r.MsgCount, &r.UpdatedAt)
+	err := s.db.QueryRow("SELECT wxid,name,summary,facts,archived_at,msg_count,updated_at,COALESCE(card_intro,''),COALESCE(card_file,'') FROM member_profiles WHERE wxid=?", wxid).
+		Scan(&r.Wxid, &r.Name, &r.Summary, &facts, &r.ArchivedAt, &r.MsgCount, &r.UpdatedAt, &r.CardIntro, &r.CardFile)
 	if err != nil {
 		return nil
 	}
@@ -143,10 +145,11 @@ func (s *store) memberSave(r *memberRow) {
 	blob, _ := json.Marshal(r.Facts)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = s.db.Exec(`INSERT INTO member_profiles(wxid,name,summary,facts,archived_at,msg_count,updated_at) VALUES(?,?,?,?,?,?,?)
+	_, _ = s.db.Exec(`INSERT INTO member_profiles(wxid,name,summary,facts,archived_at,msg_count,updated_at,card_intro,card_file) VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(wxid) DO UPDATE SET name=excluded.name, summary=excluded.summary, facts=excluded.facts,
-		archived_at=excluded.archived_at, msg_count=excluded.msg_count, updated_at=excluded.updated_at`,
-		r.Wxid, r.Name, r.Summary, string(blob), r.ArchivedAt, r.MsgCount, r.UpdatedAt)
+		archived_at=excluded.archived_at, msg_count=excluded.msg_count, updated_at=excluded.updated_at,
+		card_intro=excluded.card_intro, card_file=excluded.card_file`,
+		r.Wxid, r.Name, r.Summary, string(blob), r.ArchivedAt, r.MsgCount, r.UpdatedAt, r.CardIntro, r.CardFile)
 }
 
 // mergeFacts 增量合并：前缀包含式去重（一方前缀是另一方前缀即视为同义），上限20条（保最新）
@@ -233,6 +236,98 @@ func mergeFacts(old, add []memberFact, now int64) []memberFact {
 		out = out[len(out)-20:]
 	}
 	return out
+}
+
+// renderCard 后台预渲染画像卡：AI 润色速写（慢车道）→ 确定性拼卡 → gg 渲染 → 落盘缓存。
+// 群里请求走 /v1/profile_card 快路径毫秒级直发；失败静默保留旧卡
+func (f *profiler) renderCard(wxid string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Warn("[ghp] 画像卡渲染 panic", "wxid", wxid, "err", r)
+		}
+	}()
+	s := f.p.store
+	d := s.memberDetailGet(wxid, f.cfg.StickerEmotions)
+	if d == nil {
+		return
+	}
+	if intro := f.polishIntro(d); intro != "" {
+		if r := s.memberGet(wxid); r != nil {
+			r.CardIntro = intro
+			s.memberSave(r)
+			d.CardIntro = intro
+		}
+	}
+	md := s.profileCardMarkdown(d)
+	if md == "" {
+		return
+	}
+	if f.p.caller == nil {
+		return
+	}
+	_, data, err := callWithTimeout(f.p.caller, "markdown.to.image", map[string]string{"context": md}, 90*time.Second)
+	if err != nil {
+		slog.Warn("[ghp] 画像卡渲染失败", "wxid", wxid, "err", err)
+		return
+	}
+	dir := filepath.Join(f.p.dataDir, "profile_cards")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	path := filepath.Join(dir, sanitizeFilename(wxid)+".png")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return
+	}
+	if r := s.memberGet(wxid); r != nil {
+		r.CardFile = path
+		s.memberSave(r)
+	}
+	slog.Info("[ghp] 画像卡已预渲染", "wxid", wxid)
+}
+
+// polishIntro AI 润色人设速写：只能使用给定画像信息，禁止编造；失败返回空
+func (f *profiler) polishIntro(d *memberDetail) string {
+	if f.p.eng == nil {
+		return ""
+	}
+	var fb strings.Builder
+	for _, fact := range d.Facts {
+		fmt.Fprintf(&fb, "[%s] %s\n", fact.Kind, fact.Content)
+	}
+	prompt := fmt.Sprintf(`根据以下画像数据，为微信群成员「%s」写一段人设速写：2~3 句、口语化、可以带一点梗。
+铁律：只能使用给定信息，绝不编造新事实；不出现"画像/数据/记录"这类词。只输出速写正文。
+
+一句话人设：%s
+印象记忆：
+%s`, d.Name, d.Summary, fb.String())
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := f.p.eng.Complete(ctx, runRequest{
+		SessionKey: "wx:system:member-profile",
+		Profile:    f.cfg.FastProfile,
+		Prompt:     prompt,
+	})
+	if err != nil {
+		slog.Warn("[ghp] 人设速写润色失败", "wxid", d.Wxid, "err", err)
+		return ""
+	}
+	f.p.store.addUsage(res.Usage, f.cfg.FastProfile)
+	out := strings.TrimSpace(res.Text)
+	out = strings.Trim(out, "\"“”")
+	if ra := []rune(out); len(ra) > 120 {
+		out = string(ra[:120])
+	}
+	return out
+}
+
+// sanitizeFilename 文件名消毒（wxid → 安全文件名）
+func sanitizeFilename(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, s)
 }
 
 // profileCandidates 找"新增未处理消息≥threshold"的成员（增量游标驱动）
@@ -413,14 +508,16 @@ func (s *store) avatarPathUnlocked(wxid string) string {
 }
 
 type memberDetail struct {
-	Wxid     string       `json:"wxid"`
-	Name     string       `json:"name"`
-	Summary  string       `json:"summary"`
-	Facts    []memberFact `json:"facts"`
-	Hours    [24]int      `json:"hours"`
-	Emotions []map[string]any `json:"emotions"`
-	Recent   []map[string]any `json:"recent"`
-	Updated  int64        `json:"updated_at"`
+	Wxid      string           `json:"wxid"`
+	Name      string           `json:"name"`
+	Summary   string           `json:"summary"`
+	Facts     []memberFact     `json:"facts"`
+	Hours     [24]int          `json:"hours"`
+	Emotions  []map[string]any `json:"emotions"`
+	Recent    []map[string]any `json:"recent"`
+	Updated   int64            `json:"updated_at"`
+	CardIntro string           `json:"card_intro,omitempty"`
+	CardFile  string           `json:"card_file,omitempty"`
 }
 
 func (s *store) memberDetailGet(wxid string, emotions []string) *memberDetail {
@@ -428,7 +525,7 @@ func (s *store) memberDetailGet(wxid string, emotions []string) *memberDetail {
 	if r == nil {
 		return nil
 	}
-	d := &memberDetail{Wxid: r.Wxid, Name: r.Name, Summary: r.Summary, Facts: r.Facts, Updated: r.UpdatedAt}
+	d := &memberDetail{Wxid: r.Wxid, Name: r.Name, Summary: r.Summary, Facts: r.Facts, Updated: r.UpdatedAt, CardIntro: r.CardIntro, CardFile: r.CardFile}
 	s.mu.Lock()
 	rows, err := s.db.Query("SELECT ts,kind,content FROM msg_archive WHERE wxid=? ORDER BY id DESC LIMIT 500", wxid)
 	s.mu.Unlock()
@@ -475,10 +572,9 @@ func maxInt(a, b int) int {
 
 // memberSearch 按昵称模糊查画像（精确优先，其次包含匹配）
 // profileCardMarkdown 确定性画像卡：与监控台画像页同源的数据，按固定模板拼 markdown
-// 供 send_image 渲染。查无此人返回空串。展示完整性不押在 LLM 的自觉上。
-func (s *store) profileCardMarkdown(name string, emotions []string) string {
-	d := s.memberSearch(name, emotions)
-	if d == nil {
+// 供 send_image 渲染。d 为 nil 或查不到计数时返回空串。展示完整性不押在 LLM 的自觉上。
+func (s *store) profileCardMarkdown(d *memberDetail) string {
+	if s == nil || s.db == nil || d == nil || d.Wxid == "" {
 		return ""
 	}
 	s.mu.Lock()
@@ -490,6 +586,9 @@ func (s *store) profileCardMarkdown(name string, emotions []string) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# 🎭 %s 的人设卡\n\n", d.Name)
+	if d.CardIntro != "" {
+		fmt.Fprintf(&b, "✨ %s\n\n", d.CardIntro)
+	}
 	if d.Summary != "" {
 		fmt.Fprintf(&b, "> %s\n\n", d.Summary)
 	} else {
@@ -743,6 +842,8 @@ func (f *profiler) extractOne(wxid, name string, maxID int64) {
 	s.memberSave(r)
 	if len(valid) > 0 || out.Summary != "" {
 		slog.Info("[ghp] 画像更新", "wxid", wxid, "name", name, "facts", len(valid), "summary", out.Summary)
+		// 画像变了就后台重制缓存卡（AI 润色+渲染都在慢车道，群里发送走毫秒级快路径）
+		go f.renderCard(wxid)
 	}
 
 	// 头像补拉

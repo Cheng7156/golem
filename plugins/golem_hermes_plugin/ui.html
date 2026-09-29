@@ -669,6 +669,8 @@ async function showMember(wxid){
         <div><div style="font-size:18px;font-weight:800">${esc(d.name||d.wxid)}</div>
         <div class="mono faint" style="font-size:11px">${esc(maskId(d.wxid))}</div></div>
       </div>
+      <img src="/api/members/card/${encodeURIComponent(d.wxid)}" onerror="this.style.display='none'"
+        style="width:100%;border-radius:10px;border:1px solid var(--line);margin-top:12px" alt="画像卡">
       ${d.summary?`<div style="margin:13px 0;font-size:14.5px">“${esc(d.summary)}”</div>`:""}
       <h3>⏰ 活跃时段</h3><div style="display:flex;gap:2px">${heat}</div>
       <div class="faint" style="font-size:10.5px;display:flex;justify-content:space-between;margin-top:2px"><span>0</span><span>6</span><span>12</span><span>18</span><span>24时</span></div>

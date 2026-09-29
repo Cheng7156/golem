@@ -363,34 +363,56 @@ func (w *webUI) handleMemberRoutes(rw http.ResponseWriter, r *http.Request) {
 		writeErr(rw, http.StatusBadRequest, "缺少 wxid")
 		return
 	}
-	if strings.HasPrefix(rest, "avatar/") {
-		wxid := strings.TrimPrefix(rest, "avatar/")
-		if !wxidRe.MatchString(wxid) {
-			writeErr(rw, http.StatusBadRequest, "非法标识")
+		if strings.HasPrefix(rest, "avatar/") {
+			wxid := strings.TrimPrefix(rest, "avatar/")
+			if !wxidRe.MatchString(wxid) {
+				writeErr(rw, http.StatusBadRequest, "非法标识")
+				return
+			}
+			path := w.p.store.avatarPath(wxid)
+			if path == "" {
+				writeErr(rw, http.StatusNotFound, "无头像")
+				return
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				writeErr(rw, http.StatusNotFound, "无头像")
+				return
+			}
+			ct := "image/jpeg"
+			switch sniffImage(data) {
+			case "png":
+				ct = "image/png"
+			case "gif":
+				ct = "image/gif"
+			}
+			rw.Header().Set("Content-Type", ct)
+			rw.Header().Set("Cache-Control", "max-age=86400")
+			_, _ = rw.Write(data)
 			return
 		}
-		path := w.p.store.avatarPath(wxid)
-		if path == "" {
-			writeErr(rw, http.StatusNotFound, "无头像")
+		// GET /api/members/card/{wxid} 预渲染画像卡图（与群里发送的同一张）
+		if strings.HasPrefix(rest, "card/") {
+			wxid := strings.TrimPrefix(rest, "card/")
+			if !wxidRe.MatchString(wxid) {
+				writeErr(rw, http.StatusBadRequest, "非法标识")
+				return
+			}
+			r := w.p.store.memberGet(wxid)
+			if r == nil || r.CardFile == "" {
+				writeErr(rw, http.StatusNotFound, "画像卡尚未生成")
+				return
+			}
+			data, err := os.ReadFile(r.CardFile)
+			if err != nil {
+				writeErr(rw, http.StatusNotFound, "画像卡文件丢失")
+				return
+			}
+			rw.Header().Set("Content-Type", "image/png")
+			rw.Header().Set("Cache-Control", "no-cache")
+			_, _ = rw.Write(data)
 			return
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			writeErr(rw, http.StatusNotFound, "无头像")
-			return
-		}
-		ct := "image/jpeg"
-		switch sniffImage(data) {
-		case "png":
-			ct = "image/png"
-		case "gif":
-			ct = "image/gif"
-		}
-		rw.Header().Set("Content-Type", ct)
-		rw.Header().Set("Cache-Control", "max-age=86400")
-		_, _ = rw.Write(data)
-		return
-	}
 	// DELETE /api/members/{wxid} 删除画像
 	if r.Method == http.MethodDelete {
 		wxid := rest

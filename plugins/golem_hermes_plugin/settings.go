@@ -68,6 +68,13 @@ func (s *store) initSettings() {
 			slog.Warn("[ghp] chat_settings 迁移异常", "col", col, "err", err)
 		}
 	}
+	// 成员画像表迁移：画像卡缓存两列
+	for _, col := range []string{"card_intro TEXT", "card_file TEXT"} {
+		if _, err := s.db.Exec("ALTER TABLE member_profiles ADD COLUMN " + col); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			slog.Warn("[ghp] member_profiles 迁移异常", "col", col, "err", err)
+		}
+	}
 }
 
 // addGrudge 记一笔仇
