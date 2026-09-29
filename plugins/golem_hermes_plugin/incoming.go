@@ -222,14 +222,14 @@ func (p *hermesPlugin) buildIncoming(session string, msg *message.Message) *inco
 			perUser = ec.PerUserSession
 		}
 		if perUser && in.SpeakerID != "" {
-			in.HermesKey = "wx:group:" + in.GroupID + ":" + in.SpeakerID
+			in.HermesKey = "wx:group:" + in.GroupID + ":" + in.SpeakerID + p.sessionBucket()
 		} else {
-			in.HermesKey = "wx:group:" + in.GroupID
+			in.HermesKey = "wx:group:" + in.GroupID + p.sessionBucket()
 		}
 	} else {
 		in.SpeakerID = sender.GetUsername()
 		in.Speaker = sanitizeName(displayContact(sender))
-		in.HermesKey = "wx:private:" + sender.GetUsername()
+		in.HermesKey = "wx:private:" + sender.GetUsername() + p.sessionBucket()
 	}
 	// 主人识别：协议层 wxid 精确比对，与消息文本无关
 	in.IsOwner = p.isOwnerWxid(in.SpeakerID)
@@ -433,6 +433,15 @@ func isMentionedBot(msg *message.Message, self *contact.SelfInfo) bool {
 		}
 	}
 	return false
+}
+
+// sessionBucket 会话时间桶后缀：Hermes 会话转录随聊天无限增长（实测单轮 prompt
+// 膨胀到 40 万 token），按 session_rotate_min 分桶轮换天然封顶。0=不轮换
+func (p *hermesPlugin) sessionBucket() string {
+	if p.Config.SessionRotateMin <= 0 {
+		return ""
+	}
+	return ":" + fmt.Sprintf("%d", time.Now().Unix()/int64(p.Config.SessionRotateMin*60))
 }
 
 // mentionsOtherMember 消息 @ 了人但没 @ 我 → 明显是喊别人。

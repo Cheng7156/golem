@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func newFunTestPlugin(t *testing.T) (*hermesPlugin, *fakeAbility) {
 	s := newTestStore(t)
 	fake := &fakeAbility{}
 	p := &hermesPlugin{store: s}
-	p.Config.CrowEnabled = true  // 零值 Config 三开关为 false，测试显式开（OnLoad 实际来自 defaultConfig）
+	p.Config.CrowEnabled = true // 零值 Config 三开关为 false，测试显式开（OnLoad 实际来自 defaultConfig）
 	p.Config.GrudgeEnabled = true
 	p.Config.MoodEnabled = true
 	p.metrics = newMetrics()
@@ -127,9 +128,9 @@ func TestMentionsOtherMember(t *testing.T) {
 		return m
 	}
 	cases := []struct {
-		name    string
-		msg     *message.Message
-		want    bool
+		name string
+		msg  *message.Message
+		want bool
 	}{
 		{"只@别人", mk([]string{"小美"}, "@小美 画一张狗"), true},
 		{"只@我", mk([]string{"小赫"}, "@小赫 画一张狗"), false},
@@ -142,5 +143,30 @@ func TestMentionsOtherMember(t *testing.T) {
 		if got := mentionsOtherMember(c.msg, self); got != c.want {
 			t.Fatalf("%s: 期望 %v 得 %v", c.name, c.want, got)
 		}
+	}
+}
+
+func TestSessionBucket(t *testing.T) {
+	p := &hermesPlugin{}
+	p.Config.SessionRotateMin = 0
+	if got := p.sessionBucket(); got != "" {
+		t.Fatalf("rotate=0 应无后缀，得 %q", got)
+	}
+	p.Config.SessionRotateMin = 60
+	b1 := p.sessionBucket()
+	if b1 == "" || !strings.HasPrefix(b1, ":") {
+		t.Fatalf("分桶后缀格式异常: %q", b1)
+	}
+	b2 := p.sessionBucket()
+	if b1 != b2 {
+		t.Fatalf("同一分钟内桶号应稳定: %q vs %q", b1, b2)
+	}
+	// 桶宽正确：桶号差 1 应等于 rotate 分钟
+	p.Config.SessionRotateMin = 120
+	b3 := p.sessionBucket()
+	n1, _ := strconv.ParseInt(strings.TrimPrefix(b1, ":"), 10, 64)
+	n3, _ := strconv.ParseInt(strings.TrimPrefix(b3, ":"), 10, 64)
+	if n1 == n3 {
+		t.Fatal("不同桶宽应产生不同桶号")
 	}
 }

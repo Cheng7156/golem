@@ -34,6 +34,7 @@ type Config struct {
 	OwnerOnlyPrivate    bool     `toml:"owner_only_private" comment:"仅主人可私聊触发（陌生人私聊不响应）"`
 	OwnerBypassAmbient  bool     `toml:"owner_bypass_ambient" comment:"主人在群里的消息无需@也响应（仍受会话冷却限制）"`
 	GroupSessionsPerUser bool    `toml:"group_sessions_per_user" comment:"群内按发言人拆分独立Hermes会话（最强隔离；false=整群共享会话）"`
+	SessionRotateMin     int     `toml:"session_rotate_min" comment:"Hermes会话按时间分桶轮换分钟数（防会话转录无限膨胀拖慢响应；0=不轮换）"`
 	ProfileEnabled       bool    `toml:"profile_enabled" comment:"启用群成员画像（消息归档+后台抽取+注入）"`
 	ProfileThreshold     int     `toml:"profile_threshold" comment:"成员新增消息达到该条数触发一次画像抽取"`
 	ProfileBatch         int     `toml:"profile_batch" comment:"每轮画像抽取处理的成员数"`
@@ -91,6 +92,7 @@ func defaultConfig() Config {
 		OwnerOnlyPrivate:    false,
 		OwnerBypassAmbient:  false,
 		GroupSessionsPerUser: false,
+		SessionRotateMin:     60,
 		ProfileEnabled:      true,
 		ProfileThreshold:    20,
 		ProfileBatch:        3,
