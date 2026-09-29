@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.8.4"
+	pluginVersion = "0.8.5"
 )
 
 func main() {
@@ -155,6 +155,10 @@ func (p *hermesPlugin) OnLoad() error {
 	if p.imagegenSettings().Enabled {
 		p.ensureWorkshop()
 	}
+	// 傻吊三件套引擎：必须显式启动（v0.7.0 曾漏接此线，打鸣/记仇/深夜emo静默死亡数日）。
+	// 引擎恒启动，每 tick 内按会话级开关逐群判定（nil=跟随全局语义）
+	p.fun = newFunEngine(p)
+	go p.fun.loop()
 	if !p.testMode && p.Config.BridgeListen != "" {
 		p.bridge = newBridge(p)
 		go p.bridge.start()

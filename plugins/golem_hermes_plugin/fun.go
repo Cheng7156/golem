@@ -70,6 +70,9 @@ func newFunState() *funState {
 // ============================================================
 
 func (f *funEngine) crowTick(now time.Time) {
+	if f.p.out == nil || f.p.out.msg == nil || f.p.metrics == nil {
+		return
+	}
 	if now.Hour() < 6 || now.Hour() > 9 {
 		return
 	}
@@ -170,6 +173,9 @@ func (f *funEngine) digGrudge(chat string) {
 // ============================================================
 
 func (f *funEngine) maybeMood(now time.Time) {
+	if f.p.out == nil || f.p.out.msg == nil || f.p.metrics == nil {
+		return
+	}
 	hour := now.Hour()
 	if hour != 22 && hour != 23 && hour != 0 && hour != 1 {
 		return
@@ -243,6 +249,9 @@ func (f *funEngine) loop() {
 
 // grudgeDigTick 翻旧账：每天每群期望约 1 次（48 tick × 2%）
 func (f *funEngine) grudgeDigTick(now time.Time) {
+	if f.p.out == nil || f.p.out.msg == nil || f.p.metrics == nil {
+		return
+	}
 	for _, ca := range f.p.metrics.chatsSnapshot() {
 		if !ca.IsGroup {
 			continue
