@@ -68,6 +68,8 @@ func (w *webUI) mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/chronicle/styles", w.auth(w.handleChronicleStylesPut))
 	mux.HandleFunc("GET /api/imagegen/config", w.auth(w.handleImagegenConfigGet))
 	mux.HandleFunc("PUT /api/imagegen/config", w.auth(w.handleImagegenConfigPut))
+	mux.HandleFunc("GET /api/personas", w.auth(w.handlePersonasGet))
+	mux.HandleFunc("PUT /api/personas", w.auth(w.handlePersonasPut))
 	mux.HandleFunc("GET /api/gallery", w.auth(w.handleGallery))
 	mux.HandleFunc("GET /api/gallery/file/", w.auth(w.handleGalleryFile))
 }
@@ -711,6 +713,42 @@ func (w *webUI) handleGalleryFile(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Type", ct)
 	rw.Header().Set("Cache-Control", "max-age=86400")
 	_, _ = rw.Write(data)
+}
+
+// ---- 人格面具 ----
+
+func (w *webUI) handlePersonasGet(rw http.ResponseWriter, _ *http.Request) {
+	writeOK(rw, map[string]any{
+		"default":  w.p.store.personaDefault(),
+		"personas": w.p.store.personasList(),
+	})
+}
+
+// handlePersonasPut 人设库整库保存（同文风坊模式）+ 全局默认
+func (w *webUI) handlePersonasPut(rw http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Default  string    `json:"default"`
+		Personas []persona `json:"personas"`
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256*1024)).Decode(&body); err != nil {
+		writeErr(rw, http.StatusBadRequest, "参数无效")
+		return
+	}
+	if body.Personas == nil {
+		writeErr(rw, http.StatusBadRequest, "personas 不能为空")
+		return
+	}
+	if err := w.p.store.personasSave(body.Personas); err != nil {
+		writeErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.p.store.personaSetDefault(body.Default)
+	w.p.metrics.addLog("INFO", fmt.Sprintf("[web] 人设库更新（%d 个，默认:%s）", len(body.Personas), previewOf(body.Default, 20)))
+	writeOK(rw, map[string]any{
+		"default":  w.p.store.personaDefault(),
+		"personas": w.p.store.personasList(),
+	})
 }
 
 // ---- 群设置 / 成员标记（配置中枢） ----

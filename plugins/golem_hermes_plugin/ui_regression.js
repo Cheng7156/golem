@@ -33,7 +33,9 @@
     const igRg = $q('#modal-bd input[data-k="imagegen_daily_cap"]');
     ok("V4 画坊日产能滑条", !!igRg);
     if (igRg) { igRg.value = 9; igRg.dispatchEvent(new Event("input", { bubbles: true })); await sleep(80);
-      ok("V4 产能滑条实时9张", $q('#modal-bd [data-vk="imagegen_daily_cap"]').textContent === "9张"); }
+      ok("V4 产能滑条实时9张", $q('#modal-bd [data-vk="imagegen_daily_cap"]').textContent === "9张");
+    ok("V4 弹窗含人格下拉", !!$q('#modal-bd select#cs-persona') && $q('#modal-bd select#cs-persona').options.length >= 2,
+      "选项数=" + (($q('#modal-bd select#cs-persona')||{}).options?.length ?? 0)); }
     const chronVal=(CUR_SET&&CUR_SET.chronicle===true);
     ok("V4 史官开启时弹窗有本群出刊按钮", !chronVal||!![...document.querySelectorAll("#modal-bd button")].find(b=>b.textContent.includes("立即出刊")));
     $q("#ovl").click(); await sleep(200); } else ok("V4 ⚙", false);
@@ -55,6 +57,13 @@
   ok("V7 画像卡片墙", cards.length >= 1);
   if (cards.length) { cards[0].click(); await sleep(700);
     ok("V7 详情抽屉打开", $q("#drawer").className.includes("open"));
+    $q("#drawer .x").click(); await sleep(200); }
+  await goTab("人设"); await sleep(700);
+  ok("V7.2 人设卡墙", document.querySelectorAll("#pa-grid .card").length >= 3, "预设数=" + document.querySelectorAll("#pa-grid .card").length);
+  ok("V7.2 默认人格选择器", $q("#pa-default") && $q("#pa-default").options.length >= 3);
+  if (document.querySelectorAll("#pa-grid .card").length) {
+    document.querySelectorAll("#pa-grid .card")[0].click(); await sleep(500);
+    ok("V7.2 人格编辑抽屉", !!$q("#pe-prompt") && !!$q("#pe-name"));
     $q("#drawer .x").click(); await sleep(200); }
   await goTab("史官"); await sleep(700);
   ok("V7.5 史官编务台", $q("#chr-status").innerText.length > 10);

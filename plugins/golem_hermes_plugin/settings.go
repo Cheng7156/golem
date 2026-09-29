@@ -27,6 +27,7 @@ type chatSettings struct {
 	MoodEnabled       *bool    `json:"mood_enabled"`        // 突然的自我
 	ImagegenEnabled   *bool    `json:"imagegen_enabled"`    // 画坊（本群接单）
 	ImagegenDailyCap  *int     `json:"imagegen_daily_cap"`  // 本群日产能
+	Persona           *string  `json:"persona"`             // 人格面具（人格名；nil=跟随全局默认）
 	UpdatedAt         int64    `json:"updated_at"`
 }
 
@@ -60,7 +61,7 @@ func (s *store) initSettings() {
 		"mute INTEGER", "free_response INTEGER", "ambient_rate REAL", "ambient_cooldown_sec INTEGER",
 		"chronicle INTEGER", "session_mode TEXT", "updated_at INTEGER",
 		"crow_enabled INTEGER", "grudge_enabled INTEGER", "mood_enabled INTEGER",
-		"imagegen_enabled INTEGER", "imagegen_daily_cap INTEGER",
+		"imagegen_enabled INTEGER", "imagegen_daily_cap INTEGER", "persona TEXT",
 	} {
 		if _, err := s.db.Exec("ALTER TABLE chat_settings ADD COLUMN " + col); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -149,12 +150,12 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	var mute, freeResp, cooldown, chronicle sql.NullInt64
 	var crow, grudge, mood, imgEnabled, imgCap sql.NullInt64
 	var rate sql.NullFloat64
-	var mode sql.NullString
+	var mode, persona sql.NullString
 	var updated sql.NullInt64
 	err := s.db.QueryRow(`SELECT mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
-		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, updated_at
+		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, persona, updated_at
 		FROM chat_settings WHERE chat=?`, chat).
-		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &updated)
+		Scan(&mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &persona, &updated)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("[ghp] chat_settings 读取失败（疑似旧库缺列）", "chat", chat, "err", err)
@@ -172,6 +173,7 @@ func (s *store) getChatSettings(chat string) chatSettings {
 	cs.MoodEnabled = nullableBool(mood)
 	cs.ImagegenEnabled = nullableBool(imgEnabled)
 	cs.ImagegenDailyCap = nullableInt(imgCap)
+	cs.Persona = nullableStr(persona)
 	cs.UpdatedAt = updated.Int64
 	return cs
 }
@@ -211,17 +213,17 @@ func (s *store) saveChatSettings(cs chatSettings) error {
 	cs.UpdatedAt = time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,imagegen_enabled,imagegen_daily_cap,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO chat_settings(chat,mute,free_response,ambient_rate,ambient_cooldown_sec,chronicle,session_mode,crow_enabled,grudge_enabled,mood_enabled,imagegen_enabled,imagegen_daily_cap,persona,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(chat) DO UPDATE SET mute=excluded.mute, free_response=excluded.free_response,
 		ambient_rate=excluded.ambient_rate, ambient_cooldown_sec=excluded.ambient_cooldown_sec,
 		chronicle=excluded.chronicle, session_mode=excluded.session_mode,
 		crow_enabled=excluded.crow_enabled, grudge_enabled=excluded.grudge_enabled, mood_enabled=excluded.mood_enabled,
 		imagegen_enabled=excluded.imagegen_enabled, imagegen_daily_cap=excluded.imagegen_daily_cap,
-		updated_at=excluded.updated_at`,
+		persona=excluded.persona, updated_at=excluded.updated_at`,
 		cs.Chat, nb(cs.Mute), nb(cs.FreeResponse), nf(cs.AmbientRate), ni(cs.AmbientCooldown),
 		nb(cs.Chronicle), ns(cs.SessionMode), nb(cs.CrowEnabled), nb(cs.GrudgeEnabled), nb(cs.MoodEnabled),
-		nb(cs.ImagegenEnabled), ni(cs.ImagegenDailyCap), cs.UpdatedAt)
+		nb(cs.ImagegenEnabled), ni(cs.ImagegenDailyCap), ns(cs.Persona), cs.UpdatedAt)
 	return err
 }
 
@@ -234,7 +236,7 @@ func (s *store) chatSettingsList() []chatSettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`SELECT chat, mute, free_response, ambient_rate, ambient_cooldown_sec, chronicle, session_mode,
-		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, updated_at
+		crow_enabled, grudge_enabled, mood_enabled, imagegen_enabled, imagegen_daily_cap, persona, updated_at
 		FROM chat_settings ORDER BY updated_at DESC LIMIT 200`)
 	if err != nil {
 		return out
@@ -244,8 +246,8 @@ func (s *store) chatSettingsList() []chatSettings {
 		var cs chatSettings
 		var mute, freeResp, cooldown, chronicle, crow, grudge, mood, imgEnabled, imgCap, updated sql.NullInt64
 		var rate sql.NullFloat64
-		var mode sql.NullString
-		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &updated) == nil {
+		var mode, persona sql.NullString
+		if rows.Scan(&cs.Chat, &mute, &freeResp, &rate, &cooldown, &chronicle, &mode, &crow, &grudge, &mood, &imgEnabled, &imgCap, &persona, &updated) == nil {
 			cs.Mute = nullableBool(mute)
 			cs.FreeResponse = nullableBool(freeResp)
 			cs.AmbientRate = nullableFloat(rate)
@@ -257,6 +259,7 @@ func (s *store) chatSettingsList() []chatSettings {
 			cs.MoodEnabled = nullableBool(mood)
 			cs.ImagegenEnabled = nullableBool(imgEnabled)
 			cs.ImagegenDailyCap = nullableInt(imgCap)
+			cs.Persona = nullableStr(persona)
 			cs.UpdatedAt = updated.Int64
 			out = append(out, cs)
 		}

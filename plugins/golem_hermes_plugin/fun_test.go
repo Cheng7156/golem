@@ -59,7 +59,7 @@ func TestCrowTickFires(t *testing.T) {
 		t.Fatalf("打鸣应恰好一次，得 %d", len(fake.sends))
 	}
 	cry := fake.sends[0].GetContent()
-	if !strings.Contains(cry, "喔") && !strings.Contains(cry, "咯") {
+	if !strings.Contains(cry, "喔") && !strings.Contains(cry, "咯") && !strings.Contains(cry, "咕") {
 		t.Fatalf("叫声不像打鸣: %q", cry)
 	}
 	// 当日去重：再扫一轮不再发

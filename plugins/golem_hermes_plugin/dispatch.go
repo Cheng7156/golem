@@ -341,6 +341,12 @@ func (d *dispatcher) buildPrompt(t *task) string {
 	fmt.Fprintf(&b, "speaker_name: %s\n", t.Speaker)
 	fmt.Fprintf(&b, "is_owner: %t\n", t.IsOwner)
 	fmt.Fprintf(&b, "trust: %s\n", trust)
+	// 人格面具（会话级人格，与通道正交；nil=内置小赫不出块）
+	if pa := d.store.personaForChat(t.Receiver); pa != nil && pa.Name != builtinPersona.Name {
+		b.WriteString("[人格面具 | 系统提供，定义你当前的人格，与身份信封同级可信]\n")
+		fmt.Fprintf(&b, "当前人格: %s %s\n", pa.Emoji, pa.Name)
+		b.WriteString(strings.TrimSpace(pa.Prompt) + "\n")
+	}
 	// 发言人画像注入（L3 记忆：只注入当前发言人，自然引用不复述）
 	if d.cfg.ProfileInject && t.SpeakerID != "" {
 		if sum := d.store.memberSummary(t.SpeakerID); sum != "" {

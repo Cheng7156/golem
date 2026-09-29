@@ -233,6 +233,20 @@ tbody tr.click{cursor:pointer}
     <div id="member-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px"></div>
   </section>
 
+  <!-- 人设库 -->
+  <section class="view" id="v-personas">
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <span class="dim" style="font-size:13px">全局默认人格:</span>
+      <select id="pa-default" onchange="window.PERSONAS_DIRTY=1"
+        style="background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font-size:13px;outline:none"></select>
+      <span class="faint" style="font-size:12px">（各群可在「会话页 ⚙」单独指定；保存后下一轮对话生效）</span>
+      <div style="flex:1"></div>
+      <button class="hbtn" onclick="personaAdd()">+ 新增人格</button>
+      <button class="hbtn" style="color:var(--teal)" onclick="savePersonas()">💾 保存人设库</button>
+    </div>
+    <div id="pa-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px"></div>
+  </section>
+
   <!-- 史官 -->
   <section class="view" id="v-chronicle">
     <div class="cards" id="chr-status" style="margin-bottom:12px"></div>
@@ -323,14 +337,14 @@ function startSSE(){
 }
 
 /* ---------- 布局 ---------- */
-const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["gallery","画廊"],["members","画像"],["chronicle","史官"],["logs","日志"],["config","配置"]];
+const TABS=[["overview","概览"],["runs","运行"],["decisions","决策"],["chats","会话"],["usage","用量"],["stickers","表情"],["gallery","画廊"],["members","画像"],["personas","人设"],["chronicle","史官"],["logs","日志"],["config","配置"]];
 $("#nav").innerHTML=TABS.map(([k,n])=>`<button data-t="${k}" onclick="goTab('${k}')">${n}</button>`).join("");
 function goTab(t){
   TAB=t;
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+t).classList.add("on");
-  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,gallery:loadGallery,members:loadMembers,chronicle:loadChronicle,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
+  ({runs:loadRuns,decisions:loadDecisions,chats:loadChats,usage:loadUsage,stickers:loadStickers,gallery:loadGallery,members:loadMembers,personas:loadPersonas,chronicle:loadChronicle,logs:loadLogs,config:loadConfig}[t]||(()=>{}))();
 }
 function toggleMask(){REVEAL=!REVEAL;localStorage.setItem("gohm_reveal",REVEAL?"1":"0");
   $("#mask-btn").textContent=REVEAL?"👁 已显示":"👁 已打码";goTab(TAB)}
@@ -738,6 +752,15 @@ function renderChatSettings(chat,name,isGroup){
         <option value="shared" ${cs.session_mode==="shared"?"selected":""}>整群共享会话</option>
         <option value="per_user" ${cs.session_mode==="per_user"?"selected":""}>按成员拆分会话</option>
       </select></div>`:""}
+    <div style="margin:12px 0">
+      <div>🎭 人格面具</div>
+      <select id="cs-persona" onchange="CUR_SET.persona=this.value||null"
+        style="width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px">
+        <option value="">跟随全局默认</option>
+        ${(window.PERSONAS||[]).filter(x=>x.enabled).map(x=>`<option value="${esc(x.name)}" ${cs.persona===x.name?"selected":""}>${esc(x.emoji||"🎭")} ${esc(x.name)}</option>`).join("")}
+      </select>
+      <div class="faint" style="font-size:11px;margin-top:3px">${cs.persona?`当前覆盖: ${esc(cs.persona)}`:"未覆盖（用全局默认人格）"}</div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:16px">
       <button class="hbtn" onclick="saveChatSettings('${esc(chat)}')">💾 保存</button>
       <button class="hbtn" onclick="closeAll()">取消</button>
@@ -783,6 +806,65 @@ async function toggleMemberFlag(wxid,field,cur){
     await api("/api/member-flags",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(mf)});
     showMember(wxid);
   }catch(e){alert("失败: "+e.message)}
+}
+
+/* ---------- 人设库 ---------- */
+async function loadPersonas(){
+  try{
+    const r=await api("/api/personas");
+    window.PERSONAS=r.personas||[];
+    $("#pa-default").innerHTML=`<option value="">（内置·小赫）</option>`+
+      window.PERSONAS.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}" ${p.name===r.default?"selected":""}>${esc(p.emoji||"")} ${esc(p.name)}</option>`).join("");
+    $("#pa-grid").innerHTML=window.PERSONAS.map((p,i)=>`
+      <div class="card" style="cursor:pointer;${p.enabled?"":"opacity:.45"}" onclick="showPersona(${i})">
+        <div style="display:flex;gap:10px;align-items:center">
+          <div style="font-size:26px">${esc(p.emoji||"🎭")}</div>
+          <div style="min-width:0">
+            <div style="font-weight:700">${esc(p.name)} ${p.enabled?"":'<span class="b b-gray">停用</span>'}${(r.default===p.name)?' <span class="b b-teal">默认</span>':""}</div>
+            <div class="faint" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.brief||"")}</div>
+          </div>
+        </div>
+        <div class="dim" style="font-size:12px;margin:8px 0 0;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(p.prompt||"")}</div>
+        ${p.prefer_emotions?`<div style="margin-top:7px">${p.prefer_emotions.split(",").filter(Boolean).map(e=>`<span class="b b-violet" style="margin:1px">${esc(e)}</span>`).join("")}</div>`:""}
+      </div>`).join("")||`<div class="empty" style="grid-column:1/-1">人设库为空</div>`;
+  }catch(e){}
+}
+function showPersona(i){
+  const p=window.PERSONAS[i];
+  $("#drawer-bd").innerHTML=`<h3>${esc(p.emoji||"🎭")} 编辑人格</h3>
+    <div class="kv" style="grid-template-columns:80px 1fr;gap:9px 12px;margin-top:10px;align-items:center">
+      <div class="k">Emoji</div><input id="pe-emoji" class="ig-in" value="${esc(p.emoji||"")}" placeholder="🎭">
+      <div class="k">名称</div><input id="pe-name" class="ig-in" value="${esc(p.name)}">
+      <div class="k">一句话简介</div><input id="pe-brief" class="ig-in" value="${esc(p.brief||"")}" placeholder="展示在卡片上">
+      <div class="k">偏好情绪</div><input id="pe-emo" class="ig-in" value="${esc(p.prefer_emotions||"")}" placeholder="逗号分隔，如: 狗头,无语（表情选库倾向）">
+      <div class="k">启用</div><input id="pe-enabled" type="checkbox" ${p.enabled?"checked":""} style="accent-color:var(--teal)">
+    </div>
+    <div class="k dim" style="margin:12px 0 5px;font-size:12.5px">人设正文（注入每轮对话，写具体的行为特点效果最好）</div>
+    <textarea id="pe-prompt" rows="10" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--fg);padding:10px;font-size:13px;outline:none;resize:vertical">${esc(p.prompt||"")}</textarea>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="hbtn" style="color:var(--teal)" onclick="personaApply(${i})">✔ 应用到本地</button>
+      <span class="faint" style="font-size:11.5px;align-self:center">应用后还需左上角「💾 保存人设库」才会生效</span>
+    </div>`;
+  $("#drawer").classList.add("open");$("#ovl").classList.add("open");
+}
+function personaApply(i){
+  const p=window.PERSONAS[i];
+  p.emoji=$("#pe-emoji").value.trim(); p.name=$("#pe-name").value.trim();
+  p.brief=$("#pe-brief").value.trim(); p.prefer_emotions=$("#pe-emo").value.trim();
+  p.prompt=$("#pe-prompt").value.trim(); p.enabled=$("#pe-enabled").checked;
+  closeAll(); loadPersonas();
+}
+function personaAdd(){
+  window.PERSONAS.push({name:"新人格",emoji:"🎭",brief:"",prompt:"",prefer_emotions:"",enabled:true});
+  showPersona(window.PERSONAS.length-1);
+}
+async function savePersonas(){
+  try{
+    const r=await api("/api/personas",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({default:$("#pa-default").value,personas:window.PERSONAS})});
+    window.PERSONAS=r.personas||[]; loadPersonas();
+    alert("人设库已保存，各群下一轮对话生效");
+  }catch(e){alert("保存失败: "+e.message)}
 }
 
 /* ---------- 史官 ---------- */
@@ -959,6 +1041,7 @@ async function boot(){
   try{await api("/api/overview")}catch(e){return}
   $("#login").style.display="none";
   startSSE();
+  api("/api/personas").then(r=>{window.PERSONAS=r.personas||[];}).catch(()=>{}); // ⚙弹窗人格下拉数据源
   renderOverview();
   goTab("overview");
 }

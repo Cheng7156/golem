@@ -53,6 +53,7 @@ func newStore(path, stickerDir string) *store {
 	s.initSettings()
 	s.initChronicle()
 	s.initImagegen()
+	s.initPersonas()
 	s.startArchive()
 	return s
 }
