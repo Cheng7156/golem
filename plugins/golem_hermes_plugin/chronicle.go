@@ -121,7 +121,8 @@ func (c *chronicle) tickFire() {
 			c.mu.Lock()
 			last := c.published[chat]
 			c.mu.Unlock()
-			if last != today {
+			// 去重落库：内存守卫在 /pm reload 后清零，曾导致正刊/号外重复出刊
+			if last != today && !c.p.store.chroniclePublished(chat, today, "正刊") {
 				c.publishOne(chat, today, "正刊")
 			}
 		}
@@ -130,7 +131,8 @@ func (c *chronicle) tickFire() {
 			c.mu.Lock()
 			extra := c.extraDone[chat]
 			c.mu.Unlock()
-			if extra != today && c.p.store.archiveCountSince(chat, today) >= cfg.ChronicleExtraThreshold {
+			if extra != today && !c.p.store.chroniclePublished(chat, today, "号外") &&
+				c.p.store.archiveCountSince(chat, today) >= cfg.ChronicleExtraThreshold {
 				c.publishOne(chat, today, "号外")
 				c.mu.Lock()
 				c.extraDone[chat] = today
@@ -334,6 +336,20 @@ func (s *store) initChronicle() {
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_chron_chat ON chronicles(chat, date)`)
 }
 
+// chroniclePublished 当日该群该类型是否已出刊过（以 chronicles 表真实记录为准，
+// 内存守卫 reload 后清零时兜底——号外风暴事故的根治）
+func (s *store) chroniclePublished(chat, date, kind string) bool {
+	if s == nil || s.db == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM chronicles WHERE chat=? AND date=? AND kind=?", chat, date, kind).Scan(&n)
+	return n > 0
+}
+
+// chronicleNextIssue 期号 = 该群正刊最大期 + 1
 func (s *store) chronicleNextIssue(chat, date, kind string) int {
 	if s == nil || s.db == nil {
 		return 1
