@@ -99,6 +99,11 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	// 1. 全量采集群/私聊上下文（AlwaysRun 保证劫持期间也能记录）
 	p.rings.add(session, msg)
 
+	// 1.01 冷场看护：任何非自身的消息都算群有人的动静（proactive.go 的真人时钟）
+	if p.fun != nil {
+		p.fun.noteHuman(session, time.Now())
+	}
+
 	// 1.2 图片环：画坊改图素材（只存元数据，被点单才下载原图；自己发的已在上方过滤）
 	if msg.GetType().GetCode() == message.TypeImage.Code &&
 		msg.GetSender().GetType() == contact.ContactType_CONTACT_TYPE_CHATROOM {
@@ -438,10 +443,15 @@ func isMentionedBot(msg *message.Message, self *contact.SelfInfo) bool {
 // sessionBucket 会话时间桶后缀：Hermes 会话转录随聊天无限增长（实测单轮 prompt
 // 膨胀到 40 万 token），按 session_rotate_min 分桶轮换天然封顶。0=不轮换
 func (p *hermesPlugin) sessionBucket() string {
+	return p.sessionBucketAt(time.Now().Unix())
+}
+
+// sessionBucketAt 指定时刻所属的会话桶（冷场看护用它回到沉默发生时的那个会话）
+func (p *hermesPlugin) sessionBucketAt(ts int64) string {
 	if p.Config.SessionRotateMin <= 0 {
 		return ""
 	}
-	return ":" + fmt.Sprintf("%d", time.Now().Unix()/int64(p.Config.SessionRotateMin*60))
+	return ":" + fmt.Sprintf("%d", ts/int64(p.Config.SessionRotateMin*60))
 }
 
 // mentionsOtherMember 消息 @ 了人但没 @ 我 → 明显是喊别人。

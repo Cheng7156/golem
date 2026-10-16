@@ -168,6 +168,7 @@ func (w *webUI) handleOverview(rw http.ResponseWriter, _ *http.Request) {
 		"latency": m.latencyStats(),
 		"stickers": stickerOverview(p.store),
 		"workshop": p.store.workorderStats(),
+		"proactive": map[string]any{"today": p.funProToday(), "enabled_chats": p.funProEnabledChats()},
 	}
 	tp, tc := p.store.usageToday()
 	out["usage_today"] = map[string]any{"prompt": tp, "completion": tc, "cap": p.Config.DailyTokenCap}
@@ -266,6 +267,8 @@ func (w *webUI) handleConfig(rw http.ResponseWriter, _ *http.Request) {
 		"owner_only_private": c.OwnerOnlyPrivate, "owner_bypass_ambient": c.OwnerBypassAmbient,
 		"group_sessions_per_user": c.GroupSessionsPerUser, "owner_count": len(w.p.ownerSet),
         "crow_enabled": c.CrowEnabled, "grudge_enabled": c.GrudgeEnabled, "mood_enabled": c.MoodEnabled,
+        "proactive_min": c.ProactiveMin, "proactive_daily_cap": c.ProactiveDailyCap,
+        "proactive_quiet": fmt.Sprintf("%02d:00-%02d:00", c.ProactiveQuietStart, c.ProactiveQuietEnd),
         "profile_enabled": c.ProfileEnabled, "chronicle_enabled": c.ChronicleEnabled,
         "chronicle_hour": c.ChronicleHour, "chronicle_minute": c.ChronicleMinute,
 		"sticker_enabled": c.StickerEnabled, "sticker_probability": c.StickerProbability,
@@ -338,6 +341,7 @@ func (w *webUI) overviewNoProbe() map[string]any {
 		"latency": m.latencyStats(),
 		"stickers": stickerOverview(p.store),
 		"workshop": p.store.workorderStats(),
+		"proactive": map[string]any{"today": p.funProToday(), "enabled_chats": p.funProEnabledChats()},
 		"usage_today": map[string]any{"prompt": tp, "completion": tc, "cap": p.Config.DailyTokenCap},
 		"ts": time.Now().Unix(),
 	}
@@ -798,6 +802,10 @@ func (w *webUI) handleChatSettingsPut(rw http.ResponseWriter, r *http.Request) {
 	}
 	if cs.SessionMode != nil && *cs.SessionMode != "shared" && *cs.SessionMode != "per_user" {
 		writeErr(rw, http.StatusBadRequest, "session_mode 仅支持 shared|per_user")
+		return
+	}
+	if cs.ProactiveMin != nil && (*cs.ProactiveMin < 0 || *cs.ProactiveMin > 1440) {
+		writeErr(rw, http.StatusBadRequest, "proactive_min 取值 0-1440（0=跟随全局）")
 		return
 	}
 	if err := w.p.store.saveChatSettings(cs); err != nil {

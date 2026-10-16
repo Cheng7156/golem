@@ -59,10 +59,11 @@ type funState struct {
 	mu        sync.Mutex
 	lastCrow  map[string]string // chat -> 上次打鸣日（YYYY-MM-DD）
 	lastMood  map[string]int64 // chat -> 上次突然的自我
+	sil       *silState        // 冷场看护（proactive.go）
 }
 
 func newFunState() *funState {
-	return &funState{lastCrow: map[string]string{}, lastMood: map[string]int64{}}
+	return &funState{lastCrow: map[string]string{}, lastMood: map[string]int64{}, sil: newSilState()}
 }
 
 // ============================================================
@@ -243,6 +244,7 @@ func (f *funEngine) loop() {
 			f.crowTick(now)
 			f.maybeMood(now)
 			f.grudgeDigTick(now)
+			f.proactiveTick(now)
 		}
 	}
 }

@@ -42,6 +42,10 @@ type Config struct {
 	CrowEnabled          bool    `toml:"crow_enabled" comment:"打鸣：每日随机清晨在开启的群喔喔喔（群级可覆盖）"`
 	GrudgeEnabled        bool    `toml:"grudge_enabled" comment:"记仇小本本：被嫌弃入账，低频翻旧账（群级可覆盖）"`
 	MoodEnabled          bool    `toml:"mood_enabled" comment:"突然的自我：深夜低概率存在主义发言后自动撤回（群级可覆盖）"`
+	ProactiveMin         int     `toml:"proactive_min" comment:"冷场看护：群沉默多少分钟后允许主动冒泡（全局默认值；群级可在Web覆盖，总开关在会话⚙）"`
+	ProactiveDailyCap    int     `toml:"proactive_daily_cap" comment:"每群每日主动冒泡次数上限（0=不限）"`
+	ProactiveQuietStart  int     `toml:"proactive_quiet_start" comment:"冒泡静默时段开始时(0-23)，该时段绝不主动开口"`
+	ProactiveQuietEnd    int     `toml:"proactive_quiet_end" comment:"冒泡静默时段结束时(1-24)，不含该时刻"`
 	ChronicleEnabled     bool    `toml:"chronicle_enabled" comment:"史官总开关（出刊群在会话页⚙逐群开启）"`
 	ChronicleHour        int     `toml:"chronicle_hour" comment:"正刊时刻：时(0-23)"`
 	ChronicleMinute      int     `toml:"chronicle_minute" comment:"正刊时刻：分(0-59)"`
@@ -100,6 +104,10 @@ func defaultConfig() Config {
 		CrowEnabled:         true,
 		GrudgeEnabled:       true,
 		MoodEnabled:         true,
+		ProactiveMin:        40,
+		ProactiveDailyCap:   2,
+		ProactiveQuietStart: 1,
+		ProactiveQuietEnd:   8,
 		ChronicleEnabled:    true,
 		ChronicleHour:       22,
 		ChronicleMinute:     0,

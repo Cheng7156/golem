@@ -102,9 +102,11 @@ func (b *bridgeServer) resolveSession(r *http.Request) (string, *activeSession, 
 	}
 	// hermes 内部会话ID 反查（golem_bridge 每次调用都会带上）
 	if sid := strings.TrimSpace(r.Header.Get("X-Hermes-Session-Id")); sid != "" {
-		if ck := b.p.eng.ChatKeyByHermesSession(sid); ck != "" {
-			if as, ok := active[ck]; ok && time.Since(as.LastActive) <= window {
-				return ck, &as, nil
+		if he, ok := b.p.eng.(*httpEngine); ok {
+			if ck := he.ChatKeyByHermesSession(sid); ck != "" {
+				if as, ok := active[ck]; ok && time.Since(as.LastActive) <= window {
+					return ck, &as, nil
+				}
 			}
 		}
 	}

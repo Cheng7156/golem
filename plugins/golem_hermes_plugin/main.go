@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName    = "golem_hermes_plugin"
-	pluginVersion = "0.9.6"
+	pluginVersion = "0.10.0"
 )
 
 func main() {
@@ -58,7 +58,7 @@ type hermesPlugin struct {
 	workshop *workshop           // 画坊：生图/改图后台画手
 
 	rings    *ringStore
-	eng      *httpEngine
+	eng      Engine
 	disp     *dispatcher
 	out      *outflow
 	store    *store
@@ -138,6 +138,12 @@ func (p *hermesPlugin) OnLoad() error {
 	p.rings = newRingStore(p.Config.ContextWindow)
 	p.eng = newEngine(&p.Config)
 	p.out = newOutflow(p.message, &p.Config)
+	// 机器人时钟回调（冷场看护）：闭包延迟解引用 p.fun，规避装配顺序
+	p.out.onSent = func(chat, text string) {
+		if p.fun != nil {
+			p.fun.noteBot(chat, text, time.Now())
+		}
+	}
 	p.store = newStore(filepath.Join(p.dataDir, "state.db"), filepath.Join(p.dataDir, "sticker_files"))
 	p.disp = newDispatcher(&p.Config, p.eng, p.out, p.rings, p.store, p.metrics)
 	if p.Config.StickerEnabled {

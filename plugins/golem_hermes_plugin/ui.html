@@ -744,6 +744,9 @@ function renderChatSettings(chat,name,isGroup){
     ${tg("crow_enabled","🐓 打鸣（每日清晨随机喔喔喔）")}
     ${tg("grudge_enabled","📓 记仇小本本（被嫌弃入账，低频翻旧账）")}
     ${tg("mood_enabled","🌫️ 突然的自我（深夜低概率emo后撤回）")}
+    <div class="faint" style="margin:14px 0 4px;font-size:11.5px;letter-spacing:1px">— 冷场看护 —</div>
+    ${tg("proactive_enabled","🗣️ 主动冒泡（群冷场后带着会话记忆自然接话）")}
+    ${numRow("proactive_min","冷场阈值（沉默超过该分钟数才考虑冒泡）","分钟",5,240,5,40)}
     <div class="faint" style="margin:14px 0 4px;font-size:11.5px;letter-spacing:1px">— 画坊 —</div>
     ${tg("imagegen_enabled","🎨 画坊（本群可下生图/改图工单）")}
     ${numRow("imagegen_daily_cap","本群日产能","张",0,50,1,20)}
@@ -771,7 +774,7 @@ function renderChatSettings(chat,name,isGroup){
     b.onclick=()=>{
       const k=b.dataset.k;
       if(CUR_SET[k]===null||CUR_SET[k]===undefined){
-        CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:(k==="imagegen_daily_cap")?20:false;
+        CUR_SET[k]=(k==="ambient_rate")?20:(k==="ambient_cooldown_sec")?300:(k==="imagegen_daily_cap")?20:(k==="proactive_min")?40:false;
       }else{CUR_SET[k]=null}
       renderChatSettings(chat,name,isGroup);
     };
@@ -785,7 +788,7 @@ function renderChatSettings(chat,name,isGroup){
   $("#modal-bd").querySelectorAll("input[type=range][data-k]").forEach(rg=>{
     rg.oninput=()=>{
       CUR_SET[rg.dataset.k]=Number(rg.value);
-      const suf={"ambient_rate":"%","ambient_cooldown_sec":"秒","imagegen_daily_cap":"张"}[rg.dataset.k]??"";
+      const suf={"ambient_rate":"%","ambient_cooldown_sec":"秒","imagegen_daily_cap":"张","proactive_min":"分钟"}[rg.dataset.k]??"";
       const lbl=document.querySelector(`#modal-bd [data-vk="${rg.dataset.k}"]`);
       if(lbl)lbl.textContent=rg.value+suf;
     };

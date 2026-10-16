@@ -50,7 +50,7 @@ type activeSession struct {
 // dispatcher 同会话串行、跨会话并行的任务调度器；新消息打断旧任务（latest-wins）
 type dispatcher struct {
 	cfg     *Config
-	eng     *httpEngine
+	eng     Engine
 	out     *outflow
 	rings   *ringStore
 	store   *store
@@ -73,7 +73,7 @@ type sessionWorker struct {
 	cancel context.CancelFunc
 }
 
-func newDispatcher(cfg *Config, eng *httpEngine, out *outflow, rings *ringStore, store *store, m *metrics) *dispatcher {
+func newDispatcher(cfg *Config, eng Engine, out *outflow, rings *ringStore, store *store, m *metrics) *dispatcher {
 	slots := cfg.MaxParallelSessions
 	if slots <= 0 {
 		slots = 4

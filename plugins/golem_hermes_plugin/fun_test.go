@@ -41,6 +41,12 @@ func newFunTestPlugin(t *testing.T) (*hermesPlugin, *fakeAbility) {
 	p.metrics = newMetrics()
 	p.out = newOutflow(fake, &p.Config)
 	p.Config.MinReplyIntervalSec = 0
+	// 与 OnLoad 相同的机器人时钟回调装配（冷场看护依赖）
+	p.out.onSent = func(chat, text string) {
+		if p.fun != nil {
+			p.fun.noteBot(chat, text, time.Now())
+		}
+	}
 	p.fun = newFunEngine(p)
 	// 注册活跃群（chatsSnapshot 的数据源是决策流）
 	p.metrics.addDecision(decisionRec{Chat: "g@chatroom", ChatName: "测试群", IsGroup: true})

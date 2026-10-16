@@ -27,6 +27,8 @@ type outflow struct {
 	cfg   *Config
 	slots chan struct{}
 
+	onSent func(chat, text string) // 每次成功发声后的回调（冷场看护的机器人时钟）
+
 	mu        sync.Mutex
 	last      map[string]time.Time
 	emojiLast map[string]time.Time // 同聊天表情最小间隔（防表情刷屏的硬闸）
@@ -38,6 +40,13 @@ func newOutflow(m message.Ability, cfg *Config) *outflow {
 		slots = 4
 	}
 	return &outflow{msg: m, cfg: cfg, slots: make(chan struct{}, slots), last: map[string]time.Time{}, emojiLast: map[string]time.Time{}}
+}
+
+// sent 机器人刚开了口（文本/引用/表情/图片一律算）；回调在 OnLoad 装配，未装则忽略
+func (o *outflow) sent(chat, text string) {
+	if o.onSent != nil {
+		o.onSent(chat, text)
+	}
 }
 
 func (o *outflow) throttle(session string) {
@@ -69,6 +78,9 @@ func (o *outflow) sendText(receiver, text string) error {
 		Receiver: &contact.Contact{Username: receiver},
 		Content:  text,
 	})
+	if err == nil {
+		o.sent(receiver, text)
+	}
 	return err
 }
 
@@ -85,6 +97,7 @@ func (o *outflow) sendMoodThenRevoke(receiver, text string) {
 	if err != nil || resp == nil || resp.NewId == 0 {
 		return
 	}
+	o.sent(receiver, text)
 	go func(newID uint64) {
 		time.Sleep(3 * time.Second)
 		_, _ = o.msg.Revoke(receiver, newID)
@@ -111,6 +124,9 @@ func (o *outflow) sendQuote(t *task, text string) error {
 			Xml:     buildQuoteXML(t, text),
 		}},
 	})
+	if err == nil {
+		o.sent(t.Receiver, text)
+	}
 	return err
 }
 
@@ -172,6 +188,9 @@ func (o *outflow) sendEmoji(receiver string, data []byte) error {
 			Media: &message.Media{Data: data, Size: uint32(len(data))},
 		}},
 	})
+	if err == nil {
+		o.sent(receiver, "")
+	}
 	return err
 }
 
@@ -189,6 +208,9 @@ func (o *outflow) sendImage(receiver string, data []byte) error {
 			Media: &message.Media{Data: data, Size: uint32(len(data))},
 		}},
 	})
+	if err == nil {
+		o.sent(receiver, "")
+	}
 	return err
 }
 

@@ -80,6 +80,18 @@ func (s *store) kvSet(k, v string) {
 	_, _ = s.db.Exec("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, v)
 }
 
+// lastArchiveTs 某群归档里最后一条消息的时刻（冷场看护 reload 后播种真人时钟用；0=无归档）
+func (s *store) lastArchiveTs(chat string) int64 {
+	if s == nil || s.db == nil || chat == "" {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ts int64
+	_ = s.db.QueryRow("SELECT COALESCE(MAX(ts),0) FROM msg_archive WHERE chat=?", chat).Scan(&ts)
+	return ts
+}
+
 func (s *store) close() {
 	s.stopArchive()
 	if s.db != nil {
@@ -405,14 +417,14 @@ func (s *store) tokenExceeded(capTokens int) bool {
 
 type tagger struct {
 	store *store
-	eng   *httpEngine
+	eng   Engine
 	cfg   *Config
 	stop  chan struct{}
 	done  chan struct{}
 	wake  chan struct{} // 收集到新表情时立即唤醒扫描
 }
 
-func newTagger(s *store, e *httpEngine, cfg *Config) *tagger {
+func newTagger(s *store, e Engine, cfg *Config) *tagger {
 	return &tagger{store: s, eng: e, cfg: cfg, stop: make(chan struct{}), done: make(chan struct{}), wake: make(chan struct{}, 1)}
 }
 
