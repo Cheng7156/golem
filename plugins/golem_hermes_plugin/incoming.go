@@ -107,11 +107,11 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 	// 1.2 图片环：画坊改图素材（只存元数据，被点单才下载原图；自己发的已在上方过滤）
 	if msg.GetType().GetCode() == message.TypeImage.Code &&
 		msg.GetSender().GetType() == contact.ContactType_CONTACT_TYPE_CHATROOM {
-		if md := msg.GetImage().GetMedia(); md != nil && md.GetMd5() != "" {
+		if md5v, key, _, size, ok := imageMediaOrRaw(msg); ok {
 			p.store.ringAddImage(ringImage{
 				MsgID: msg.GetId(), Chat: session,
 				Wxid: msg.GetMember().GetUsername(), Name: sanitizeName(speakerName(msg)),
-				Md5: md.GetMd5(), AesKey: md.GetKey(), Size: md.GetSize(),
+				Md5: md5v, AesKey: key, Size: size,
 			})
 		}
 	}
@@ -347,6 +347,12 @@ func (p *hermesPlugin) routeProfile(text string) string {
 }
 
 func (p *hermesPlugin) downloadImage(msg *message.Message, timeout time.Duration) []byte {
+	// 宿主解析零值的现状下消息自带 Media 三元组为空 → 用 Raw 抢救的元数据最小重建
+	if msg.GetImage().GetMedia() == nil || msg.GetImage().GetMedia().GetMd5() == "" {
+		if md5v, key, _, size, ok := imageMediaOrRaw(msg); ok {
+			msg = p.buildRingMessage(ringImage{Chat: msg.GetSender().GetUsername(), Md5: md5v, AesKey: key, Size: size})
+		}
+	}
 	type result struct {
 		data []byte
 		err  error

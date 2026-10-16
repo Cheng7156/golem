@@ -36,7 +36,9 @@ func describeMessage(msg *message.Message) (kind, content string) {
 	case message.TypeText.Code:
 		return "text", msg.GetText().GetContent()
 	case message.TypeImage.Code:
-		return "image", "[图片] " + msg.GetContent()
+		// 宿主对当前报文的解析为零值，Content 是误导性的 "[0 x 0] 0B"（模型照念）。
+		// 弃用它，从 Raw 报文抢救真实宽高/大小（imgmeta.go），失败则退回中性占位
+		return "image", imageContextLabel(msg)
 	case message.TypeEmoji.Code:
 		return "emoji", "[表情] " + msg.GetEmoji().GetDesc()
 	case message.TypeVoice.Code:
