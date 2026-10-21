@@ -814,24 +814,29 @@ async function toggleMemberFlag(wxid,field,cur){
 }
 
 /* ---------- 人设库 ---------- */
-async function loadPersonas(){
-  try{
-    const r=await api("/api/personas");
-    window.PERSONAS=r.personas||[];
-    $("#pa-default").innerHTML=`<option value="">（内置·小赫）</option>`+
-      window.PERSONAS.filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}" ${p.name===r.default?"selected":""}>${esc(p.emoji||"")} ${esc(p.name)}</option>`).join("");
-    $("#pa-grid").innerHTML=window.PERSONAS.map((p,i)=>`
+function renderPersonas(){
+  const def=window.PERSONAS_DEFAULT||"";
+  $("#pa-default").innerHTML=`<option value="">（内置·小赫）</option>`+
+    (window.PERSONAS||[]).filter(p=>p.enabled).map(p=>`<option value="${esc(p.name)}" ${p.name===def?"selected":""}>${esc(p.emoji||"")} ${esc(p.name)}</option>`).join("");
+  $("#pa-grid").innerHTML=(window.PERSONAS||[]).map((p,i)=>`
       <div class="card" style="cursor:pointer;${p.enabled?"":"opacity:.45"}" onclick="showPersona(${i})">
         <div style="display:flex;gap:10px;align-items:center">
           <div style="font-size:26px">${esc(p.emoji||"🎭")}</div>
           <div style="min-width:0">
-            <div style="font-weight:700">${esc(p.name)} ${p.enabled?"":'<span class="b b-gray">停用</span>'}${(r.default===p.name)?' <span class="b b-teal">默认</span>':""}</div>
+            <div style="font-weight:700">${esc(p.name)} ${p.enabled?"":'<span class="b b-gray">停用</span>'}${(def===p.name)?' <span class="b b-teal">默认</span>':""}</div>
             <div class="faint" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.brief||"")}</div>
           </div>
         </div>
         <div class="dim" style="font-size:12px;margin:8px 0 0;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(p.prompt||"")}</div>
         ${p.prefer_emotions?`<div style="margin-top:7px">${p.prefer_emotions.split(",").filter(Boolean).map(e=>`<span class="b b-violet" style="margin:1px">${esc(e)}</span>`).join("")}</div>`:""}
       </div>`).join("")||`<div class="empty" style="grid-column:1/-1">人设库为空</div>`;
+}
+async function loadPersonas(){
+  try{
+    const r=await api("/api/personas");
+    window.PERSONAS=r.personas||[];
+    window.PERSONAS_DEFAULT=r.default||"";
+    renderPersonas();
   }catch(e){}
 }
 function showPersona(i){
@@ -857,7 +862,8 @@ function personaApply(i){
   p.emoji=$("#pe-emoji").value.trim(); p.name=$("#pe-name").value.trim();
   p.brief=$("#pe-brief").value.trim(); p.prefer_emotions=$("#pe-emo").value.trim();
   p.prompt=$("#pe-prompt").value.trim(); p.enabled=$("#pe-enabled").checked;
-  closeAll(); loadPersonas();
+  // 只做本地重绘——绝不能拉服务器数据，否则未保存的本地修改会被旧值覆盖（保存失效 bug 的根因）
+  closeAll(); renderPersonas();
 }
 function personaAdd(){
   window.PERSONAS.push({name:"新人格",emoji:"🎭",brief:"",prompt:"",prefer_emotions:"",enabled:true});
@@ -867,7 +873,7 @@ async function savePersonas(){
   try{
     const r=await api("/api/personas",{method:"PUT",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({default:$("#pa-default").value,personas:window.PERSONAS})});
-    window.PERSONAS=r.personas||[]; loadPersonas();
+    window.PERSONAS=r.personas||[]; window.PERSONAS_DEFAULT=r.default||""; renderPersonas();
     alert("人设库已保存，各群下一轮对话生效");
   }catch(e){alert("保存失败: "+e.message)}
 }
