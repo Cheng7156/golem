@@ -54,8 +54,29 @@ func newStore(path, stickerDir string) *store {
 	s.initChronicle()
 	s.initImagegen()
 	s.initPersonas()
+	s.migrateArchiveImageLabels()
 	s.startArchive()
 	return s
+}
+
+// migrateArchiveImageLabels 一次性清洗：宿主解析零值年代归档的图片行带着
+// 误导性的 "[0 x 0] 0B"（模型照念导致 0B 梗，画像/史官语料也被污染）。
+// 幂等：清洗过的行不再匹配 LIKE，重复执行无副作用。
+func (s *store) migrateArchiveImageLabels() {
+	if s == nil || s.db == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE msg_archive SET content='[图片]'
+		WHERE kind='image' AND content LIKE '%[0 x 0] 0B%'`)
+	if err != nil {
+		slog.Warn("[ghp] 归档图片标签清洗失败", "err", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info(fmt.Sprintf("[ghp] 归档清洗：%d 行误导性 0B 图片标签已修正", n))
+	}
 }
 
 // ---- kv 通用读写（画坊运行时配置、配额计数等） ----

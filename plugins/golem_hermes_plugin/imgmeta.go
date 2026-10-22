@@ -75,14 +75,15 @@ func parseRawImage(msg *message.Message) (rawImageMeta, bool) {
 		} `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(raw), &nm); err != nil || nm.Content.Value == "" {
-		slog.Info("[ghp] 图片Raw无content", "raw_len", len(raw))
+		// head 写进 msg 本体：Web 日志视图不展示 attrs，只展示 msg
+		slog.Info(fmt.Sprintf("[ghp] 图片Raw无content raw_len=%d head=%s", len(raw), previewOf(raw, 180)))
 		return meta, false
 	}
 	xmlStr := imgPrefixRe.ReplaceAllString(nm.Content.Value, "")
 	xmlStr = strings.ReplaceAll(xmlStr, "\\/", "/")
 	tag := imgTagRe.FindString(xmlStr)
 	if tag == "" {
-		slog.Info("[ghp] 图片Raw无img标签", "head", previewOf(xmlStr, 160))
+		slog.Info(fmt.Sprintf("[ghp] 图片Raw无img标签 content_head=%s", previewOf(xmlStr, 260)))
 		return meta, false
 	}
 	attrs := map[string]string{}
@@ -95,10 +96,15 @@ func parseRawImage(msg *message.Message) (rawImageMeta, bool) {
 	meta.Size = attrU32(attrs, "length", "cdnthumblength", "hevc_mid_size", "datalen", "size")
 	meta.Width = attrU32(attrs, "cdnthumbwidth", "width", "w")
 	meta.Height = attrU32(attrs, "cdnthumbheight", "height", "h")
-	// 首次对样：把真实 img 标签留在日志里，属性名有变一眼可见
-	slog.Info("[ghp] 图片元数据抢救", "md5", previewOf(meta.Md5, 12), "size", meta.Size,
-		"dim", fmt.Sprintf("%dx%d", meta.Width, meta.Height), "tag", previewOf(tag, 300))
-	return meta, meta.Md5 != "" || meta.Size > 0
+	if meta.Md5 == "" && meta.Size == 0 {
+		// 有 img 标签但属性全空/全零：同样把标签原样留档，属性名有变一眼可见
+		slog.Info(fmt.Sprintf("[ghp] 图片img标签无有效属性 tag=%s", previewOf(tag, 260)))
+		return meta, false
+	}
+	// 命中：标签留档供核对
+	slog.Info(fmt.Sprintf("[ghp] 图片元数据抢救 md5=%s size=%d dim=%dx%d tag=%s",
+		previewOf(meta.Md5, 12), meta.Size, meta.Width, meta.Height, previewOf(tag, 200)))
+	return meta, true
 }
 
 // imageContextLabel 群上下文/归档用的图片摘要：能抢救出真实信息就展示，
