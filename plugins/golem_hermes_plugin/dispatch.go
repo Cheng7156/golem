@@ -262,6 +262,46 @@ func (d *dispatcher) runOne(ctx context.Context, t *task) {
 	var hinted bool
 	var hintMu sync.Mutex
 
+	// ---- 流式播报（v0.12.2）：叙述过渡句实时发群，最终答案整发 ----
+	// 分流开关是工具边界：evTool 到来时，积压文本必然是"agent 停下打字去调工具"
+	// 的叙述块，立即冲刷；最后一个工具之后连续流出的文本是最终内容（如新闻正文），
+	// 不冲刷，run 结束由 deliver 一次性整发。
+	var (
+		liveSent int             // 已实时播报的 rune 数（res.Text 前缀）
+		liveSegs int             // 实时播报段数
+		pending  strings.Builder // 未播报文本（自 liveSent 起）
+	)
+	flushNarration := func() {
+		s := pending.String()
+		if strings.TrimSpace(s) == "" {
+			return
+		}
+		// 未闭合的内联图标记：整块压住，结尾一并交付（防半个 markdown 图链接出土）
+		if i := strings.LastIndex(s, "!["); i >= 0 && !strings.Contains(s[i:], ")") {
+			return
+		}
+		if d.cfg.MaxSegments > 0 && liveSegs >= d.cfg.MaxSegments {
+			return
+		}
+		cut := lastSentenceCut(s)
+		if cut <= 0 {
+			return
+		}
+		runes := []rune(s)
+		part := strings.TrimSpace(string(runes[:cut]))
+		if part == "" {
+			return
+		}
+		if err := d.out.sendText(t.Receiver, part); err == nil {
+			liveSegs++
+			liveSent += len(runes[:cut])
+			pending.Reset()
+			pending.WriteString(string(runes[cut:]))
+		} else {
+			slog.Warn("[ghp] 实时播报发送失败", "err", err)
+		}
+	}
+
 	rec := &runRec{
 		Chat: t.Receiver, Speaker: t.Speaker, Trigger: t.Trigger,
 		Profile: t.Profile,
@@ -283,9 +323,14 @@ func (d *dispatcher) runOne(ctx context.Context, t *task) {
 		Image:      t.Image,
 		ImageMime:  t.ImageMime,
 	}, func(ev runEvent) {
+		if ev.Type == evDelta {
+			pending.WriteString(ev.Text)
+			return
+		}
 		if ev.Type != evTool {
 			return
 		}
+		flushNarration()
 		hintMu.Lock()
 		defer hintMu.Unlock()
 		if !containsStr(tools, ev.Tool) {
@@ -341,6 +386,27 @@ func (d *dispatcher) runOne(ctx context.Context, t *task) {
 			rec.Reply = text
 		}
 	}
+	// 有实时播报时只交付未播报的尾巴（新闻等最终内容整发）
+	if liveSent > 0 {
+		rest := strings.TrimSpace(string([]rune(res.Text)[liveSent:]))
+		segAdd := 0
+		if rest != "" {
+			if d.metrics != nil {
+				segAdd, rec.Sticker = d.deliver(t, rest)
+			} else {
+				d.deliver(t, rest)
+			}
+		}
+		if d.metrics != nil {
+			rec.Segments = liveSegs + segAdd
+			rec.Status = "done"
+			d.metrics.finishRun(rec)
+		}
+		slog.Info("[ghp] 运行完成", "session", t.SessionKey, "profile", t.Profile,
+			"elapsed", time.Since(start), "chars", len([]rune(text)),
+			"live_segs", liveSegs, "tail", len([]rune(rest)), "tools", strings.Join(tools, ","))
+		return
+	}
 	if text == "" {
 		if d.metrics != nil {
 			rec.Status = "done"
@@ -358,6 +424,19 @@ func (d *dispatcher) runOne(ctx context.Context, t *task) {
 	} else {
 		d.deliver(t, text)
 	}
+}
+
+// lastSentenceCut 返回可安全截断的 rune 切点（最后一个句读之后）；0=无句读不切
+func lastSentenceCut(s string) int {
+	runes := []rune(s)
+	cut := 0
+	for i, r := range runes {
+		switch r {
+		case '。', '！', '？', '…', '～', '~', '\n', '；', ';':
+			cut = i + 1
+		}
+	}
+	return cut
 }
 
 // deliver 发送回复（文本分段/媒体/表情），返回 (分段数, 附加的表情情绪)

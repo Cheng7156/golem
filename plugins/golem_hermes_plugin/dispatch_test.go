@@ -16,6 +16,8 @@ type gateEngine struct {
 	blocks int          // 尚未放行的 Run 次数（-1=全部阻塞直到 gate 关闭）
 	ran    []runRequest // 收到的请求（prompt 快照）
 	calls  int
+	script []runEvent // 非 nil 时 Run 同步回放事件流（流式播报测试用）
+	text   string
 }
 
 // release 幂等放行
@@ -25,6 +27,8 @@ func (e *gateEngine) Run(ctx context.Context, req runRequest, onEvent func(runEv
 	e.mu.Lock()
 	e.calls++
 	e.ran = append(e.ran, req)
+	script := e.script
+	text := e.text
 	b := e.blocks
 	if b != 0 {
 		if b > 0 {
@@ -39,7 +43,15 @@ func (e *gateEngine) Run(ctx context.Context, req runRequest, onEvent func(runEv
 	} else {
 		e.mu.Unlock()
 	}
-	return engineResult{Text: "好的"}, nil
+	for _, ev := range script {
+		if onEvent != nil {
+			onEvent(ev)
+		}
+	}
+	if text == "" && len(script) == 0 {
+		text = "好的" // 老测试的默认回复
+	}
+	return engineResult{Text: text}, nil
 }
 func (e *gateEngine) Complete(ctx context.Context, req runRequest) (engineResult, error) {
 	return engineResult{}, nil
@@ -178,5 +190,60 @@ func TestStaleCasualDropped(t *testing.T) {
 	eng.mu.Unlock()
 	if calls != 0 {
 		t.Fatalf("过期闲聊不应触发 run，得 %d 次", calls)
+	}
+}
+
+// TestNarrationStreamsAtToolBoundary 叙述过渡句在工具边界实时发群，最终内容（新闻）整发
+func TestNarrationStreamsAtToolBoundary(t *testing.T) {
+	d, eng, fake := newDispatchTest(t)
+	const narr1 = "收到，先去搜一下今天的新闻。"
+	const narr2 = "稍等，正在翻。"
+	const news = "今日新闻要点如下：一、天气晴。二、市场平稳。三、球队赢了。"
+	eng.mu.Lock()
+	eng.blocks = 0
+	eng.script = []runEvent{
+		{Type: evDelta, Text: narr1},
+		{Type: evDelta, Text: narr2},
+		{Type: evTool, Tool: "web_search"},
+		{Type: evDelta, Text: news},
+	}
+	eng.text = narr1 + narr2 + news
+	eng.mu.Unlock()
+	d.enqueue(mkTask("g@x", "mention", "今天的新闻"))
+	waitCond(t, func() bool { eng.mu.Lock(); defer eng.mu.Unlock(); return len(eng.ran) == 1 })
+	time.Sleep(250 * time.Millisecond)
+	if len(fake.sends) != 2 {
+		t.Fatalf("应为 叙述+新闻 两条, got %d: %v", len(fake.sends), fake.sends)
+	}
+	first := fake.sends[0].GetContent()
+	if first != narr1+narr2 {
+		t.Fatalf("第一条应是工具边界冲刷的叙述:\nwant %q\ngot  %q", narr1+narr2, first)
+	}
+	second := fake.sends[1].GetContent()
+	if second != news {
+		t.Fatalf("第二条应是新闻整发:\nwant %q\ngot  %q", news, second)
+	}
+}
+
+// TestUnclosedImageHeld 叙述里未闭合的内联图标记压住不实时播，结尾一并交付
+func TestUnclosedImageHeld(t *testing.T) {
+	d, eng, fake := newDispatchTest(t)
+	eng.mu.Lock()
+	eng.blocks = 0
+	eng.script = []runEvent{
+		{Type: evDelta, Text: "先看图 ![预览](data:image/png;base64,AAA"},
+		{Type: evTool, Tool: "web_search"},
+		{Type: evDelta, Text: "好了。"},
+	}
+	eng.text = "先看图 ![预览](data:image/png;base64,AAA好了。"
+	eng.mu.Unlock()
+	d.enqueue(mkTask("g@x", "mention", "看图"))
+	waitCond(t, func() bool { eng.mu.Lock(); defer eng.mu.Unlock(); return len(eng.ran) == 1 })
+	time.Sleep(250 * time.Millisecond)
+	if len(fake.sends) != 1 {
+		t.Fatalf("未闭合标记应压住不播（结尾整发一条）, got %d: %v", len(fake.sends), fake.sends)
+	}
+	if got := fake.sends[0].GetContent(); !strings.Contains(got, "好了。") {
+		t.Fatalf("结尾应整发全部文本: %q", got)
 	}
 }
