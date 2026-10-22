@@ -44,6 +44,25 @@ const wxImgXML = `wxid_abc:\n<msg><img aeskey="aesk_123" encryhdkey="" cdnthumba
 	`length="88042" crc32="2138585446" md5="md5abc123" hevc_mid_size="66666" ` +
 	`cdnthumbwidth="249" cdnthumbheight="180" /></msg>`
 
+// wxImgMsgXML 新版微信（4.x）实测报文：标签是 <imgmsg>，带换行缩进
+const wxImgMsgXML = "wxid_abc:\n<?xml version=\"1.0\"?>\n<msg>\n\t<imgmsg aeskey=\"52b62f956fb8dc968be5fb02e0781f73\" encryver=\"0\" " +
+	"cdnthumbaeskey=\"52b62f956fb8dc968be5fb02e0781f73\" cdnthumburl=\"305f020100044b3049\" " +
+	"cdnmidimgurl=\"305f020100044bmid\" length=\"152340\" md5=\"md5new4x\" " +
+	"cdnthumbwidth=\"720\" cdnthumbheight=\"960\" /></msg>"
+
+func TestParseRawImageMsgTag(t *testing.T) {
+	meta, ok := parseRawImage(mkImageMsg(wxImgMsgXML))
+	if !ok {
+		t.Fatal("新版 <imgmsg> 报文应解析成功")
+	}
+	if meta.Md5 != "md5new4x" || meta.Key != "52b62f956fb8dc968be5fb02e0781f73" {
+		t.Fatalf("md5/aeskey 不对: %q %q", meta.Md5, meta.Key)
+	}
+	if meta.Size != 152340 || meta.Width != 720 || meta.Height != 960 {
+		t.Fatalf("size/dim 不对: %d %dx%d", meta.Size, meta.Width, meta.Height)
+	}
+}
+
 func TestParseRawImageStandard(t *testing.T) {
 	meta, ok := parseRawImage(mkImageMsg(wxImgXML))
 	if !ok {

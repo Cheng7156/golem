@@ -28,7 +28,8 @@ type rawImageMeta struct {
 }
 
 var (
-	imgTagRe       = regexp.MustCompile(`(?is)<img\s[^>]*/?>`)
+	// 新版微信（4.x）图片标签是 <imgmsg>，旧版是 <img>，两者属性同名
+	imgTagRe       = regexp.MustCompile(`(?is)<img(?:msg)?\s[^>]*>`)
 	imgAttrRe      = regexp.MustCompile(`([A-Za-z0-9_]+)\s*=\s*"((?:[^"\\]|\\.)*)"`)
 	imgPrefixRe    = regexp.MustCompile(`^[^\s<]{1,80}:\n`) // 群消息 "wxid:\n" 前缀
 	xmlEscapeField = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&apos;", "'")
@@ -83,7 +84,7 @@ func parseRawImage(msg *message.Message) (rawImageMeta, bool) {
 	xmlStr = strings.ReplaceAll(xmlStr, "\\/", "/")
 	tag := imgTagRe.FindString(xmlStr)
 	if tag == "" {
-		slog.Info(fmt.Sprintf("[ghp] 图片Raw无img标签 content_head=%s", previewOf(xmlStr, 260)))
+		slog.Info(fmt.Sprintf("[ghp] 图片Raw无img标签 content_head=%s", previewOf(xmlStr, 500)))
 		return meta, false
 	}
 	attrs := map[string]string{}
