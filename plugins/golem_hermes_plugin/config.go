@@ -20,6 +20,8 @@ type Config struct {
 	MinReplyIntervalSec int      `toml:"min_reply_interval_sec" comment:"同会话两次回复最小间隔秒（防刷屏）"`
 	MaxReplyChars       int      `toml:"max_reply_chars" comment:"超过该长度的回复自动分段"`
 	MaxSegments         int      `toml:"max_segments" comment:"单轮回复最多分段数"`
+	BurstWindowSec      int      `toml:"burst_window_sec" comment:"闲聊批量收揽窗口秒：worker 取到闲聊消息后等该秒数，把积压消息合并成一次回复（0=不合并）"`
+	BurstStaleMin       int      `toml:"burst_stale_min" comment:"闲聊消息排队过期分钟数，超时不回（0=不过期）"`
 	DailyTokenCap       int      `toml:"daily_token_cap" comment:"每日token上限(约), 超限后仅响应@与私聊, 0=不限"`
 	BridgeListen        string   `toml:"bridge_listen" comment:"工具桥 HTTP 监听地址（供 hermes 侧插件回呼）"`
 	BridgeToken         string   `toml:"bridge_token" comment:"工具桥 Bearer 令牌，需与 hermes 侧插件配置一致"`
@@ -82,6 +84,8 @@ func defaultConfig() Config {
 		MinReplyIntervalSec: 3,
 		MaxReplyChars:       1200,
 		MaxSegments:         3,
+		BurstWindowSec:      4,
+		BurstStaleMin:       5,
 		DailyTokenCap:       0,
 		BridgeListen:        "127.0.0.1:8790",
 		BridgeToken:         "",

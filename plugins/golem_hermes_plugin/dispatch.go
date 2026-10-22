@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ type task struct {
 	InTypeCode int32
 	InContent  string
 	QuoteSvrid string // 被引用消息ID（画坊改图定位素材用）
+
+	CreatedAt time.Time // 入队时刻（批量消费的过期降级用）
+	BatchN    int       // 本轮批量合并的闲聊消息数（1=单条）
 }
 
 // activeSession 会话在工具桥的可绑定窗口
@@ -47,7 +51,9 @@ type activeSession struct {
 	LastTask   *task
 }
 
-// dispatcher 同会话串行、跨会话并行的任务调度器；新消息打断旧任务（latest-wins）
+// dispatcher 同会话串行、跨会话并行的任务调度器。
+// v0.11.0 消息队列化：闲聊消息让路/批量合并（收揽窗口），仅正式交互(@/引用/私聊)
+// 打断在途 run——白名单群每条消息都触发时，latest-wins 会把所有回复踩死在半路
 type dispatcher struct {
 	cfg     *Config
 	eng     Engine
@@ -66,11 +72,12 @@ type dispatcher struct {
 }
 
 type sessionWorker struct {
-	key   string
-	ch    chan *task
-	mu    sync.Mutex
-	busy  bool
+	key    string
+	ch     chan *task
+	mu     sync.Mutex
+	busy   bool
 	cancel context.CancelFunc
+	curPri int // 在途任务优先级（-1=空闲）
 }
 
 func newDispatcher(cfg *Config, eng Engine, out *outflow, rings *ringStore, store *store, m *metrics) *dispatcher {
@@ -87,15 +94,22 @@ func newDispatcher(cfg *Config, eng Engine, out *outflow, rings *ringStore, stor
 	}
 }
 
-// triggerPriority 正式交互(私聊/@/引用/白名单/主人)=高；环境闲聊=低
+// triggerPriority 触发优先级：正式交互(私聊/@/引用/主人直答)=2 > 白名单跟聊=1 > 环境闲聊=0。
+// 只有更高优先级能打断在途 run；闲聊永不打断（批量合并或让路，见 enqueue/loop）
 func triggerPriority(trigger string) int {
-	if trigger == "ambient" {
+	switch trigger {
+	case "ambient":
 		return 0
+	case "whitelist":
+		return 1
+	default: // private/mention/quote/owner-bypass
+		return 2
 	}
-	return 1
 }
 
 func (d *dispatcher) enqueue(t *task) {
+	t.CreatedAt = time.Now()
+	p := triggerPriority(t.Trigger)
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
@@ -103,18 +117,35 @@ func (d *dispatcher) enqueue(t *task) {
 	}
 	w := d.workers[t.SessionKey]
 	if w == nil {
-		w = &sessionWorker{key: t.SessionKey, ch: make(chan *task, 8)}
+		w = &sessionWorker{key: t.SessionKey, ch: make(chan *task, 8), curPri: -1}
 		d.workers[t.SessionKey] = w
 		go w.loop(d)
 	}
-	busyNow := false
 	w.mu.Lock()
-	busyNow = w.busy || len(w.ch) > 0
+	busyNow := w.busy || len(w.ch) > 0
+	busyPri := w.curPri
+	if !w.busy && len(w.ch) > 0 {
+		busyPri = 1 // 排队中的任务按闲聊计（正式消息从不滞留队列，见下）
+	}
 	w.mu.Unlock()
-	// 环境闲聊不得干扰正式回复：会话忙（在途或排队）时直接放弃本次参与
-	if triggerPriority(t.Trigger) == 0 && busyNow {
+	// 环境闲聊不得干扰任何在途/排队任务
+	if p == 0 && busyNow {
 		d.mu.Unlock()
 		slog.Info("[ghp] 会话忙碌，跳过环境闲聊", "session", t.SessionKey)
+		return
+	}
+	// 闲聊让路：在途优先级严格更高时不打断、不排队——在途 run 结束后 ring 上下文
+	// 自然覆盖这段消息。同级闲聊必须入队：收揽窗口要靠它们合并批量
+	// （v0.11.0 前这里是 latest-wins，白名单群每条消息都打断在途，回复永远活不到发送）
+	if busyNow && p < 2 && p < busyPri {
+		d.active[t.SessionKey] = &activeSession{
+			Receiver: t.Receiver, IsGroup: t.IsGroup, GroupID: t.GroupID,
+			LastActive: time.Now(), LastTask: t,
+		}
+		d.mu.Unlock()
+		if d.metrics != nil {
+			d.metrics.addLog("INFO", "[调度] 闲聊让路（在途优先级 "+strconv.Itoa(busyPri)+"）")
+		}
 		return
 	}
 	d.active[t.SessionKey] = &activeSession{
@@ -131,19 +162,21 @@ func (d *dispatcher) enqueue(t *task) {
 	}
 	d.mu.Unlock()
 
-	// 打断：清空排队中的旧任务
-	for {
-		select {
-		case dropped := <-w.ch:
-			slog.Info("[ghp] 打断：丢弃排队任务", "session", dropped.SessionKey)
-			continue
-		default:
+	// 正式消息（或闲聊打断环境闲聊）：清空排队中的旧任务
+	if p >= 2 || busyNow {
+		for {
+			select {
+			case dropped := <-w.ch:
+				slog.Info("[ghp] 打断：丢弃排队任务", "session", dropped.SessionKey)
+				continue
+			default:
+			}
+			break
 		}
-		break
 	}
-	// 打断：取消在途运行
+	// 打断在途运行（仅正式消息，或闲聊顶掉环境闲聊）
 	w.mu.Lock()
-	if w.busy && w.cancel != nil {
+	if w.busy && w.cancel != nil && p > w.curPri {
 		slog.Info("[ghp] 打断：取消在途运行", "session", t.SessionKey)
 		w.cancel()
 	}
@@ -156,22 +189,66 @@ func (d *dispatcher) enqueue(t *task) {
 	}
 }
 
+// loop 每群单 worker：取任务 → （闲聊）收揽窗口合并批量 → 运行。
+// 运行期间新消息在队列里堆积不打断；@/引用/私聊由 enqueue 侧打断。
 func (w *sessionWorker) loop(d *dispatcher) {
 	timeout := time.Duration(d.cfg.RunTimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
+	settle := time.Duration(d.cfg.BurstWindowSec) * time.Second
+	stale := time.Duration(d.cfg.BurstStaleMin) * time.Minute
 	for t := range w.ch {
+		// 过期降级：闲聊消息排队超时不回——话题凉了硬回就是尬聊
+		if triggerPriority(t.Trigger) == 1 && stale > 0 && time.Since(t.CreatedAt) > stale {
+			slog.Info("[ghp] 闲聊消息过期丢弃", "session", t.SessionKey, "age", time.Since(t.CreatedAt).Round(time.Second))
+			continue
+		}
+		// 收揽窗口：闲聊消息等一小会儿，把积压的同级消息合并成一批（上下文来自 ring，
+		// 天然包含全部积压消息；正式消息到达则立即让位）
+		batchN := 1
+		if triggerPriority(t.Trigger) == 1 && settle > 0 {
+			deadline := time.Now().Add(settle)
+			for {
+				remain := time.Until(deadline)
+				if remain <= 0 {
+					break
+				}
+				select {
+				case nt, ok := <-w.ch:
+					if !ok {
+						deadline = time.Now()
+						continue
+					}
+					if triggerPriority(nt.Trigger) >= 2 {
+						// 正式消息插队：当前闲聊批让位（内容仍在 ring，下一轮可见），
+						// 正式消息直接作为本轮任务
+						t = nt
+						batchN = 1
+						deadline = time.Now()
+						continue
+					}
+					batchN++ // 同级/环境消息并入本批
+				case <-time.After(remain):
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+			}
+		}
+		t.BatchN = batchN
 		d.sem <- struct{}{}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		w.mu.Lock()
 		w.busy = true
 		w.cancel = cancel
+		w.curPri = triggerPriority(t.Trigger)
 		w.mu.Unlock()
 		d.runOne(ctx, t)
 		w.mu.Lock()
 		w.busy = false
 		w.cancel = nil
+		w.curPri = -1
 		w.mu.Unlock()
 		cancel()
 		<-d.sem
@@ -364,6 +441,9 @@ func (d *dispatcher) buildPrompt(t *task) string {
 		b.WriteString("\n")
 		if t.Ambient {
 			b.WriteString("(系统提示: 你自然地决定主动参与这次聊天，请保持简短随意)\n")
+		}
+		if t.BatchN > 1 {
+			fmt.Fprintf(&b, "(系统提示: 上面最近的一串群消息是你不在的这段时间里积累的；自然地接一句就好，可以只回应最后的重点，不必逐条回复)\n")
 		}
 		if t.Quote != "" {
 			fmt.Fprintf(&b, "引用消息: %s\n", t.Quote)
