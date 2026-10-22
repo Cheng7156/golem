@@ -18,6 +18,7 @@ import (
 const (
 	maxEmojiBytes  = 500 * 1024
 	maxImageBytes  = 3 * 1024 * 1024 // gRPC 默认单消息 4MB，留余量
+	maxVideoBytes  = 3 * 1024 * 1024 // 视频同受 gRPC 上限约束（thumb 另计，量小）
 	minReplyBackup = 1024            // 每会话最小回复间隔兜底
 )
 
@@ -206,6 +207,29 @@ func (o *outflow) sendImage(receiver string, data []byte) error {
 		Receiver: &contact.Contact{Username: receiver},
 		Data: &message.Message_Image{Image: &message.ImageData{
 			Media: &message.Media{Data: data, Size: uint32(len(data))},
+		}},
+	})
+	if err == nil {
+		o.sent(receiver, "")
+	}
+	return err
+}
+
+// sendVideo 发送视频消息。gRPC 单消息上限约束：video+thumb 合计不得超过 maxVideoBytes。
+func (o *outflow) sendVideo(receiver string, video, thumb []byte, duration uint32) error {
+	if len(video) == 0 || len(video) > maxVideoBytes {
+		return fmt.Errorf("视频大小不合规: %d bytes（上限 %d）", len(video), maxVideoBytes)
+	}
+	o.slots <- struct{}{}
+	defer func() { <-o.slots }()
+	o.throttle(receiver)
+	_, err := o.msg.Send(&message.Message{
+		Type:     message.TypeVideo,
+		Receiver: &contact.Contact{Username: receiver},
+		Data: &message.Message_Video{Video: &message.VideoData{
+			Media:    &message.Media{Data: video, Size: uint32(len(video))},
+			Thumb:    thumb,
+			Duration: duration,
 		}},
 	})
 	if err == nil {

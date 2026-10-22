@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +44,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux.HandleFunc("POST /v1/remember", b.auth(b.handleRemember))
 	mux.HandleFunc("POST /v1/profile", b.auth(b.handleProfile))
 	mux.HandleFunc("POST /v1/profile_card", b.auth(b.handleProfileCard))
+	mux.HandleFunc("POST /v1/video", b.auth(b.handleVideo))
 	mux.HandleFunc("GET /v1/ping", b.handlePing)
 	// 监控台：/ui 单页 + /api/* 数据面（Cookie 会话，与工具桥 Bearer 协议并存）
 	w := newWebUI(b.p)
@@ -335,6 +342,128 @@ func (b *bridgeServer) handleQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{"sent": true})
+}
+
+// handleVideo 视频发送：agent 只递直链，下载与全部硬闸在 golem 侧（确定性代码）。
+// 闸门：scheme 白名单 → Content-Length 预检 → 限长流式下载（超限即弃）→ 类型粗检 → 日配额。
+func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL      string `json:"url"`
+		Duration uint32 `json:"duration"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	rawURL := strings.TrimSpace(body.URL)
+	if rawURL == "" {
+		writeErr(w, http.StatusBadRequest, "url 不能为空")
+		return
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		writeErr(w, http.StatusBadRequest, "url 必须是 http/https 直链")
+		return
+	}
+	_, as, err := b.resolveSession(r)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	t := as.LastTask
+	if t == nil {
+		writeErr(w, http.StatusConflict, "当前会话没有可识别的甲方")
+		return
+	}
+	chat := t.Receiver
+	maxBytes := b.p.Config.VideoMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = maxVideoBytes
+	}
+	// 日配额（kv 权威账本，reload 不丢）
+	if cap := b.p.Config.VideoDailyCap; cap > 0 {
+		today := time.Now().Format("20060102")
+		if n, _ := strconv.Atoi(b.p.store.kvGet("vidcap:" + chat + ":" + today)); n >= cap {
+			writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("本群今日视频配额已用完（%d 条），明天再来", cap))
+			return
+		}
+	}
+	// 限长下载：超过上限一个字节即整体作废（绝不半截发送）
+	client := &http.Client{Timeout: time.Duration(b.p.Config.VideoTimeoutSec) * time.Second}
+	if client.Timeout <= 0 {
+		client.Timeout = 30 * time.Second
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "url 无效: "+err.Error())
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ghp-video/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "下载失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("下载源返回 %d", resp.StatusCode))
+		return
+	}
+	if resp.ContentLength > int64(maxBytes) {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("视频 %.1fMB 超过上限 %.1fMB（gRPC 通道限制，只支持小视频）",
+				float64(resp.ContentLength)/1024/1024, float64(maxBytes)/1024/1024))
+		return
+	}
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if ct != "" && !strings.Contains(ct, "video") && !strings.Contains(ct, "octet-stream") && !strings.Contains(ct, "mp4") {
+		writeErr(w, http.StatusUnsupportedMediaType, "内容类型不是视频: "+ct)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "下载中断: "+err.Error())
+		return
+	}
+	if len(data) > maxBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("视频超过上限 %.1fMB", float64(maxBytes)/1024/1024))
+		return
+	}
+	if len(data) < 10*1024 {
+		writeErr(w, http.StatusUnprocessableEntity, "下载内容过小，疑似无效视频")
+		return
+	}
+	duration := body.Duration
+	if duration == 0 || duration > 600 {
+		duration = 15 // 无法探测时长时的保守占位；agent 知道真实时长时应传
+	}
+	if err := b.p.out.sendVideo(chat, data, placeholderThumb(), duration); err != nil {
+		writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
+		return
+	}
+	// 记账：日配额 +1
+	today := time.Now().Format("20060102")
+	kvKey := "vidcap:" + chat + ":" + today
+	n, _ := strconv.Atoi(b.p.store.kvGet(kvKey))
+	b.p.store.kvSet(kvKey, strconv.Itoa(n+1))
+	b.p.metrics.addLog("INFO", fmt.Sprintf("[视频] %s 发送 %.0fKB <- %s", previewOf(chat, 20), float64(len(data))/1024, previewOf(u.Host+u.Path, 40)))
+	writeOK(w, map[string]any{
+		"sent": true, "bytes": len(data), "duration": duration,
+		"note": "视频已发到群；缩略图为本插件生成的占位图（无 ffmpeg 解帧）",
+	})
+}
+
+// placeholderThumb 生成 64x64 深灰 JPEG 占位缩略图（无 ffmpeg 依赖；微信列表页显示灰块）
+func placeholderThumb() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for x := 0; x < 64; x++ {
+		for y := 0; y < 64; y++ {
+			img.Set(x, y, color.RGBA{R: 40, G: 40, B: 44, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 70})
+	return buf.Bytes()
 }
 
 func (b *bridgeServer) handleContext(w http.ResponseWriter, r *http.Request) {

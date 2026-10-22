@@ -62,6 +62,9 @@ type Config struct {
 	ImageGenSize         string           `toml:"imagegen_size" comment:"默认尺寸: auto/1024x1024/1536x1024/1024x1536"`
 	ImageGenDailyCap     int              `toml:"imagegen_daily_cap" comment:"全局每日生图张数上限（0=不限；会话级可在Web覆盖）"`
 	ImageGenWorkers      int              `toml:"imagegen_workers" comment:"画坊并发画手数"`
+	VideoDailyCap        int              `toml:"video_daily_cap" comment:"每群每日视频发送条数上限（0=不限）"`
+	VideoMaxBytes        int              `toml:"video_max_bytes" comment:"单条视频字节上限（gRPC 通道限制约3MB，0=默认3MB）"`
+	VideoTimeoutSec      int              `toml:"video_timeout_sec" comment:"视频下载超时秒"`
 }
 
 func defaultConfig() Config {
@@ -125,6 +128,9 @@ func defaultConfig() Config {
 		ImageGenSize:     "auto",
 		ImageGenDailyCap: 20,
 		ImageGenWorkers:  2,
+		VideoDailyCap:    10,
+		VideoMaxBytes:    3 * 1024 * 1024,
+		VideoTimeoutSec:  30,
 		ChronicleStyles: []chronicleStyle{
 			{Name: "太史公体", Hint: "以《史记》笔法行文：句式凝练文白相间，篇末必有『太史公曰』点评，点评需毒舌或深沉二选一", Enabled: true},
 			{Name: "说书人体", Hint: "章回体说书人：『话说』开篇、『欲知后事且听下回分解』收尾，多设悬念，冲突用回合制描写，可拍惊堂木", Enabled: true},

@@ -40,6 +40,10 @@ USAGE_GUIDELINES = (
     "群里 @ 别人的画图请求、转述别人的约稿、聊天里提到想画什么，都不是叫你，绝不开单；"
     "表情包需求绝不开画坊（成本差一个量级）；一次回复最多开一单；"
     "返回产能售罄/未开张/不是对我的单就如实转告，不要反复尝试。\n"
+    "- send_video：用户明确发来视频直链或明确要求发某个具体视频时调用。"
+    "只发用户主动给的链接或群里上下文直接对应的视频；绝不主动搜寻、推荐或批量分发来路不明的视频源"
+    "（版权与内容合规由链接提供方负责，微信对违规内容零容忍）；"
+    "超过3MB/非直链/配额用尽时如实说明原因，不要找别的源硬凑。\n"
     "- reply_quote：需要精确回应某人某条消息时用引用回复。\n"
     "- get_member_profile / get_group_members / search_chat_history / get_recent_context："
     "需要了解群成员或翻聊天记录时使用。\n"
@@ -133,6 +137,21 @@ TOOLS = [
         },
         "画坊：生成一张图片发到当前聊天（后台异步作画，画好自动发群）；传 ref 可基于群里已有照片改图（如把某人照片变成毕加索风格）",
         _make_handler("POST", "/v1/imagegen", timeout=30),
+    ),
+    (
+        "send_video",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string",
+                         "description": "视频直链（http/https，指向 mp4 等视频文件的 URL，不是网页地址）。下载由 golem 完成，上限约 3MB"},
+                "duration": {"type": "integer",
+                              "description": "视频时长秒数（若已知，用于微信展示；不知道就别传）"},
+            },
+            "required": ["url"],
+        },
+        "在当前微信聊天发送一条视频：你给出视频文件直链，golem 负责下载校验并发送（上限约3MB小视频；每群每日有限额）。仅发送用户明确要求或群内上下文合理的内容，不主动搜寻分发来路不明的视频",
+        _make_handler("POST", "/v1/video", timeout=60),
     ),
     (
         "reply_quote",
