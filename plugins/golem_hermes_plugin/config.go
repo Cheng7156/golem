@@ -64,8 +64,7 @@ type Config struct {
 	ImageGenWorkers      int              `toml:"imagegen_workers" comment:"画坊并发画手数"`
 	VideoDailyCap        int              `toml:"video_daily_cap" comment:"每群每日视频发送条数上限（0=不限）"`
 	VideoMaxBytes        int              `toml:"video_max_bytes" comment:"单条视频字节上限（gRPC 通道限制约3MB，0=默认3MB）"`
-	VideoTimeoutSec      int              `toml:"video_timeout_sec" comment:"视频下载超时秒"`
-}
+	VideoTimeoutSec      int              `toml:"video_timeout_sec" comment:"视频下载超时秒"`}
 
 func defaultConfig() Config {
 	return Config{
@@ -128,7 +127,7 @@ func defaultConfig() Config {
 		ImageGenSize:     "auto",
 		ImageGenDailyCap: 20,
 		ImageGenWorkers:  2,
-		VideoDailyCap:    10,
+		VideoDailyCap:    0,
 		VideoMaxBytes:    3 * 1024 * 1024,
 		VideoTimeoutSec:  30,
 		ChronicleStyles: []chronicleStyle{
