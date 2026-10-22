@@ -215,8 +215,13 @@ func (e *httpEngine) Run(ctx context.Context, req runRequest, onEvent func(runEv
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var lastEvent string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "event:") {
+			lastEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -224,6 +229,20 @@ func (e *httpEngine) Run(ctx context.Context, req runRequest, onEvent func(runEv
 		if payload == "[DONE]" {
 			break
 		}
+		// 网关的工具进度事件（event: hermes.tool.progress）：模型每次调用工具时
+		// 出现一次。这是调度器流式播报的"工具边界"信号——叙述句在此冲刷发群
+		if lastEvent == "hermes.tool.progress" {
+			var tp struct {
+				Tool   string `json:"tool"`
+				Status string `json:"status"`
+			}
+			if json.Unmarshal([]byte(payload), &tp) == nil && tp.Tool != "" && onEvent != nil {
+				onEvent(runEvent{Type: evTool, Tool: tp.Tool})
+			}
+			lastEvent = ""
+			continue
+		}
+		lastEvent = ""
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue // 忽略无法解析的心跳/事件行
