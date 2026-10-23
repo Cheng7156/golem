@@ -388,11 +388,16 @@ func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 真实封面 + 真实时长（ffmpeg 抽帧；失败自动回退占位图）
+	thumb, probedDur := videoThumbProbe(data)
 	duration := body.Duration
-	if duration == 0 || duration > 600 {
-		duration = 15 // 无法探测时长时的保守占位；agent 知道真实时长时应传
+	if probedDur > 0 {
+		duration = probedDur
 	}
-	if err := b.p.out.sendVideo(chat, data, placeholderThumb(), duration); err != nil {
+	if duration == 0 || duration > 600 {
+		duration = 15
+	}
+	if err := b.p.out.sendVideo(chat, data, thumb, duration); err != nil {
 		writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
 		return
 	}
@@ -540,11 +545,15 @@ func (b *bridgeServer) handleDeliver(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		thumb, probedDur := videoThumbProbe(data)
 		duration := body.Duration
+		if probedDur > 0 {
+			duration = probedDur
+		}
 		if duration == 0 || duration > 600 {
 			duration = 15
 		}
-		if err := b.p.out.sendVideo(chat, data, placeholderThumb(), duration); err != nil {
+		if err := b.p.out.sendVideo(chat, data, thumb, duration); err != nil {
 			writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
 			return
 		}
