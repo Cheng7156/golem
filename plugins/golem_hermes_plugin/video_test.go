@@ -99,7 +99,7 @@ func TestHandleVideoGates(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte{0x66}, 2*1024*1024))
 	}))
 	defer big.Close()
-	if rw := videoReq(b, `{"url":"` + big.URL + `/big.mp4"}`); rw.Code != 413 {
+	if rw := videoReq(b, `{"url":"`+big.URL+`/big.mp4"}`); rw.Code != 413 {
 		t.Fatalf("超限应 413, got %d %s", rw.Code, rw.Body.String())
 	}
 	// 内容类型不是视频
@@ -108,7 +108,7 @@ func TestHandleVideoGates(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte{'x'}, 100*1024))
 	}))
 	defer bad.Close()
-	if rw := videoReq(b, `{"url":"` + bad.URL + `/page.html"}`); rw.Code != 415 {
+	if rw := videoReq(b, `{"url":"`+bad.URL+`/page.html"}`); rw.Code != 415 {
 		t.Fatalf("非视频类型应 415, got %d", rw.Code)
 	}
 	// 日配额用尽（cap=2，先写满）
@@ -118,7 +118,7 @@ func TestHandleVideoGates(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte{0x66}, 800*1024))
 	}))
 	defer ok.Close()
-	if rw := videoReq(b, `{"url":"` + ok.URL + `/c.mp4"}`); rw.Code != 429 {
+	if rw := videoReq(b, `{"url":"`+ok.URL+`/c.mp4"}`); rw.Code != 429 {
 		t.Fatalf("配额用尽应 429, got %d", rw.Code)
 	}
 	if len(fake.sends) != 0 {
@@ -133,5 +133,55 @@ func TestPlaceholderThumb(t *testing.T) {
 	}
 	if _, err := jpeg.Decode(bytes.NewReader(thumb)); err != nil {
 		t.Fatalf("应为合法 JPEG: %v", err)
+	}
+}
+
+// TestHandleDeliver 定时投递：白名单闸门 + 文本/视频两路
+func TestHandleDeliver(t *testing.T) {
+	b, fake := newVideoTestBridge(t)
+	b.p.Config.DeliverGroups = []string{"g@chatroom"}
+	// 白名单外拒绝（无需会话头）
+	req := httptest.NewRequest("POST", "/v1/deliver", strings.NewReader(`{"chat":"other@chatroom","kind":"text","text":"hi"}`))
+	rw := httptest.NewRecorder()
+	b.handleDeliver(rw, req)
+	if rw.Code != 403 {
+		t.Fatalf("白名单外应 403, got %d", rw.Code)
+	}
+	// 白名单内文本投递（注意：无会话头，验证免绑定）
+	req = httptest.NewRequest("POST", "/v1/deliver", strings.NewReader(`{"chat":"g@chatroom","kind":"text","text":"定时播报测试"}`))
+	rw = httptest.NewRecorder()
+	b.handleDeliver(rw, req)
+	if rw.Code != 200 {
+		t.Fatalf("白名单内文本应成功: %d %s", rw.Code, rw.Body.String())
+	}
+	if len(fake.sends) != 1 || fake.sends[0].GetContent() != "定时播报测试" {
+		t.Fatalf("文本投递不对: %v", fake.sends)
+	}
+	// 空文本 400
+	req = httptest.NewRequest("POST", "/v1/deliver", strings.NewReader(`{"chat":"g@chatroom","kind":"text"}`))
+	rw = httptest.NewRecorder()
+	b.handleDeliver(rw, req)
+	if rw.Code != 400 {
+		t.Fatalf("空文本应 400, got %d", rw.Code)
+	}
+	// 视频投递：白名单内 + 源 800KB
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(bytes.Repeat([]byte{0x77}, 800*1024))
+	}))
+	defer src.Close()
+	body := `{"chat":"g@chatroom","kind":"video","url":"` + src.URL + `/v.mp4","duration":30}`
+	req = httptest.NewRequest("POST", "/v1/deliver", strings.NewReader(body))
+	rw = httptest.NewRecorder()
+	b.handleDeliver(rw, req)
+	if rw.Code != 200 {
+		t.Fatalf("视频投递应成功: %d %s", rw.Code, rw.Body.String())
+	}
+	if len(fake.sends) != 2 || fake.sends[1].GetType().Code != message.TypeVideo.Code {
+		t.Fatal("应发出 TypeVideo")
+	}
+	// 视频日配额与 /v1/video 共享账本
+	if kv := b.p.store.kvGet("vidcap:g@chatroom:" + time.Now().Format("20060102")); kv != "1" {
+		t.Fatalf("视频配额 kv 应为 1, got %q", kv)
 	}
 }

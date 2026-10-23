@@ -45,6 +45,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux.HandleFunc("POST /v1/profile", b.auth(b.handleProfile))
 	mux.HandleFunc("POST /v1/profile_card", b.auth(b.handleProfileCard))
 	mux.HandleFunc("POST /v1/video", b.auth(b.handleVideo))
+	mux.HandleFunc("POST /v1/deliver", b.auth(b.handleDeliver))
 	mux.HandleFunc("GET /v1/ping", b.handlePing)
 	// 监控台：/ui 单页 + /api/* 数据面（Cookie 会话，与工具桥 Bearer 协议并存）
 	w := newWebUI(b.p)
@@ -359,9 +360,8 @@ func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "url 不能为空")
 		return
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		writeErr(w, http.StatusBadRequest, "url 必须是 http/https 直链")
+	if _, err := url.Parse(rawURL); err != nil {
+		writeErr(w, http.StatusBadRequest, "url 无效: "+err.Error())
 		return
 	}
 	_, as, err := b.resolveSession(r)
@@ -375,10 +375,7 @@ func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chat := t.Receiver
-	maxBytes := b.p.Config.VideoMaxBytes
-	if maxBytes <= 0 {
-		maxBytes = maxVideoBytes
-	}
+	maxBytes := b.videoMaxBytes()
 	// 日配额（kv 权威账本，reload 不丢）
 	if cap := b.p.Config.VideoDailyCap; cap > 0 {
 		today := time.Now().Format("20060102")
@@ -387,50 +384,8 @@ func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// 限长下载：超过上限一个字节即整体作废（绝不半截发送）
-	client := &http.Client{Timeout: time.Duration(b.p.Config.VideoTimeoutSec) * time.Second}
-	if client.Timeout <= 0 {
-		client.Timeout = 30 * time.Second
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "url 无效: "+err.Error())
-		return
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ghp-video/1.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "下载失败: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		writeErr(w, http.StatusBadGateway, fmt.Sprintf("下载源返回 %d", resp.StatusCode))
-		return
-	}
-	if resp.ContentLength > int64(maxBytes) {
-		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("视频 %.1fMB 超过上限 %.1fMB（gRPC 通道限制，只支持小视频）",
-				float64(resp.ContentLength)/1024/1024, float64(maxBytes)/1024/1024))
-		return
-	}
-	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	if ct != "" && !strings.Contains(ct, "video") && !strings.Contains(ct, "octet-stream") && !strings.Contains(ct, "mp4") {
-		writeErr(w, http.StatusUnsupportedMediaType, "内容类型不是视频: "+ct)
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "下载中断: "+err.Error())
-		return
-	}
-	if len(data) > maxBytes {
-		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("视频超过上限 %.1fMB", float64(maxBytes)/1024/1024))
-		return
-	}
-	if len(data) < 10*1024 {
-		writeErr(w, http.StatusUnprocessableEntity, "下载内容过小，疑似无效视频")
+	data, ok := b.fetchVideo(w, r, rawURL, maxBytes)
+	if !ok {
 		return
 	}
 	duration := body.Duration
@@ -441,16 +396,164 @@ func (b *bridgeServer) handleVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
 		return
 	}
-	// 记账：日配额 +1
-	today := time.Now().Format("20060102")
-	kvKey := "vidcap:" + chat + ":" + today
-	n, _ := strconv.Atoi(b.p.store.kvGet(kvKey))
-	b.p.store.kvSet(kvKey, strconv.Itoa(n+1))
-	b.p.metrics.addLog("INFO", fmt.Sprintf("[视频] %s 发送 %.0fKB <- %s", previewOf(chat, 20), float64(len(data))/1024, previewOf(u.Host+u.Path, 40)))
+	b.bumpVideoQuota(chat, len(data))
+	b.p.metrics.addLog("INFO", fmt.Sprintf("[视频] %s 发送 %.0fKB <- %s", previewOf(chat, 20), float64(len(data))/1024, previewOf(rawURL, 40)))
 	writeOK(w, map[string]any{
 		"sent": true, "bytes": len(data), "duration": duration,
 		"note": "视频已发到群；缩略图为本插件生成的占位图（无 ffmpeg 解帧）",
 	})
+}
+
+// videoMaxBytes 单条视频字节上限（0=默认 3MB）
+func (b *bridgeServer) videoMaxBytes() int {
+	if n := b.p.Config.VideoMaxBytes; n > 0 {
+		return n
+	}
+	return maxVideoBytes
+}
+
+// bumpVideoQuota 日配额 +1（kv 权威账本）
+func (b *bridgeServer) bumpVideoQuota(chat string, _ int) {
+	today := time.Now().Format("20060102")
+	kvKey := "vidcap:" + chat + ":" + today
+	n, _ := strconv.Atoi(b.p.store.kvGet(kvKey))
+	b.p.store.kvSet(kvKey, strconv.Itoa(n+1))
+}
+
+// fetchVideo 限长下载视频：超过上限一个字节即整体作废（绝不半截发送）。
+// 失败时已写好 HTTP 错误响应并返回 false。
+func (b *bridgeServer) fetchVideo(w http.ResponseWriter, r *http.Request, rawURL string, maxBytes int) ([]byte, bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		writeErr(w, http.StatusBadRequest, "url 必须是 http/https 直链")
+		return nil, false
+	}
+	client := &http.Client{Timeout: time.Duration(b.p.Config.VideoTimeoutSec) * time.Second}
+	if client.Timeout <= 0 {
+		client.Timeout = 30 * time.Second
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "url 无效: "+err.Error())
+		return nil, false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ghp-video/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "下载失败: "+err.Error())
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("下载源返回 %d", resp.StatusCode))
+		return nil, false
+	}
+	if resp.ContentLength > int64(maxBytes) {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("视频 %.1fMB 超过上限 %.1fMB（gRPC 通道限制，只支持小视频）",
+				float64(resp.ContentLength)/1024/1024, float64(maxBytes)/1024/1024))
+		return nil, false
+	}
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if ct != "" && !strings.Contains(ct, "video") && !strings.Contains(ct, "octet-stream") && !strings.Contains(ct, "mp4") {
+		writeErr(w, http.StatusUnsupportedMediaType, "内容类型不是视频: "+ct)
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "下载中断: "+err.Error())
+		return nil, false
+	}
+	if len(data) > maxBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("视频超过上限 %.1fMB", float64(maxBytes)/1024/1024))
+		return nil, false
+	}
+	if len(data) < 10*1024 {
+		writeErr(w, http.StatusUnprocessableEntity, "下载内容过小，疑似无效视频")
+		return nil, false
+	}
+	return data, true
+}
+
+// handleDeliver 定时投递：cron 等无会话任务把内容送进微信群。
+// 防越权不变式：不做会话绑定，改走目的地白名单——只有主人圈定的群能收，
+// agent 无法投递到任意 wxid。kind=text 直发；kind=video 走限长下载管线。
+func (b *bridgeServer) handleDeliver(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Chat     string `json:"chat"`
+		Kind     string `json:"kind"`
+		Text     string `json:"text"`
+		URL      string `json:"url"`
+		Duration uint32 `json:"duration"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	chat := strings.TrimSpace(body.Chat)
+	if chat == "" {
+		writeErr(w, http.StatusBadRequest, "chat 不能为空")
+		return
+	}
+	allowed := false
+	for _, g := range b.p.Config.DeliverGroups {
+		if g == chat {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, "目的地不在投递白名单（deliver_to_groups）内，已拒绝")
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(body.Kind))
+	if kind == "" {
+		kind = "text"
+	}
+	switch kind {
+	case "text":
+		text := strings.TrimSpace(body.Text)
+		if text == "" {
+			writeErr(w, http.StatusBadRequest, "text 不能为空")
+			return
+		}
+		if err := b.p.out.sendText(chat, text); err != nil {
+			writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
+			return
+		}
+		b.p.metrics.addLog("INFO", "[定时投递] 文本 -> "+previewOf(chat, 20))
+		writeOK(w, map[string]any{"sent": true, "kind": "text"})
+	case "video":
+		rawURL := strings.TrimSpace(body.URL)
+		if rawURL == "" {
+			writeErr(w, http.StatusBadRequest, "kind=video 时 url 不能为空")
+			return
+		}
+		if cap := b.p.Config.VideoDailyCap; cap > 0 {
+			today := time.Now().Format("20060102")
+			if n, _ := strconv.Atoi(b.p.store.kvGet("vidcap:" + chat + ":" + today)); n >= cap {
+				writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("本群今日视频配额已用完（%d 条），明天再来", cap))
+				return
+			}
+		}
+		data, ok := b.fetchVideo(w, r, rawURL, b.videoMaxBytes())
+		if !ok {
+			return
+		}
+		duration := body.Duration
+		if duration == 0 || duration > 600 {
+			duration = 15
+		}
+		if err := b.p.out.sendVideo(chat, data, placeholderThumb(), duration); err != nil {
+			writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
+			return
+		}
+		b.bumpVideoQuota(chat, len(data))
+		b.p.metrics.addLog("INFO", fmt.Sprintf("[定时投递] 视频 %.0fKB -> %s", float64(len(data))/1024, previewOf(chat, 20)))
+		writeOK(w, map[string]any{"sent": true, "kind": "video", "bytes": len(data)})
+	default:
+		writeErr(w, http.StatusBadRequest, "kind 仅支持 text|video")
+	}
 }
 
 // placeholderThumb 生成 64x64 深灰 JPEG 占位缩略图（无 ffmpeg 依赖；微信列表页显示灰块）

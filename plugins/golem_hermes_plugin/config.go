@@ -64,7 +64,8 @@ type Config struct {
 	ImageGenWorkers      int              `toml:"imagegen_workers" comment:"画坊并发画手数"`
 	VideoDailyCap        int              `toml:"video_daily_cap" comment:"每群每日视频发送条数上限（0=不限）"`
 	VideoMaxBytes        int              `toml:"video_max_bytes" comment:"单条视频字节上限（gRPC 通道限制约3MB，0=默认3MB）"`
-	VideoTimeoutSec      int              `toml:"video_timeout_sec" comment:"视频下载超时秒"`}
+	VideoTimeoutSec      int              `toml:"video_timeout_sec" comment:"视频下载超时秒"`
+	DeliverGroups        []string         `toml:"deliver_to_groups" comment:"定时投递白名单：cron 等无会话任务允许投递的群 wxid 列表（空=禁止一切无会话投递）"`}
 
 func defaultConfig() Config {
 	return Config{

@@ -44,6 +44,13 @@ USAGE_GUIDELINES = (
     "拿到可直接下载的文件直链（要指向 mp4 等视频文件的链接，网页地址不行），然后调用 send_video 发送。"
     "下载与限长由 golem 处理：超过约 3MB 会返回超限错误，换一个小一点的文件重试一次即可；"
     "下载失败也如实说明，不要编造已发送。\n"
+    "- 定时任务铁律（cronjob_manage）：①创建任务后必须再调一次查询动作回读验证任务真实存在，"
+    "并在回复里给出 job_id——创建返回成功不代表落盘，无验证的「成了」等于撒谎；"
+    "②cron 任务的执行环境没有微信会话，send_video/send_image 等会话绑定工具全部不可用，"
+    "任务里的群投递一律写明调用 deliver_to_group(chat=白名单群wxid, kind=..., ...)；"
+    "③创建前先想清楚任务 prompt 是否自包含（搜索、挑内容、投递动作都要写进任务里）。\n"
+    "- deliver_to_group：定时/无会话场景的群投递专用（目的地限主人圈定的白名单群）；"
+    "日常聊天回复不要用它。\n"
     "- reply_quote：需要精确回应某人某条消息时用引用回复。\n"
     "- get_member_profile / get_group_members / search_chat_history / get_recent_context："
     "需要了解群成员或翻聊天记录时使用。\n"
@@ -152,6 +159,24 @@ TOOLS = [
         },
         "在当前微信聊天发送一条视频：你可以自行通过网络搜索找到合适的视频，拿到可直接下载的文件直链后调用（网页地址不行，要指向视频文件的链接）；golem 负责下载并发送（上限约3MB小视频，超限换个小文件重试一次）",
         _make_handler("POST", "/v1/video", timeout=60),
+    ),
+    (
+        "deliver_to_group",
+        {
+            "type": "object",
+            "properties": {
+                "chat": {"type": "string",
+                          "description": "目标群 wxid（必须是主人预先圈定的投递白名单群）"},
+                "kind": {"type": "string", "enum": ["text", "video"],
+                          "description": "text=发文本；video=按 url 下载视频后发送"},
+                "text": {"type": "string", "description": "kind=text 时的正文"},
+                "url": {"type": "string", "description": "kind=video 时的视频直链"},
+                "duration": {"type": "integer", "description": "视频时长秒（可选）"},
+            },
+            "required": ["chat", "kind"],
+        },
+        "定时投递：给白名单群发送内容。专用于 cron 定时任务等没有微信会话的场景——send_video/send_image 在定时任务里不可用（无会话绑定），定时任务的群里投递一律用本工具。目的地不在白名单会被拒绝",
+        _make_handler("POST", "/v1/deliver", timeout=60),
     ),
     (
         "reply_quote",
