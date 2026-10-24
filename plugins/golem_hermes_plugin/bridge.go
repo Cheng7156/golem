@@ -456,10 +456,11 @@ func (b *bridgeServer) fetchVideo(w http.ResponseWriter, r *http.Request, rawURL
 		writeErr(w, http.StatusBadGateway, fmt.Sprintf("下载源返回 %d", resp.StatusCode))
 		return nil, false
 	}
-	if resp.ContentLength > int64(maxBytes) {
+	// 下载硬顶 50MB：超 gRPC 上限(3MB)的部分由压缩阶梯处理，超过硬顶才拒
+	if resp.ContentLength > rwMaxDownloadBytes {
 		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("视频 %.1fMB 超过上限 %.1fMB（gRPC 通道限制，只支持小视频）",
-				float64(resp.ContentLength)/1024/1024, float64(maxBytes)/1024/1024))
+			fmt.Sprintf("视频 %.1fMB 超过硬顶 %.0fMB，无法处理",
+				float64(resp.ContentLength)/1024/1024, float64(rwMaxDownloadBytes)/1024/1024))
 		return nil, false
 	}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -467,19 +468,28 @@ func (b *bridgeServer) fetchVideo(w http.ResponseWriter, r *http.Request, rawURL
 		writeErr(w, http.StatusUnsupportedMediaType, "内容类型不是视频: "+ct)
 		return nil, false
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, rwMaxDownloadBytes+1))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "下载中断: "+err.Error())
 		return nil, false
 	}
-	if len(data) > maxBytes {
-		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("视频超过上限 %.1fMB", float64(maxBytes)/1024/1024))
+	if len(data) > rwMaxDownloadBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, "视频超过 50MB 硬顶")
 		return nil, false
 	}
 	if len(data) < 10*1024 {
 		writeErr(w, http.StatusUnprocessableEntity, "下载内容过小，疑似无效视频")
 		return nil, false
+	}
+	// 超 gRPC 上限自动压缩（阶梯加压到塞下为止），压不动才报错
+	if len(data) > maxBytes {
+		compressed, cerr := compressVideoTo(data, maxBytes)
+		if cerr != nil {
+			writeErr(w, http.StatusUnprocessableEntity, cerr.Error())
+			return nil, false
+		}
+		b.p.metrics.addLog("INFO", fmt.Sprintf("[压缩] %s → %s", humanSize(len(data)), humanSize(len(compressed))))
+		data = compressed
 	}
 	return data, true
 }

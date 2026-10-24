@@ -93,14 +93,14 @@ func TestHandleVideoGates(t *testing.T) {
 	if rw := videoReq(b, `{"url":"ftp://x.com/a.mp4"}`); rw.Code != 400 {
 		t.Fatalf("ftp 应 400, got %d", rw.Code)
 	}
-	// 超过上限（源 2MB > 配置 1MB）
+	// 超过上限（源 2MB > 配置 1MB）：现为压缩而非拒绝；垃圾字节压不动 → 422
 	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 		_, _ = w.Write(bytes.Repeat([]byte{0x66}, 2*1024*1024))
 	}))
 	defer big.Close()
-	if rw := videoReq(b, `{"url":"`+big.URL+`/big.mp4"}`); rw.Code != 413 {
-		t.Fatalf("超限应 413, got %d %s", rw.Code, rw.Body.String())
+	if rw := videoReq(b, `{"url":"`+big.URL+`/big.mp4"}`); rw.Code != 422 {
+		t.Fatalf("超限且不可压缩应 422, got %d %s", rw.Code, rw.Body.String())
 	}
 	// 内容类型不是视频
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

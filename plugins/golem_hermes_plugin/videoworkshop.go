@@ -379,16 +379,13 @@ func remixVideo(input []byte, r *remixRecipe) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 成品超限：降码率重试一次
+	// 成品超限：压缩阶梯加压（多级），塞下为止
 	if len(data) > rwMaxOutBytes {
-		out2 := filepath.Join(dir, "out2.mp4")
-		if err := runRemixCmd("-y", "-v", "error", "-i", out, "-vf", "scale=360:-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", out2); err != nil {
-			return nil, err
+		got, cerr := compressVideoTo(data, rwMaxOutBytes)
+		if cerr != nil {
+			return nil, fmt.Errorf("成品 %.1fMB 超上限且压缩失败: %w", float64(len(data))/1024/1024, cerr)
 		}
-		if data2, err := os.ReadFile(out2); err == nil && len(data2) <= rwMaxOutBytes {
-			return data2, nil
-		}
-		return nil, fmt.Errorf("成品 %.1fMB 超过 %.1fMB 上限（降码率后仍超）", float64(len(data))/1024/1024, float64(rwMaxOutBytes)/1024/1024)
+		return got, nil
 	}
 	return data, nil
 }
