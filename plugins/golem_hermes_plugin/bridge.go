@@ -580,17 +580,34 @@ func (b *bridgeServer) handleDeliver(w http.ResponseWriter, r *http.Request) {
 
 // handleRemix 视频二创：agent 递配方，插件定位素材→下载→ffmpeg→交付。
 // 硬闸：配方校验（操作白名单/边界）、素材限视频环/引用/URL、成品时长/大小/配额。
+// remixExample 正确调用格式的自描述示例——schema 在 hermes 工具系统渲染为空，
+// 错误信息必须自带标准答案让模型单回合自纠
+const remixExample = `调用格式：{"recipe":{"sources":["quoted或latest或@昵称或url:直链"],"ops":["speed:2","reverse","trim:0-3","text:字幕@top","mirror","loop:2","crop:0.8","scale:480","mute","loud","concat"],"output":"video或gif"}}；ops 每条是操作符字符串，可用值：trim:起-止 / speed:倍率 / reverse / mirror / loop:次数 / text:文字@位置 / concat(双素材) / mute / loud / crop:比例 / scale:宽度`
+
 func (b *bridgeServer) handleRemix(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Recipe *remixRecipe `json:"recipe"`
+		// 容错字段：模型不包 recipe 直接平铺时兜住（schema 黑洞环境的高发形态）
+		Sources []string `json:"sources"`
+		Ops     []string `json:"ops"`
+		Output  string   `json:"output"`
 	}
-	if !readJSON(w, r, &body) || body.Recipe == nil {
-		writeErr(w, http.StatusBadRequest, "recipe 不能为空")
+	if !readJSON(w, r, &body) {
+		writeErr(w, http.StatusBadRequest, "参数解析失败。"+remixExample)
 		return
 	}
 	rcp := body.Recipe
+	if rcp == nil {
+		// 平铺形态：有 sources/ops 就当配方收
+		rcp = &remixRecipe{Sources: body.Sources, Ops: body.Ops, Output: body.Output}
+	}
+	if len(rcp.Sources) == 0 || len(rcp.Ops) == 0 {
+		b.p.metrics.addLog("WARN", "[二创] 参数不完整 sources="+previewOf(strings.Join(rcp.Sources, ","), 40)+" ops="+previewOf(strings.Join(rcp.Ops, ","), 40))
+		writeErr(w, http.StatusBadRequest, "参数不完整（sources 与 ops 都必填，且为字符串数组）。"+remixExample)
+		return
+	}
 	if err := validateRecipe(rcp); err != nil {
-		writeErr(w, http.StatusBadRequest, "配方不合法: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "配方不合法: "+err.Error()+"。"+remixExample)
 		return
 	}
 	_, as, err := b.resolveSession(r)
