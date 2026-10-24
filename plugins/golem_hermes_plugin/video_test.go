@@ -185,3 +185,20 @@ func TestHandleDeliver(t *testing.T) {
 		t.Fatalf("视频配额 kv 应为 1, got %q", kv)
 	}
 }
+
+// TestSanitizePaths 发送层路径消毒：句中/独立/mp4 路径全剥，正常文本不动
+func TestSanitizePaths(t *testing.T) {
+	c1 := "已存到 C:" + string(rune(92)) + "Users" + string(rune(92)) + "chengfei" + string(rune(92)) + "AppData" + string(rune(92)) + "Local" + string(rune(92)) + "Temp" + string(rune(92)) + "x.mp4 了哈"
+	got := sanitizePaths(c1)
+	if !strings.Contains(got, "（本地文件，已由系统处理）") || strings.Contains(got, ":") || strings.Contains(got, string(rune(92))) {
+		t.Fatalf("消毒失败: %q", got)
+	}
+	c2 := "看这个 D:" + string(rune(92)) + "clip.mp4"
+	if g2 := sanitizePaths(c2); strings.Contains(g2, "clip.mp4") {
+		t.Fatalf("路径残留: %q", g2)
+	}
+	normal := "C盘快满了，D 盘还行；时间 12:30"
+	if g3 := sanitizePaths(normal); g3 != normal {
+		t.Fatalf("正常文本被误伤: %q -> %q", normal, g3)
+	}
+}

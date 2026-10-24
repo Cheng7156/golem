@@ -66,8 +66,23 @@ func (o *outflow) throttle(session string) {
 	o.mu.Unlock()
 }
 
+// winPathInlineRe 防泄漏兜底：任何 Windows 绝对路径（盘符开头，任意后缀，
+// 可嵌在句中）都不许进微信。v0.14.2 前 agent 用 terminal 自产文件后把
+// 磁盘地址当汇报发出（"已存到 C:\...\x.mp4"），独立图片路径行有拦但
+// mp4/句中路径全放行——此闸在发送层统一消毒，与提示词纪律无关
+var winPathInlineRe = regexp.MustCompile(`(?i)[A-Za-z]:\\[\w\-.\x{4e00}-\x{9fff}\\\/]*`)
+
+// sanitizePaths 剥离文本里的一切本地路径痕迹（盘符路径 + 剩下的孤立反斜杠残片）
+func sanitizePaths(text string) string {
+	if !strings.Contains(text, ":\\") && !strings.Contains(text, ":/") {
+		return text
+	}
+	text = winPathInlineRe.ReplaceAllString(text, "（本地文件，已由系统处理）")
+	return strings.TrimSpace(text)
+}
+
 func (o *outflow) sendText(receiver, text string) error {
-	text = strings.TrimSpace(text)
+	text = sanitizePaths(strings.TrimSpace(text))
 	if text == "" {
 		return nil
 	}
@@ -111,7 +126,7 @@ func (o *outflow) sendQuote(t *task, text string) error {
 	if t.InMsgID == 0 {
 		return errors.New("缺少被引用消息ID")
 	}
-	text = strings.TrimSpace(text)
+	text = sanitizePaths(strings.TrimSpace(text))
 	o.slots <- struct{}{}
 	defer func() { <-o.slots }()
 	o.throttle(t.Receiver)
@@ -185,7 +200,7 @@ func (o *outflow) sendEmoji(receiver string, data []byte) error {
 	_, err := o.msg.Send(&message.Message{
 		Type:     message.TypeEmoji,
 		Receiver: &contact.Contact{Username: receiver},
-		Data:     &message.Message_Emoji{Emoji: &message.EmojiData{
+		Data: &message.Message_Emoji{Emoji: &message.EmojiData{
 			Media: &message.Media{Data: data, Size: uint32(len(data))},
 		}},
 	})
