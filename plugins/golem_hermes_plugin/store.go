@@ -54,6 +54,7 @@ func newStore(path, stickerDir string) *store {
 	s.initChronicle()
 	s.initImagegen()
 	s.initPersonas()
+	s.initVideoRing()
 	s.migrateArchiveImageLabels()
 	s.startArchive()
 	return s

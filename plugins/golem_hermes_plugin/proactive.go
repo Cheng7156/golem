@@ -123,7 +123,8 @@ func proJitteredThreshold(chat string, now time.Time, baseMin int) time.Duration
 	}
 	frac := rand.New(rand.NewSource(seed)).Float64() // 0..1
 	factor := 0.75 + 0.5*frac
-	return time.Duration(float64(baseMin)*factor) * time.Minute
+	// 先乘 float64(time.Minute) 再转 Duration——直接 time.Duration(分钟数) 会截断小数
+	return time.Duration(float64(baseMin) * factor * float64(time.Minute))
 }
 
 // inQuietHours 静默时段（支持跨夜：如 23->7）

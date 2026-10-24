@@ -51,6 +51,11 @@ USAGE_GUIDELINES = (
     "③创建前先想清楚任务 prompt 是否自包含（搜索、挑内容、投递动作都要写进任务里）。\n"
     "- deliver_to_group：定时/无会话场景的群投递专用（目的地限主人圈定的白名单群）；"
     "日常聊天回复不要用它。\n"
+    "- remix_video（二创工坊）：群友要加工视频时用。参数是字符串数组，严禁自创字段名："
+    "sources=['quoted'|'latest'|'@昵称'|'url:直链']（1-2个）；"
+    "ops=['speed:2','reverse','mirror','loop:2','trim:0-3','text:笑死@top','concat','mute','loud','crop:0.8','scale:480']"
+    "（text 的 @top/@bottom/@center 可省略默认底部）；output='gif' 转动图。"
+    "素材过期/失败就如实说明，可换素材（latest/@某人）重试一次，不要连点。\n"
     "- reply_quote：需要精确回应某人某条消息时用引用回复。\n"
     "- get_member_profile / get_group_members / search_chat_history / get_recent_context："
     "需要了解群成员或翻聊天记录时使用。\n"
@@ -91,9 +96,12 @@ def _call(method: str, path: str, payload: dict | None = None, session_id: str =
         return {"ok": False, "error": f"工具桥不可达: {e}"}
 
 
-def _make_handler(method: str, path: str, timeout: int = 120):
+def _make_handler(method: str, path: str, timeout: int = 120, unwrap: str = ""):
     def handler(args: dict, **kwargs) -> str:
-        result = _call(method, path, payload=args,
+        payload = args
+        if unwrap and isinstance(args, dict) and unwrap not in args:
+            payload = {unwrap: args}  # 参数打平注册时，桥侧仍期望 {unwrap: {...}}
+        result = _call(method, path, payload=payload,
                        session_id=str(kwargs.get("session_id") or ""), timeout=timeout)
         return json.dumps(result, ensure_ascii=False)
 
@@ -159,6 +167,26 @@ TOOLS = [
         },
         "在当前微信聊天发送一条视频：你可以自行通过网络搜索找到合适的视频，拿到可直接下载的文件直链后调用（网页地址不行，要指向视频文件的链接）；golem 负责下载并发送（上限约3MB小视频，超限换个小文件重试一次）",
         _make_handler("POST", "/v1/video", timeout=60),
+    ),
+    (
+        "remix_video",
+        {
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "素材定位，1-2 个：'quoted'=被引用的视频；'latest'=群里最近一条视频；'@昵称'=某人最近发的视频；'url:直链'",
+                },
+                "ops": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "操作序列（≤8条，按顺序执行），每条是操作符字符串：trim:起秒-止秒 | speed:倍率(0.25-4) | reverse | mirror | loop:次数(1-3) | text:字幕文字@top|bottom|center | concat(双素材拼接) | mute | loud | crop:比例(0.5-1) | scale:宽度(144-1080)",
+                },
+                "output": {"type": "string", "enum": ["video", "gif"], "description": "默认 video；gif 转表情动图"},
+            },
+            "required": ["sources", "ops"],
+        },
+        "视频二创工坊：把群里的视频加工后发回当前聊天。你把群友的口语翻译成操作序列，如变速鬼畜=['speed:2','loop:2']、倒放=['reverse']、加字幕=['text:笑死@top']、剪前3秒=['trim:0-3']、拼接=sources两个+['concat']、转GIF=output:'gif'。成品≤60秒≤3MB（超限自动降画质重试一次）",
+        _make_handler("POST", "/v1/remix", timeout=150, unwrap="recipe"),
     ),
     (
         "deliver_to_group",

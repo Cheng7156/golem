@@ -115,6 +115,18 @@ func (p *hermesPlugin) OnEvent(e *plugin.Event) (bool, error) {
 			})
 		}
 	}
+	// 1.21 视频环：二创工坊素材（同图片环模式，只存元数据）
+	if (msg.GetType().GetCode() == message.TypeVideo.Code || msg.GetType().GetCode() == message.TypeTinyVideo.Code) &&
+		msg.GetSender().GetType() == contact.ContactType_CONTACT_TYPE_CHATROOM {
+		if vd := msg.GetVideo(); vd != nil && vd.GetMedia().GetMd5() != "" {
+			p.store.ringAddVideo(ringVideo{
+				MsgID: msg.GetId(), Chat: session,
+				Wxid: msg.GetMember().GetUsername(), Name: sanitizeName(speakerName(msg)),
+				Md5: vd.GetMedia().GetMd5(), AesKey: vd.GetMedia().GetKey(),
+				Size: vd.GetMedia().GetSize(), Duration: vd.GetDuration(),
+			})
+		}
+	}
 
 	// 1.4 记仇小本本：被嫌弃则入账（同步轻量判断，写库在 store 锁内很快）
 	if p.fun != nil && (p.Config.GrudgeEnabled || p.effectiveChatConfig(session).GrudgeEnabled) {

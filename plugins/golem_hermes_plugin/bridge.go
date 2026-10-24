@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sbgayhub/golem/sdk/contact"
+	"github.com/sbgayhub/golem/sdk/message"
 	"github.com/sbgayhub/golem/sdk/plugin"
 )
 
@@ -46,6 +48,7 @@ func newBridge(p *hermesPlugin) *bridgeServer {
 	mux.HandleFunc("POST /v1/profile_card", b.auth(b.handleProfileCard))
 	mux.HandleFunc("POST /v1/video", b.auth(b.handleVideo))
 	mux.HandleFunc("POST /v1/deliver", b.auth(b.handleDeliver))
+	mux.HandleFunc("POST /v1/remix", b.auth(b.handleRemix))
 	mux.HandleFunc("GET /v1/ping", b.handlePing)
 	// 监控台：/ui 单页 + /api/* 数据面（Cookie 会话，与工具桥 Bearer 协议并存）
 	w := newWebUI(b.p)
@@ -564,6 +567,210 @@ func (b *bridgeServer) handleDeliver(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind 仅支持 text|video")
 	}
 }
+
+// handleRemix 视频二创：agent 递配方，插件定位素材→下载→ffmpeg→交付。
+// 硬闸：配方校验（操作白名单/边界）、素材限视频环/引用/URL、成品时长/大小/配额。
+func (b *bridgeServer) handleRemix(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Recipe *remixRecipe `json:"recipe"`
+	}
+	if !readJSON(w, r, &body) || body.Recipe == nil {
+		writeErr(w, http.StatusBadRequest, "recipe 不能为空")
+		return
+	}
+	rcp := body.Recipe
+	if err := validateRecipe(rcp); err != nil {
+		writeErr(w, http.StatusBadRequest, "配方不合法: "+err.Error())
+		return
+	}
+	_, as, err := b.resolveSession(r)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	t := as.LastTask
+	if t == nil {
+		writeErr(w, http.StatusConflict, "当前会话没有可识别的甲方")
+		return
+	}
+	chat := t.Receiver
+	if cap := b.p.Config.VideoDailyCap; cap > 0 {
+		today := time.Now().Format("20060102")
+		if n, _ := strconv.Atoi(b.p.store.kvGet("vidcap:" + chat + ":" + today)); n >= cap {
+			writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("本群今日视频配额已用完（%d 条）", cap))
+			return
+		}
+	}
+
+	// 素材获取（下载失败逐个如实报错）
+	var inputs [][]byte
+	for _, ref := range rcp.Sources {
+		data, ferr := b.remixSource(r, chat, t, ref)
+		if ferr != nil {
+			writeErr(w, http.StatusBadGateway, "素材获取失败: "+ferr.Error())
+			return
+		}
+		inputs = append(inputs, data)
+	}
+	input := inputs[0]
+	if len(inputs) > 1 {
+		merged, merr := remixTwo(inputs[0], inputs[1])
+		if merr != nil {
+			writeErr(w, http.StatusInternalServerError, "素材拼接失败: "+merr.Error())
+			return
+		}
+		input = merged
+	}
+
+	out, rerr := remixVideo(input, rcp)
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, "二创失败: "+rerr.Error())
+		return
+	}
+	if rcp.Output == "gif" {
+		if err := b.p.out.sendImage(chat, out); err != nil {
+			writeErr(w, http.StatusInternalServerError, "GIF 发送失败: "+err.Error())
+			return
+		}
+	} else {
+		thumb, probedDur := videoThumbProbe(out)
+		dur := probedDur
+		if dur == 0 {
+			dur = 15
+		}
+		if err := b.p.out.sendVideo(chat, out, thumb, dur); err != nil {
+			writeErr(w, http.StatusInternalServerError, "发送失败: "+err.Error())
+			return
+		}
+	}
+	b.bumpVideoQuota(chat, len(out))
+	b.p.metrics.addLog("INFO", fmt.Sprintf("[二创] %s %s -> %s (%.0fKB)", previewOf(chat, 20), strings.Join(rcp.Sources, "+"), strings.Join(rcp.Ops, ","), float64(len(out))/1024))
+	writeOK(w, map[string]any{
+		"sent": true, "output": rcp.Output, "bytes": len(out),
+		"note": "成品已发到群。GIF 以图片消息发送；视频带真实封面与时长。",
+	})
+}
+
+// remixSource 单素材定位与下载：环内检索 / 引用消息 / URL 直链
+func (b *bridgeServer) remixSource(r *http.Request, chat string, t *task, ref string) ([]byte, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		ref = "latest"
+	}
+	maxBytes := b.videoMaxBytes()
+	var data []byte
+	switch {
+	case strings.HasPrefix(strings.ToLower(ref), "url:"):
+		var dummy bytes.Buffer
+		got, ok := b.fetchVideo(newRespWriter(&dummy), r, strings.TrimSpace(ref[4:]), maxBytes)
+		if !ok {
+			return nil, fmt.Errorf("URL 下载失败: %s", strings.TrimSpace(dummy.String()))
+		}
+		data = got
+	case ref == "quoted":
+		if t.QuoteSvrid == "" {
+			return nil, errors.New("当前消息没有引用")
+		}
+		var msgID int64
+		fmt.Sscanf(strings.TrimSpace(t.QuoteSvrid), "%d", &msgID)
+		v, ok := b.p.store.vringByMsgID(chat, msgID)
+		if !ok {
+			return nil, errors.New("被引用的视频不在素材环内（可能过期）")
+		}
+		d, err := b.downloadRingVideo(v)
+		if err != nil {
+			return nil, err
+		}
+		data = d
+	case ref == "latest":
+		v, ok := b.p.store.vringLatest(chat)
+		if !ok {
+			return nil, errors.New("群里最近没有视频素材")
+		}
+		d, err := b.downloadRingVideo(v)
+		if err != nil {
+			return nil, err
+		}
+		data = d
+	case strings.HasPrefix(ref, "@"):
+		v, ok := b.p.store.vringBySender(chat, strings.TrimPrefix(ref, "@"))
+		if !ok {
+			return nil, fmt.Errorf("素材环里没有 %s 的视频", ref)
+		}
+		d, err := b.downloadRingVideo(v)
+		if err != nil {
+			return nil, err
+		}
+		data = d
+	default:
+		// 兜底：当昵称处理
+		v, ok := b.p.store.vringBySender(chat, ref)
+		if !ok {
+			return nil, fmt.Errorf("无法定位素材 %q（支持 quoted/latest/@昵称/url:直链）", ref)
+		}
+		d, err := b.downloadRingVideo(v)
+		if err != nil {
+			return nil, err
+		}
+		data = d
+	}
+	return data, nil
+}
+
+// downloadRingVideo 按环元数据最小重建消息走宿主 Download
+func (b *bridgeServer) downloadRingVideo(v ringVideo) ([]byte, error) {
+	if b.p.message == nil {
+		return nil, errors.New("消息通道未就绪")
+	}
+	msg := &message.Message{
+		Type:     message.TypeVideo,
+		Receiver: &contact.Contact{Username: v.Chat},
+		Data: &message.Message_Video{Video: &message.VideoData{
+			Media: &message.Media{Md5: v.Md5, Key: v.AesKey, Size: v.Size},
+		}},
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		rc, err := b.p.message.Download(msg)
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		defer rc.Close()
+		d, err := io.ReadAll(io.LimitReader(rc, 32*1024*1024))
+		ch <- result{data: d, err: err}
+	}()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
+		}
+		if len(res.data) < 10*1024 {
+			return nil, errors.New("素材为空")
+		}
+		return res.data, nil
+	case <-time.After(60 * time.Second):
+		return nil, errors.New("下载素材超时")
+	}
+}
+
+func newRespWriter(buf *bytes.Buffer) *remixRespWriter {
+	return &remixRespWriter{buf: buf}
+}
+
+// remixRespWriter 最小 ResponseWriter 桩（复用 fetchVideo 的错误文案）
+type remixRespWriter struct {
+	buf    *bytes.Buffer
+	status int
+}
+
+func (x *remixRespWriter) Header() http.Header          { return http.Header{} }
+func (x *remixRespWriter) Write(p []byte) (int, error)  { return x.buf.Write(p) }
+func (x *remixRespWriter) WriteHeader(code int)         { x.status = code }
 
 // placeholderThumb 生成 64x64 深灰 JPEG 占位缩略图（无 ffmpeg 依赖；微信列表页显示灰块）
 func placeholderThumb() []byte {
