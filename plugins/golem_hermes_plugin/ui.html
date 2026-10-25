@@ -852,18 +852,25 @@ function showPersona(i){
     <div class="k dim" style="margin:12px 0 5px;font-size:12.5px">人设正文（注入每轮对话，写具体的行为特点效果最好）</div>
     <textarea id="pe-prompt" rows="10" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--fg);padding:10px;font-size:13px;outline:none;resize:vertical">${esc(p.prompt||"")}</textarea>
     <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="hbtn" style="color:var(--teal)" onclick="personaApply(${i})">✔ 应用到本地</button>
-      <span class="faint" style="font-size:11.5px;align-self:center">应用后还需左上角「💾 保存人设库」才会生效</span>
+      <button class="hbtn" style="color:var(--teal)" onclick="personaApply(${i})">✔ 保存</button>
+      <span class="faint" style="font-size:11.5px;align-self:center">点击即保存入库，刷新不丢</span>
     </div>`;
   $("#drawer").classList.add("open");$("#ovl").classList.add("open");
 }
-function personaApply(i){
+async function personaApply(i){
   const p=window.PERSONAS[i];
   p.emoji=$("#pe-emoji").value.trim(); p.name=$("#pe-name").value.trim();
   p.brief=$("#pe-brief").value.trim(); p.prefer_emotions=$("#pe-emo").value.trim();
   p.prompt=$("#pe-prompt").value.trim(); p.enabled=$("#pe-enabled").checked;
-  // 只做本地重绘——绝不能拉服务器数据，否则未保存的本地修改会被旧值覆盖（保存失效 bug 的根因）
   closeAll(); renderPersonas();
+  // 应用即落库：两步保存（应用→再点顶部保存）是 UX 陷阱，用户以为应用=保存，
+  // 刷新后新增人设消失（实测复现）。本地渲染绝不能拉服务器数据覆盖未存编辑。
+  try{
+    const r=await api("/api/personas",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({default:$("#pa-default")?$("#pa-default").value:"",personas:window.PERSONAS})});
+    window.PERSONAS=r.personas||[]; window.PERSONAS_DEFAULT=r.default||""; renderPersonas();
+    alert("人设已保存，刷新不丢，各群下一轮对话生效");
+  }catch(e){alert("保存失败: "+e.message)}
 }
 function personaAdd(){
   window.PERSONAS.push({name:"新人格",emoji:"🎭",brief:"",prompt:"",prefer_emotions:"",enabled:true});
