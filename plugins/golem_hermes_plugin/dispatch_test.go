@@ -247,3 +247,23 @@ func TestUnclosedImageHeld(t *testing.T) {
 		t.Fatalf("结尾应整发全部文本: %q", got)
 	}
 }
+
+// TestYieldKeepsLastTask 让路的闲聊不得覆盖会话绑定的 LastTask（画坊甲方张冠李戴修复）
+func TestYieldKeepsLastTask(t *testing.T) {
+	d, eng, _ := newDispatchTest(t)
+	d.enqueue(mkTask("g@x", "mention", "坦然的画图单"))
+	waitCond(t, func() bool { eng.mu.Lock(); defer eng.mu.Unlock(); return eng.calls == 1 })
+	// 另一个 bot 的闲聊让路
+	d.enqueue(mkTask("g@x", "whitelist", "小聪明儿插话"))
+	time.Sleep(300 * time.Millisecond)
+	d.mu.Lock()
+	as := d.active["wx:group:g@x"]
+	d.mu.Unlock()
+	if as == nil || as.LastTask == nil {
+		t.Fatal("会话绑定丢失")
+	}
+	if as.LastTask.Speaker != "某人" || as.LastTask.Text != "坦然的画图单" {
+		t.Fatalf("让路覆盖了 LastTask: speaker=%s text=%s", as.LastTask.Speaker, as.LastTask.Text)
+	}
+	eng.release()
+}

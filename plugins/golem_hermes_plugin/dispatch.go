@@ -14,29 +14,29 @@ import (
 
 // task 一次 Agent 调用的完整上下文
 type task struct {
-	SessionKey string // Hermes 会话键（隔离单位）
-	RingKey    string // 观察上下文键（群共享）
-	Receiver   string
-	IsGroup    bool
-	GroupID    string
-	SpeakerID  string
-	Speaker    string
-	IsOwner    bool
-	Text       string
-	Quote      string
-	Mentioned  bool
-	QuotedBot  bool
+	SessionKey     string // Hermes 会话键（隔离单位）
+	RingKey        string // 观察上下文键（群共享）
+	Receiver       string
+	IsGroup        bool
+	GroupID        string
+	SpeakerID      string
+	Speaker        string
+	IsOwner        bool
+	Text           string
+	Quote          string
+	Mentioned      bool
+	QuotedBot      bool
 	MentionedOther bool // @ 了人但没 @ 我（画坊拒接的单）
-	Ambient    bool
-	Trigger    string // private|mention|quote|whitelist|ambient|owner-bypass
-	Profile    string
-	Image      []byte
-	ImageMime  string
-	InMsgID    int64
-	InTs       uint32
-	InTypeCode int32
-	InContent  string
-	QuoteSvrid string // 被引用消息ID（画坊改图定位素材用）
+	Ambient        bool
+	Trigger        string // private|mention|quote|whitelist|ambient|owner-bypass
+	Profile        string
+	Image          []byte
+	ImageMime      string
+	InMsgID        int64
+	InTs           uint32
+	InTypeCode     int32
+	InContent      string
+	QuoteSvrid     string // 被引用消息ID（画坊改图定位素材用）
 
 	CreatedAt time.Time // 入队时刻（批量消费的过期降级用）
 	BatchN    int       // 本轮批量合并的闲聊消息数（1=单条）
@@ -138,9 +138,16 @@ func (d *dispatcher) enqueue(t *task) {
 	// 自然覆盖这段消息。同级闲聊必须入队：收揽窗口要靠它们合并批量
 	// （v0.11.0 前这里是 latest-wins，白名单群每条消息都打断在途，回复永远活不到发送）
 	if busyNow && p < 2 && p < busyPri {
-		d.active[t.SessionKey] = &activeSession{
-			Receiver: t.Receiver, IsGroup: t.IsGroup, GroupID: t.GroupID,
-			LastActive: time.Now(), LastTask: t,
+		// 让路消息只刷新活跃时间，绝不覆盖 LastTask——在途 run 的工具桥绑定
+		//（画坊甲方、引用回复等）必须保持在途任务的发言人，否则被让路的闲聊
+		// 张冠李戴（实测：别的 bot 插话让路后，画坊工单甲方错记成插话者）
+		if as, ok := d.active[t.SessionKey]; ok && as.LastTask != nil {
+			as.LastActive = time.Now()
+		} else {
+			d.active[t.SessionKey] = &activeSession{
+				Receiver: t.Receiver, IsGroup: t.IsGroup, GroupID: t.GroupID,
+				LastActive: time.Now(), LastTask: t,
+			}
 		}
 		d.mu.Unlock()
 		if d.metrics != nil {
