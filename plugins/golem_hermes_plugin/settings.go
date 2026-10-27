@@ -16,7 +16,7 @@ import (
 // chatSettings 群级覆盖（nil = 跟随全局）
 type chatSettings struct {
 	Chat              string   `json:"chat"`
-	Mute              *bool    `json:"mute"`                // 整群静音
+	Mute              *bool    `json:"mute"`                // 整群静音（任意成员@可穿透唤醒）
 	FreeResponse      *bool    `json:"free_response"`       // 免@响应
 	AmbientRate       *float64 `json:"ambient_rate"`        // 环境闲聊概率覆盖
 	AmbientCooldown   *int     `json:"ambient_cooldown_sec"` // 群冷却覆盖

@@ -733,7 +733,7 @@ function renderChatSettings(chat,name,isGroup){
   $("#modal-bd").innerHTML=`
     <h3>⚙ ${esc(name||chat)} <span class="mono dim" style="font-size:12px">${esc(maskId(chat))}</span></h3>
     <div class="faint" style="font-size:12px;margin-bottom:6px">"跟随全局"=未覆盖；点击它启用本群覆盖</div>
-    ${tg("mute","整群静音（仅主人@可唤醒）")}
+    ${tg("mute","整群静音（任意成员@可唤醒）")}
     ${tg("free_response","免@响应")}
     ${isGroup?tg("chronicle","史官出刊"):""}
     ${isGroup&&cs.chronicle===true?`<div style="margin:6px 0 10px;display:flex;justify-content:flex-end">

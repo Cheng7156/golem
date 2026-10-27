@@ -52,8 +52,8 @@ func (p *hermesPlugin) decide(in *incoming) (respond, ambient bool, trigger, ign
 		}
 		return true, false, "private", ""
 	}
-	// 群级静音：仅主人 @/引用 可穿透唤醒
-	if ec.Muted && !(in.IsOwner && (in.Mentioned || in.QuotedBot)) {
+	// 群级静音：任意成员 @/引用 可穿透唤醒（v0.15.0 起从"仅主人"放宽）
+	if ec.Muted && !(in.Mentioned || in.QuotedBot) {
 		return false, false, "", "群已静音"
 	}
 	if in.Mentioned {

@@ -181,3 +181,24 @@ func TestSessionBucket(t *testing.T) {
 		t.Fatal("不同桶宽应产生不同桶号")
 	}
 }
+
+// TestMutedAnyMemberWake 静音群：任意成员 @/引用 可唤醒，普通消息仍静默
+func TestMutedAnyMemberWake(t *testing.T) {
+	p, _ := newFunTestPlugin(t)
+	_ = p.store.saveChatSettings(chatSettings{Chat: "g@chatroom", Mute: boolPtr(true)})
+	mk := func(mentioned, quoted bool, speaker string) *incoming {
+		in := &incoming{IsGroup: true, GroupID: "g@chatroom", Receiver: "g@chatroom",
+			Speaker: speaker, SpeakerID: "wxid_" + speaker, Text: "hi"}
+		in.Mentioned, in.QuotedBot = mentioned, quoted
+		return in
+	}
+	if resp, _, _, why := p.decide(mk(false, false, "路人")); resp {
+		t.Fatalf("静音群普通消息应忽略, got %s", why)
+	}
+	if resp, _, _, _ := p.decide(mk(true, false, "路人")); !resp {
+		t.Fatal("任意成员 @ 应唤醒静音群")
+	}
+	if resp, _, _, _ := p.decide(mk(false, true, "路人")); !resp {
+		t.Fatal("任意成员引用应唤醒静音群")
+	}
+}
